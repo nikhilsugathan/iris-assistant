@@ -1,12 +1,14 @@
 """
-IRIS Brain
-==========
+IRIS Brain v4
+=============
 Primary reasoning + API routing + cleanup.
+Local LLM first (Ollama), cloud APIs as fallback.
 """
 
 from __future__ import annotations
 
 import re
+import threading
 from typing import Dict, List, Optional
 
 import requests
@@ -22,6 +24,9 @@ class Brain:
         self.memory = memory
         self.available_apis = self._detect_apis()
         self._update_priority()
+        # Pre-warm local models in background so first call is instant
+        if "ollama_fast" in self.available_apis or "ollama_smart" in self.available_apis:
+            threading.Thread(target=self._warmup_ollama, daemon=True).start()
 
     # ─────────────────────────────────────────────────────────────
     # API DETECTION / PRIORITY
@@ -29,6 +34,27 @@ class Brain:
 
     def _detect_apis(self) -> List[str]:
         available = []
+
+        # ── Local LLM (Ollama) — check first, highest priority ──
+        ollama_base = getattr(Config, "OLLAMA_BASE_URL", "http://localhost:11434")
+        try:
+            resp = requests.get(f"{ollama_base}/api/tags", timeout=2)
+            if resp.status_code == 200:
+                models = [m["name"] for m in resp.json().get("models", [])]
+                fast_model  = getattr(Config, "OLLAMA_MODEL_FAST", "phi3.5")
+                smart_model = getattr(Config, "OLLAMA_MODEL_SMART", "llama3.1:8b")
+                deep_model  = getattr(Config, "OLLAMA_MODEL_DEEP", "deepseek-r1:8b")
+
+                # Check which models are actually downloaded
+                for model, key in [(fast_model, "ollama_fast"), (smart_model, "ollama_smart"), (deep_model, "ollama_deep")]:
+                    if any(model.split(":")[0] in m for m in models):
+                        available.append(key)
+                        print(f"  [✓] Ollama {key} ({model}) detected")
+
+                if not any(k in available for k in ["ollama_fast", "ollama_smart", "ollama_deep"]):
+                    print(f"  [!] Ollama running but no models found. Run: ollama pull phi3.5")
+        except Exception:
+            print("  [!] Ollama not running — using cloud APIs only")
 
         if getattr(Config, "GEMINI_API_KEY", ""):
             print("  [✓] Gemini API detected")
@@ -47,7 +73,7 @@ class Brain:
             available.append("perplexity")
 
         if not available:
-            print("  [!] No API keys found")
+            print("  [!] No APIs found")
 
         return available
 
@@ -96,40 +122,65 @@ class Brain:
         return ""
 
     def think(self, user_input: str) -> str:
+        """
+        Smart routing:
+        - Simple/short → ollama_fast (phi3.5, instant)
+        - Complex/long → ollama_smart (llama3.1:8b, fast)
+        - Reasoning    → ollama_deep (deepseek-r1, thorough)
+        - Web data     → perplexity
+        - Fallback     → groq → claude
+        """
         user_input = (user_input or "").strip()
         if not user_input:
-            return "Try that again, preferably with actual words."
+            return "Try that again."
 
+        # Instant local rewrites — no API needed
         direct = self._rewrite_generic_response(user_input)
         if direct:
             self.memory.add("user", user_input)
-            self.memory.add("assistant", direct, source="local_rewrite")
+            self.memory.add("assistant", direct, source="local")
             return direct
 
         self.memory.add("user", user_input)
         query_type = self._classify_query(user_input)
 
+        # Web search → Perplexity
         if query_type == "web_search" and "perplexity" in self.available_apis:
-            web_response = self._call_api(
-                "perplexity",
-                user_input,
-                use_persona=False,
-                use_memory=False,
-            )
-            if web_response:
-                final_web = self._postprocess_response(web_response, user_input)
-                self.memory.add("assistant", final_web, source="perplexity")
-                return final_web
+            resp = self._call_api("perplexity", user_input, use_persona=False, use_memory=False)
+            if resp:
+                final = self._postprocess_response(resp, user_input)
+                self.memory.add("assistant", final, source="perplexity")
+                return final
 
-        use_ensemble = bool(getattr(Config, "USE_ENSEMBLE", False))
-        if use_ensemble and len(self.available_apis) > 1:
-            response = self._ensemble_think(user_input, query_type)
+        # Smart routing based on query complexity
+        word_count = len(user_input.split())
+        is_complex = any(w in user_input.lower() for w in [
+            "explain", "analyse", "compare", "why", "how does", "what is the difference",
+            "reason", "think", "evaluate", "summarise", "detail"
+        ])
+        needs_reasoning = any(w in user_input.lower() for w in [
+            "reason", "logic", "proof", "solve", "calculate", "plan", "strategy"
+        ])
+
+        # Build priority order based on query type
+        if needs_reasoning and "ollama_deep" in self.available_apis:
+            order = ["ollama_deep", "ollama_smart", "ollama_fast", "groq", "gemini", "claude"]
+        elif is_complex or word_count > 15:
+            order = ["ollama_smart", "ollama_fast", "groq", "gemini", "claude"]
         else:
-            response = self._single_think(user_input, getattr(Config, "PRIMARY_BRAIN", "groq"))
+            # Simple voice command — fastest model first
+            order = ["ollama_fast", "ollama_smart", "groq", "gemini", "claude"]
 
-        final = self._postprocess_response(response, user_input)
-        self.memory.add("assistant", final, source=getattr(Config, "PRIMARY_BRAIN", "unknown"))
-        return final
+        for api in order:
+            if api not in self.available_apis:
+                continue
+            resp = self._call_api(api, user_input, use_persona=True, use_memory=True, allow_failover=False)
+            if resp:
+                final = self._postprocess_response(resp, user_input)
+                self.memory.add("assistant", final, source=api)
+                return final
+
+        return self._fallback_response(user_input)
 
     # ─────────────────────────────────────────────────────────────
     # FAST LOCAL REWRITES FOR GENERIC VOICE INPUT
@@ -404,6 +455,69 @@ Return only the improved response."""
         return " ".join(sentences[:max_sentences]).strip()
 
     # ─────────────────────────────────────────────────────────────
+    # OLLAMA — Local LLM
+    # ─────────────────────────────────────────────────────────────
+
+    def _warmup_ollama(self):
+        """Pre-warm both local models so first real call is instant."""
+        models_to_warm = []
+        if "ollama_fast" in self.available_apis:
+            models_to_warm.append(getattr(Config, "OLLAMA_MODEL_FAST", "phi3.5"))
+        if "ollama_smart" in self.available_apis:
+            models_to_warm.append(getattr(Config, "OLLAMA_MODEL_SMART", "llama3.1:8b"))
+
+        for model in models_to_warm:
+            try:
+                requests.post(
+                    f"{getattr(Config, 'OLLAMA_BASE_URL', 'http://localhost:11434')}/api/generate",
+                    json={"model": model, "prompt": "hi", "stream": False, "options": {"num_predict": 1}},
+                    timeout=30,
+                )
+                console.print(f"[dim]✓ Warmed up {model}[/dim]")
+            except Exception:
+                pass
+
+    def _call_ollama(self, model: str, prompt: str, use_persona: bool, use_memory: bool) -> Optional[str]:
+        """Call a local Ollama model."""
+        base_url = getattr(Config, "OLLAMA_BASE_URL", "http://localhost:11434")
+
+        # Build full prompt with persona and memory
+        full_prompt = ""
+        if use_persona:
+            persona = getattr(Config, "IRIS_PERSONA", "")
+            voice_style = getattr(Config, "VOICE_RESPONSE_STYLE", "")
+            full_prompt += f"{persona}\n\n{voice_style}\n\n"
+        if use_memory:
+            ctx = self._memory_context(3)
+            for item in ctx:
+                role = "User" if item["role"] == "user" else "Iris"
+                full_prompt += f"{role}: {item['content']}\n"
+        full_prompt += f"User: {prompt}\nIris:"
+
+        try:
+            resp = requests.post(
+                f"{base_url}/api/generate",
+                json={
+                    "model": model,
+                    "prompt": full_prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.4,
+                        "num_predict": 150,   # Keep responses short for voice
+                        "stop": ["\nUser:", "\nHuman:", "\n\n"],
+                    }
+                },
+                timeout=15,
+            )
+            resp.raise_for_status()
+            text = resp.json().get("response", "").strip()
+            # Clean up any leaked prompt artifacts
+            text = re.sub(r"^(Iris:|Assistant:)\s*", "", text).strip()
+            return text if text else None
+        except Exception:
+            return None
+
+    # ─────────────────────────────────────────────────────────────
     # API ROUTER
     # ─────────────────────────────────────────────────────────────
 
@@ -416,6 +530,21 @@ Return only the improved response."""
         allow_failover: bool = True,
     ) -> Optional[str]:
         try:
+            if api == "ollama_fast":
+                return self._call_ollama(
+                    getattr(Config, "OLLAMA_MODEL_FAST", "phi3.5"),
+                    prompt, use_persona, use_memory
+                )
+            if api == "ollama_smart":
+                return self._call_ollama(
+                    getattr(Config, "OLLAMA_MODEL_SMART", "llama3.1:8b"),
+                    prompt, use_persona, use_memory
+                )
+            if api == "ollama_deep":
+                return self._call_ollama(
+                    getattr(Config, "OLLAMA_MODEL_DEEP", "deepseek-r1:8b"),
+                    prompt, use_persona, use_memory
+                )
             if api == "claude":
                 return self._call_claude(prompt, use_persona, use_memory)
             if api == "gemini":
@@ -454,13 +583,14 @@ Return only the improved response."""
             "model": Config.GROQ_MODEL,
             "messages": messages,
             "temperature": 0.4,
+            "max_tokens": 150,   # Voice responses stay short and fast
         }
 
         response = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers=headers,
             json=payload,
-            timeout=45,
+            timeout=12,   # Fail fast if Groq is slow
         )
         response.raise_for_status()
         data = response.json()
@@ -559,46 +689,3 @@ Return only the improved response."""
             return "Still here."
 
         return "Something upstream failed. Check the API keys, packages, and network, then try again."
-
-# ── Voice-optimised think method patch ──
-_original_think = Brain.think
-
-def _fast_think(self, user_input: str) -> str:
-    """
-    For live voice: always use Groq first (fast, ~0.5s).
-    Claude is only used if Groq fails or for explicit deep tasks.
-    """
-    user_input = (user_input or "").strip()
-    if not user_input:
-        return "Try that again."
-
-    direct = self._rewrite_generic_response(user_input)
-    if direct:
-        self.memory.add("user", user_input)
-        self.memory.add("assistant", direct, source="local")
-        return direct
-
-    self.memory.add("user", user_input)
-    query_type = self._classify_query(user_input)
-
-    # Web search → Perplexity if available
-    if query_type == "web_search" and "perplexity" in self.available_apis:
-        resp = self._call_api("perplexity", user_input, use_persona=False, use_memory=False)
-        if resp:
-            final = self._postprocess_response(resp, user_input)
-            self.memory.add("assistant", final, source="perplexity")
-            return final
-
-    # Voice fast path → Groq first regardless of BRAIN_PRIORITY
-    fast_apis = ["groq", "gemini", "claude"]
-    for api in fast_apis:
-        if api in self.available_apis:
-            resp = self._call_api(api, user_input, use_persona=True, use_memory=True, allow_failover=False)
-            if resp:
-                final = self._postprocess_response(resp, user_input)
-                self.memory.add("assistant", final, source=api)
-                return final
-
-    return self._fallback_response(user_input)
-
-Brain.think = _fast_think

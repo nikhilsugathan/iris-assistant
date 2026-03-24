@@ -77,7 +77,14 @@ class ActionExecutor:
         self.pending_plans          = None   # stores A/B/C plans waiting for user choice
         self.last_action_path       = None
         self._clarification_options = []
-        self.browser = BrowserAutomation()  # lazy-init in background
+        self._browser = None   # lazy — created only when needed
+
+    @property
+    def browser(self):
+        """Create browser automation only when first needed."""
+        if self._browser is None:
+            self._browser = BrowserAutomation()
+        return self._browser
         self.log_file    = "iris_actions.log"
         self.is_windows  = platform.system() == "Windows"
 
@@ -287,7 +294,36 @@ class ActionExecutor:
                 "is_dangerous": False
             }
 
-        # ── Create folder ─────────────────────────────────────
+        # ── Create subfolder inside existing folder ───────────
+        subfolder_match = re.search(
+            r"(?:create|make)\s+(?:a\s+)?sub.?folder\s+"
+            r"(?:called|named|as)?\s*['\"]?([^\s'\"]+)['\"]?"
+            r"(?:\s+(?:in|inside|within|under)\s+(.+))?",
+            text
+        )
+        if subfolder_match:
+            subfoldername = subfolder_match.group(1).strip()
+            parent        = subfolder_match.group(2).strip() if subfolder_match.group(2) else ""
+
+            # Resolve parent folder — check desktop first
+            if parent:
+                desktop = self._get_desktop_path()
+                parent_path = os.path.join(desktop, parent)
+                if not os.path.isdir(parent_path):
+                    # Try as absolute path
+                    parent_path = parent if os.path.isdir(parent) else desktop
+            elif self.last_action_path and os.path.isdir(self.last_action_path):
+                parent_path = self.last_action_path
+            else:
+                parent_path = self._get_desktop_path()
+
+            folderpath = os.path.join(parent_path, subfoldername)
+            return {
+                "action_type": "create_folder",
+                "description": f"create subfolder '{subfoldername}' inside '{os.path.basename(parent_path)}'",
+                "filename": folderpath,
+                "is_dangerous": False
+            }
         folder_match = re.search(
             r"(?:create|make|new)\s+(?:a\s+)?folder\s+"
             r"(?:called|named|as|named as)\s+"

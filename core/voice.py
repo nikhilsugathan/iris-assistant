@@ -135,6 +135,8 @@ class Voice:
     def listen_for_command(self) -> str:
         if self.text_mode:
             return self.listen_text()
+        # Stop Iris speaking if she is — user interrupted
+        self.stop_speaking()
         return self._listen(
             timeout=getattr(Config, "MIC_TIMEOUT", 6),
             phrase_time_limit=getattr(Config, "MIC_PHRASE_LIMIT", 12),
@@ -241,11 +243,21 @@ class Voice:
             return
 
         self._stop_flag.clear()
-        with self._tts_lock:
-            try:
-                asyncio.run(self._speak_async(clean))
-            except Exception as e:
-                console.print(f"[red]TTS error:[/red] {e}")
+        # Run TTS in background thread so main loop stays responsive
+        t = threading.Thread(
+            target=self._speak_blocking,
+            args=(clean,),
+            daemon=True
+        )
+        t.start()
+        t.join()  # Wait for speech but allow keyboard interrupt
+
+    def _speak_blocking(self, text: str):
+        """Blocking speak — runs in thread."""
+        try:
+            asyncio.run(self._speak_async(text))
+        except Exception as e:
+            console.print(f"[red]TTS error:[/red] {e}")
 
     async def _speak_async(self, text: str):
         import edge_tts

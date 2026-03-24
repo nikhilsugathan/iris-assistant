@@ -135,21 +135,12 @@ class SecurityGuard:
         # ── Layer 1: Hard blocks (no override ever) ────────────
         blocked, reason = self._check_hard_blocks(command)
         if blocked:
-            return BLOCKED, (
-                f"I can't do that. This action is blocked because: {reason}. "
-                f"This falls outside ethical guidelines and cannot be overridden."
-            )
+            return BLOCKED, f"Can't do that — {reason}. Say 'override' to force it."
 
         # ── Layer 2: Admin rights check ────────────────────────
         needs_admin, admin_reason = self._check_admin_required(command)
         if needs_admin:
-            return NEED_ADMIN, (
-                f"This action requires administrator privileges. "
-                f"Specifically: {admin_reason}. "
-                f"You'll need to run JARVIS as Administrator, or confirm you want "
-                f"to proceed and Windows will prompt you for UAC approval. "
-                f"Shall I continue?"
-            )
+            return NEED_ADMIN, f"Needs admin rights. Run as Administrator or say 'go ahead' for UAC prompt."
 
         # ── Layer 3: URL / domain safety ──────────────────────
         if url:
@@ -168,16 +159,11 @@ class SecurityGuard:
         # ── Layer 5: Sensitive operations (need explicit OK) ───
         sensitive, sens_reason = self._check_sensitive(command)
         if sensitive:
-            return WARNING, (
-                f"Heads up — this touches a sensitive area: {sens_reason}. "
-                f"This is beyond standard operations and could affect system "
-                f"security or stability. Do you explicitly want me to proceed?"
-            )
+            return WARNING, f"This touches a sensitive area: {sens_reason}. Go ahead?"
 
-        # ── Layer 6: AI ethical judgement (catches edge cases) ─
-        ai_verdict, ai_msg = self._ai_ethical_check(plan)
-        if ai_verdict in (BLOCKED, WARNING):
-            return ai_verdict, ai_msg
+        # Layer 6 (AI ethical check) intentionally removed —
+        # it was blocking legitimate user actions like delete.
+        # Hard blocks in Layer 1 handle actual dangerous commands.
 
         return SAFE, ""
 
