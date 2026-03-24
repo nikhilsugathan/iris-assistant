@@ -27,14 +27,14 @@ from core.voice import Voice
 
 console = Console()
 
-BANNER = r"""
+BANNER = f"""
   ██╗██████╗ ██╗███████╗
   ██║██╔══██╗██║██╔════╝
   ██║██████╔╝██║███████╗
   ██║██╔══██╗██║╚════██║
   ██║██║  ██║██║███████║
   ╚═╝╚═╝  ╚═╝╚═╝╚══════╝
-  Intelligence. Redefined.
+  {Config.SYSTEM_MOTTO}
 """
 
 

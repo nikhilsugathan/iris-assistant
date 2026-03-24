@@ -14,6 +14,7 @@ class Config:
     SYSTEM_NAME = os.getenv("IRIS_SYSTEM_NAME", "IRIS")
     INNER_CODENAME = os.getenv("IRIS_INNER_CODENAME", "Aletheia")
     COUNCIL_NAME = os.getenv("IRIS_COUNCIL_NAME", "Aletheia Council")
+    SYSTEM_MOTTO = os.getenv("IRIS_SYSTEM_MOTTO", "Perception. Memory. Judgment.")
 
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
     GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
