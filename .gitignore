@@ -1,0 +1,18 @@
+﻿# API keys and secrets — NEVER commit these
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Memory and logs — personal data
+iris_memory.json
+iris_actions.log
+
+# VS Code
+.vscode/
+
+# Windows
+Thumbs.db
+desktop.ini

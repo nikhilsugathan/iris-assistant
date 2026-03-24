@@ -1,0 +1,561 @@
+"""
+IRIS Brain
+==========
+Primary reasoning + API routing + cleanup.
+"""
+
+from __future__ import annotations
+
+import re
+from typing import Dict, List, Optional
+
+import requests
+from rich.console import Console
+
+from config import Config
+
+console = Console()
+
+
+class Brain:
+    def __init__(self, memory):
+        self.memory = memory
+        self.available_apis = self._detect_apis()
+        self._update_priority()
+
+    # ─────────────────────────────────────────────────────────────
+    # API DETECTION / PRIORITY
+    # ─────────────────────────────────────────────────────────────
+
+    def _detect_apis(self) -> List[str]:
+        available = []
+
+        if getattr(Config, "GEMINI_API_KEY", ""):
+            print("  [✓] Gemini API detected")
+            available.append("gemini")
+
+        if getattr(Config, "GROQ_API_KEY", ""):
+            print("  [✓] Groq API detected")
+            available.append("groq")
+
+        if getattr(Config, "CLAUDE_API_KEY", ""):
+            print("  [✓] Claude API detected")
+            available.append("claude")
+
+        if getattr(Config, "PERPLEXITY_API_KEY", ""):
+            print("  [✓] Perplexity API detected")
+            available.append("perplexity")
+
+        if not available:
+            print("  [!] No API keys found")
+
+        return available
+
+    def _update_priority(self) -> None:
+        priority = list(getattr(Config, "BRAIN_PRIORITY", ["groq", "gemini", "claude"]))
+
+        for api in priority:
+            if api in self.available_apis:
+                Config.PRIMARY_BRAIN = api
+                break
+
+        Config.FALLBACK_BRAIN = Config.PRIMARY_BRAIN
+        for api in priority:
+            if api in self.available_apis and api != Config.PRIMARY_BRAIN:
+                Config.FALLBACK_BRAIN = api
+                break
+
+    # ─────────────────────────────────────────────────────────────
+    # MAIN ENTRY
+    # ─────────────────────────────────────────────────────────────
+
+    def quick_ack(self, user_input: str) -> str:
+        text = (user_input or "").lower().strip()
+
+        if not text:
+            return ""
+
+        if any(x in text for x in ["wait", "hold on", "stop"]):
+            return "All right."
+
+        if any(
+            x in text
+            for x in ["hey", "hello", "hi", "iris you there", "you there", "are you there"]
+        ):
+            return "I'm here."
+
+        if len(text) > 70:
+            return "One second."
+
+        if any(
+            x in text
+            for x in ["check", "look up", "find", "search", "explain", "tell me", "what is", "how does"]
+        ):
+            return "Checking."
+
+        return ""
+
+    def think(self, user_input: str) -> str:
+        user_input = (user_input or "").strip()
+        if not user_input:
+            return "Try that again, preferably with actual words."
+
+        direct = self._rewrite_generic_response(user_input)
+        if direct:
+            self.memory.add("user", user_input)
+            self.memory.add("assistant", direct, source="local_rewrite")
+            return direct
+
+        self.memory.add("user", user_input)
+        query_type = self._classify_query(user_input)
+
+        if query_type == "web_search" and "perplexity" in self.available_apis:
+            web_response = self._call_api(
+                "perplexity",
+                user_input,
+                use_persona=False,
+                use_memory=False,
+            )
+            if web_response:
+                final_web = self._postprocess_response(web_response, user_input)
+                self.memory.add("assistant", final_web, source="perplexity")
+                return final_web
+
+        use_ensemble = bool(getattr(Config, "USE_ENSEMBLE", False))
+        if use_ensemble and len(self.available_apis) > 1:
+            response = self._ensemble_think(user_input, query_type)
+        else:
+            response = self._single_think(user_input, getattr(Config, "PRIMARY_BRAIN", "groq"))
+
+        final = self._postprocess_response(response, user_input)
+        self.memory.add("assistant", final, source=getattr(Config, "PRIMARY_BRAIN", "unknown"))
+        return final
+
+    # ─────────────────────────────────────────────────────────────
+    # FAST LOCAL REWRITES FOR GENERIC VOICE INPUT
+    # ─────────────────────────────────────────────────────────────
+
+    def _rewrite_generic_response(self, user_input: str) -> str:
+        text = user_input.lower().strip()
+
+        if any(phrase in text for phrase in ["how are you", "how're you", "how do you feel"]):
+            return "Operational. What do you need?"
+
+        if text in {"hello", "hi", "hey", "hey iris", "hi iris", "iris"}:
+            return "I'm here."
+
+        if text in {
+            "can you help",
+            "help",
+            "i need help",
+            "can you help me",
+            "help me",
+        }:
+            return "Yes. What's the task?"
+
+        if text in {"can you assist", "assist me", "i need assistance"}:
+            return "Yes. What are you trying to do?"
+
+        return ""
+
+    # ─────────────────────────────────────────────────────────────
+    # QUERY ROUTING
+    # ─────────────────────────────────────────────────────────────
+
+    def _classify_query(self, text: str) -> str:
+        text_lower = text.lower()
+
+        web_keywords = getattr(
+            Config,
+            "WEB_KEYWORDS",
+            [
+                "latest", "today", "news", "current", "price",
+                "weather", "stock", "score", "recent", "update",
+            ],
+        )
+        code_keywords = getattr(
+            Config,
+            "CODE_KEYWORDS",
+            [
+                "python", "code", "script", "debug", "bug",
+                "function", "class", "api", "json", "regex",
+            ],
+        )
+
+        if any(word in text_lower for word in web_keywords):
+            return "web_search"
+        if any(word in text_lower for word in code_keywords):
+            return "code"
+        return "general"
+
+    def _get_apis_for_query(self, query_type: str) -> List[str]:
+        primary = getattr(Config, "PRIMARY_BRAIN", "groq")
+
+        if query_type == "code":
+            ordered = [primary, "groq", "gemini", "claude"]
+        elif query_type == "web_search":
+            ordered = ["perplexity", primary, "gemini", "groq", "claude"]
+        else:
+            ordered = [primary, getattr(Config, "FALLBACK_BRAIN", primary), "gemini", "groq", "claude"]
+
+        result: List[str] = []
+        for api in ordered:
+            if api in self.available_apis and api not in result:
+                result.append(api)
+        return result
+
+    # ─────────────────────────────────────────────────────────────
+    # ENSEMBLE
+    # ─────────────────────────────────────────────────────────────
+
+    def _ensemble_think(self, user_input: str, query_type: str) -> str:
+        apis = self._get_apis_for_query(query_type)
+        responses: Dict[str, str] = {}
+
+        for api in apis[:3]:
+            resp = self._call_api(api, user_input, use_persona=True, use_memory=True, allow_failover=False)
+            if resp:
+                responses[api] = resp
+
+        if not responses:
+            return self._fallback_response(user_input)
+
+        if len(responses) == 1:
+            return next(iter(responses.values()))
+
+        judge_prompt = self._build_judge_prompt(user_input, responses)
+        judge_result = self._call_api(
+            getattr(Config, "PRIMARY_BRAIN", "groq"),
+            judge_prompt,
+            use_persona=False,
+            use_memory=False,
+            allow_failover=False,
+        )
+
+        if not judge_result:
+            return next(iter(responses.values()))
+
+        judge_result = judge_result.strip()
+
+        if judge_result == "GENERATE_FRESH":
+            fresh = self._call_api(
+                getattr(Config, "PRIMARY_BRAIN", "groq"),
+                user_input,
+                use_persona=True,
+                use_memory=True,
+                allow_failover=False,
+            )
+            return fresh or next(iter(responses.values()))
+
+        if judge_result.startswith("NEEDS_POLISH:"):
+            candidate = judge_result[len("NEEDS_POLISH:"):].strip()
+            return self._polish(user_input, candidate)
+
+        if judge_result.startswith("WINNER:"):
+            return judge_result[len("WINNER:"):].strip()
+
+        return next(iter(responses.values()))
+
+    def _build_judge_prompt(self, question: str, responses: Dict[str, str]) -> str:
+        min_score = 6
+        polish_threshold = 8
+
+        blocks = []
+        for api, resp in responses.items():
+            blocks.append(f"[Response from {api.upper()}]\n{resp}")
+
+        responses_text = "\n\n".join(blocks)
+
+        return f"""A user asked:
+"{question}"
+
+Here are candidate responses from different models:
+
+{responses_text}
+
+Choose the strongest answer.
+
+Rules:
+- Prefer accuracy first, then clarity, then natural tone.
+- Penalize generic AI disclaimers.
+- Penalize robotic filler and unnecessary verbosity.
+- Prefer concrete answers over vague conversational padding.
+- If none are good enough, choose GENERATE_FRESH.
+
+Respond with exactly one of these formats:
+WINNER: <best response>
+NEEDS_POLISH: <response needing cleanup>
+GENERATE_FRESH
+
+Thresholds:
+- Below {min_score}/10 -> GENERATE_FRESH
+- {min_score} to {polish_threshold}/10 -> NEEDS_POLISH
+- Above {polish_threshold}/10 -> WINNER"""
+
+    def _polish(self, question: str, response: str) -> str:
+        polish_prompt = f"""A user asked:
+"{question}"
+
+This draft answer is usable but needs cleanup:
+"{response}"
+
+Rewrite it to sound natural, sharp, concise, and specific.
+Remove filler.
+Prefer concrete wording.
+Return only the improved response."""
+
+        polished = self._call_api(
+            getattr(Config, "PRIMARY_BRAIN", "groq"),
+            polish_prompt,
+            use_persona=False,
+            use_memory=False,
+        )
+        return polished or response
+
+    # ─────────────────────────────────────────────────────────────
+    # SINGLE MODE
+    # ─────────────────────────────────────────────────────────────
+
+    def _single_think(self, user_input: str, api: str) -> str:
+        response = self._call_api(api, user_input, use_persona=True, use_memory=True)
+        if response:
+            return response
+        return self._fallback_response(user_input)
+
+    # ─────────────────────────────────────────────────────────────
+    # PROMPT + MEMORY
+    # ─────────────────────────────────────────────────────────────
+
+    def _persona_text(self) -> str:
+        persona = getattr(Config, "IRIS_PERSONA", "")
+        voice_style = getattr(Config, "VOICE_RESPONSE_STYLE", "")
+
+        parts = [persona.strip()] if persona else []
+        if voice_style:
+            parts.append(str(voice_style).strip())
+
+        if not parts:
+            return (
+                "Your name is Iris. Speak naturally, directly, clearly, and specifically. "
+                "Never use AI disclaimers."
+            )
+
+        return "\n\n".join(part for part in parts if part)
+
+    def _memory_context(self, max_turns: int = 3) -> List[Dict[str, str]]:
+        raw_context = self.memory.get_context(max_turns)
+        filtered: List[Dict[str, str]] = []
+
+        generic_patterns = [
+            r"\bi(?: am|'m) (?:just )?(?:a )?(?:large )?language model\b",
+            r"\bas an ai\b",
+            r"\bi do not have feelings\b",
+            r"\bi don't have feelings\b",
+            r"\bi do not have emotions\b",
+            r"\bi don't have emotions\b",
+        ]
+
+        for item in raw_context:
+            role = item.get("role", "")
+            content = (item.get("content") or "").strip()
+            if not content:
+                continue
+
+            if role == "assistant":
+                if any(re.search(pattern, content, flags=re.IGNORECASE) for pattern in generic_patterns):
+                    continue
+
+            filtered.append({"role": role, "content": content})
+
+        return filtered[-max_turns * 2:]
+
+    def _build_user_prompt(self, user_input: str) -> str:
+        return user_input.strip()
+
+    # ─────────────────────────────────────────────────────────────
+    # POST-PROCESSING
+    # ─────────────────────────────────────────────────────────────
+
+    def _postprocess_response(self, text: str, user_input: str) -> str:
+        if not text:
+            return self._fallback_response(user_input)
+
+        clean = text.strip()
+
+        clean = re.sub(r"^\s*(Sure|Absolutely|Certainly|Of course)[.!]?\s*", "", clean, flags=re.IGNORECASE)
+        clean = re.sub(r"\bAs an AI[^.]*\.\s*", "", clean, flags=re.IGNORECASE)
+        clean = re.sub(r"\bI am an AI[^.]*\.\s*", "", clean, flags=re.IGNORECASE)
+        clean = re.sub(r"\bI(?:'m| am) happy to help[.!]?\s*", "", clean, flags=re.IGNORECASE)
+
+        short_mode = bool(getattr(Config, "VOICE_RESPONSE_STYLE", ""))
+        if short_mode:
+            clean = self._shorten_response(clean)
+
+        return clean.strip()
+
+    def _shorten_response(self, text: str) -> str:
+        max_sentences = int(getattr(Config, "VOICE_MAX_SENTENCES", 2))
+        sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+        sentences = [s.strip() for s in sentences if s.strip()]
+
+        if not sentences:
+            return text.strip()
+
+        return " ".join(sentences[:max_sentences]).strip()
+
+    # ─────────────────────────────────────────────────────────────
+    # API ROUTER
+    # ─────────────────────────────────────────────────────────────
+
+    def _call_api(
+        self,
+        api: str,
+        prompt: str,
+        use_persona: bool = True,
+        use_memory: bool = False,
+        allow_failover: bool = True,
+    ) -> Optional[str]:
+        try:
+            if api == "claude":
+                return self._call_claude(prompt, use_persona, use_memory)
+            if api == "gemini":
+                return self._call_gemini(prompt, use_persona, use_memory)
+            if api == "groq":
+                return self._call_groq(prompt, use_persona, use_memory)
+            if api == "perplexity":
+                return self._call_perplexity(prompt)
+        except Exception:
+            if allow_failover and api == getattr(Config, "PRIMARY_BRAIN", ""):
+                fallback = getattr(Config, "FALLBACK_BRAIN", "")
+                if fallback and fallback != api:
+                    return self._call_api(
+                        fallback,
+                        prompt,
+                        use_persona=use_persona,
+                        use_memory=use_memory,
+                        allow_failover=False,
+                    )
+        return None
+
+    def _call_groq(self, prompt: str, use_persona: bool, use_memory: bool) -> Optional[str]:
+        headers = {
+            "Authorization": f"Bearer {Config.GROQ_API_KEY}",
+            "Content-Type": "application/json",
+        }
+
+        messages = []
+        if use_persona:
+            messages.append({"role": "system", "content": self._persona_text()})
+        if use_memory:
+            messages.extend(self._memory_context(getattr(Config, "MAX_MEMORY_TURNS", 8)))
+        messages.append({"role": "user", "content": self._build_user_prompt(prompt)})
+
+        payload = {
+            "model": Config.GROQ_MODEL,
+            "messages": messages,
+            "temperature": 0.4,
+        }
+
+        response = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=45,
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data["choices"][0]["message"]["content"].strip()
+
+    def _call_gemini(self, prompt: str, use_persona: bool, use_memory: bool) -> Optional[str]:
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(api_key=Config.GEMINI_API_KEY)
+
+        messages = []
+        if use_memory:
+            for item in self._memory_context(getattr(Config, "MAX_MEMORY_TURNS", 8)):
+                role = "user" if item.get("role") == "user" else "model"
+                messages.append({"role": role, "parts": [{"text": item.get("content", "")}]})
+        messages.append({"role": "user", "parts": [{"text": prompt}]})
+
+        response = client.models.generate_content(
+            model=Config.GEMINI_MODEL,
+            contents=messages,
+            config=types.GenerateContentConfig(
+                system_instruction=self._persona_text() if use_persona else None,
+                max_output_tokens=500,
+                temperature=0.4,
+            ),
+        )
+        return getattr(response, "text", None)
+
+    def _call_claude(self, prompt: str, use_persona: bool, use_memory: bool) -> Optional[str]:
+        headers = {
+            "x-api-key": Config.CLAUDE_API_KEY,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+
+        system_text = self._persona_text() if use_persona else ""
+        memory_text = ""
+        if use_memory:
+            chunks = []
+            for item in self._memory_context(getattr(Config, "MAX_MEMORY_TURNS", 8)):
+                role = item.get("role", "user").upper()
+                chunks.append(f"{role}: {item.get('content', '')}")
+            memory_text = "\n".join(chunks)
+
+        final_prompt = prompt if not memory_text else f"{memory_text}\n\nUser: {prompt}"
+
+        payload = {
+            "model": Config.CLAUDE_MODEL,
+            "max_tokens": 700,
+            "temperature": 0.4,
+            "system": system_text,
+            "messages": [{"role": "user", "content": final_prompt}],
+        }
+
+        response = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers=headers,
+            json=payload,
+            timeout=45,
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data["content"][0]["text"].strip()
+
+    def _call_perplexity(self, prompt: str) -> Optional[str]:
+        headers = {
+            "Authorization": f"Bearer {Config.PERPLEXITY_API_KEY}",
+            "Content-Type": "application/json",
+        }
+
+        payload = {
+            "model": Config.PERPLEXITY_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.2,
+        }
+
+        response = requests.post(
+            "https://api.perplexity.ai/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=60,
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data["choices"][0]["message"]["content"].strip()
+
+    # ─────────────────────────────────────────────────────────────
+    # FALLBACK
+    # ─────────────────────────────────────────────────────────────
+
+    def _fallback_response(self, query: str) -> str:
+        lowered = (query or "").lower()
+
+        if any(word in lowered for word in ["hello", "hi", "hey", "you there"]):
+            return "Still here."
+
+        return "Something upstream failed. Check the API keys, packages, and network, then try again."

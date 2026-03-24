@@ -1,0 +1,10 @@
+google-generativeai
+groq
+anthropic
+requests
+python-dotenv
+rich
+edge-tts
+pygame
+SpeechRecognition
+PyAudio
