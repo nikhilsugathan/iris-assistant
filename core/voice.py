@@ -9,6 +9,7 @@ TTS  : Edge TTS with immediate single-chunk playback (no lag)
 import asyncio
 import io
 import os
+import re
 import tempfile
 import threading
 import time
@@ -242,15 +243,9 @@ class Voice:
         if not clean:
             return
 
+        self.stop_speaking()
         self._stop_flag.clear()
-        # Run TTS in background thread so main loop stays responsive
-        t = threading.Thread(
-            target=self._speak_blocking,
-            args=(clean,),
-            daemon=True
-        )
-        t.start()
-        t.join()  # Wait for speech but allow keyboard interrupt
+        self._speak_blocking(clean)
 
     def _speak_blocking(self, text: str):
         """Blocking speak — runs in thread."""
@@ -263,40 +258,44 @@ class Voice:
         import edge_tts
         import pygame
 
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
-            tmp = f.name
+        chunks = self._chunk_text(text)
+        if not chunks:
+            return
 
-        try:
-            # Add small pause at start so pygame buffer is ready
-            # Prevents first syllable being clipped
-            padded_text = "  " + text
+        for chunk in chunks:
+            if self._stop_flag.is_set():
+                break
 
-            communicate = edge_tts.Communicate(
-                text=padded_text,
-                voice=getattr(Config, "VOICE_NAME", "en-GB-SoniaNeural"),
-                rate=getattr(Config, "VOICE_RATE", "+18%"),
-            )
-            await communicate.save(tmp)
-
-            pygame.mixer.music.load(tmp)
-            pygame.mixer.music.set_volume(1.0)
-            pygame.mixer.music.play()
-
-            while pygame.mixer.music.get_busy():
-                if self._stop_flag.is_set():
-                    pygame.mixer.music.stop()
-                    break
-                await asyncio.sleep(0.03)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
+                tmp = f.name
 
             try:
-                pygame.mixer.music.unload()
-            except Exception:
-                pass
-        finally:
-            try:
-                os.unlink(tmp)
-            except Exception:
-                pass
+                communicate = edge_tts.Communicate(
+                    text=chunk,
+                    voice=getattr(Config, "VOICE_NAME", "en-GB-SoniaNeural"),
+                    rate=getattr(Config, "VOICE_RATE", "+8%"),
+                )
+                await communicate.save(tmp)
+
+                pygame.mixer.music.load(tmp)
+                pygame.mixer.music.set_volume(1.0)
+                pygame.mixer.music.play()
+
+                while pygame.mixer.music.get_busy():
+                    if self._stop_flag.is_set():
+                        pygame.mixer.music.stop()
+                        break
+                    await asyncio.sleep(getattr(Config, "PLAYBACK_POLL_SECONDS", 0.03))
+
+                try:
+                    pygame.mixer.music.unload()
+                except Exception:
+                    pass
+            finally:
+                try:
+                    os.unlink(tmp)
+                except Exception:
+                    pass
 
     def stop_speaking(self):
         self._stop_flag.set()
@@ -310,7 +309,6 @@ class Voice:
         self.stop_speaking()
 
     def _clean(self, text: str) -> str:
-        import re
         text = re.sub(r"```[\s\S]*?```", "code block", text)
         text = re.sub(r"[*_`#→|]", "", text)
         text = re.sub(r"https?://\S+", "link", text)
@@ -318,3 +316,27 @@ class Voice:
         if len(text) > 600:
             text = text[:600] + "..."
         return text
+
+    def _chunk_text(self, text: str) -> list[str]:
+        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s.strip()]
+        if not sentences:
+            return []
+
+        max_sentences = max(1, int(getattr(Config, "TTS_CHUNK_SENTENCES", 1)))
+        max_chars = max(80, int(getattr(Config, "TTS_MAX_CHARS_PER_CHUNK", 220)))
+
+        chunks = []
+        current = []
+
+        for sentence in sentences:
+            candidate = " ".join(current + [sentence]).strip()
+            if current and (len(current) >= max_sentences or len(candidate) > max_chars):
+                chunks.append(" ".join(current).strip())
+                current = [sentence]
+            else:
+                current.append(sentence)
+
+        if current:
+            chunks.append(" ".join(current).strip())
+
+        return chunks

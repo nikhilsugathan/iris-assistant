@@ -144,6 +144,12 @@ class Brain:
         self.memory.add("user", user_input)
         query_type = self._classify_query(user_input)
 
+        if getattr(Config, "USE_ENSEMBLE", False):
+            final = self._ensemble_think(user_input, query_type)
+            final = self._postprocess_response(final, user_input)
+            self.memory.add("assistant", final, source="ensemble")
+            return final
+
         # Web search → Perplexity
         if query_type == "web_search" and "perplexity" in self.available_apis:
             resp = self._call_api("perplexity", user_input, use_persona=False, use_memory=False)
@@ -438,7 +444,7 @@ Return only the improved response."""
         clean = re.sub(r"\bI am an AI[^.]*\.\s*", "", clean, flags=re.IGNORECASE)
         clean = re.sub(r"\bI(?:'m| am) happy to help[.!]?\s*", "", clean, flags=re.IGNORECASE)
 
-        short_mode = bool(getattr(Config, "VOICE_RESPONSE_STYLE", ""))
+        short_mode = bool(getattr(Config, "SHORT_VOICE_RESPONSES", False))
         if short_mode:
             clean = self._shorten_response(clean)
 

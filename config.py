@@ -15,9 +15,21 @@ class Config:
     PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY", "")
     CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY", "")
 
-    BRAIN_PRIORITY = ["groq", "claude", "gemini"]
-    PRIMARY_BRAIN = "groq"
-    FALLBACK_BRAIN = "claude"
+    OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    OLLAMA_MODEL_FAST = os.getenv("OLLAMA_MODEL_FAST", "phi3.5")
+    OLLAMA_MODEL_SMART = os.getenv("OLLAMA_MODEL_SMART", "llama3.1:8b")
+    OLLAMA_MODEL_DEEP = os.getenv("OLLAMA_MODEL_DEEP", "deepseek-r1:8b")
+
+    BRAIN_PRIORITY = [
+        "ollama_fast",
+        "ollama_smart",
+        "ollama_deep",
+        "groq",
+        "claude",
+        "gemini",
+    ]
+    PRIMARY_BRAIN = "ollama_fast"
+    FALLBACK_BRAIN = "ollama_smart"
 
     GEMINI_MODEL = "gemini-2.0-flash"
     GROQ_MODEL = "llama-3.3-70b-versatile"
@@ -64,6 +76,9 @@ class Config:
     STT_FALLBACK_LANGUAGE = "en-GB"
 
     PLAYBACK_POLL_SECONDS = 0.03
+    TTS_CHUNK_SENTENCES = 1
+    TTS_MAX_CHARS_PER_CHUNK = 220
+    TTS_PRELOAD_SILENCE_MS = 0
     ACK_ON_SLOW_THINK_MS = 400
     THINKING_ACKS = ["On it.", "Checking.", "Right.", "One sec."]
 

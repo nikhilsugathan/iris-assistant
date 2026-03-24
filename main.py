@@ -134,6 +134,20 @@ def handle_user_input(
             voice.speak(response)
             return response, False
 
+    if executor.waiting_for_clarification():
+        response = executor.handle_clarification_response(user_input)
+        if response is not None:
+            print_response("IRIS", response)
+            voice.speak(response)
+            return response, False
+
+    if executor.waiting_for_plan_choice():
+        response = executor.handle_plan_choice(user_input)
+        if response is not None:
+            print_response("IRIS", response)
+            voice.speak(response)
+            return response, False
+
     if executor.waiting_for_permission():
         with console.status("[cyan]Executing...[/cyan]", spinner="dots"):
             response = executor.handle_permission_response(user_input)

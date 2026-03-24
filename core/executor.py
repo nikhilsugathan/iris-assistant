@@ -69,6 +69,8 @@ class ActionExecutor:
         self.voice   = voice
         self.brain   = brain
         self.security = SecurityGuard(brain)
+        self.log_file    = "iris_actions.log"
+        self.is_windows  = platform.system() == "Windows"
         self.pending_action         = None
         self.pending_verdict        = None
         self.follow_up              = None
@@ -85,8 +87,6 @@ class ActionExecutor:
         if self._browser is None:
             self._browser = BrowserAutomation()
         return self._browser
-        self.log_file    = "iris_actions.log"
-        self.is_windows  = platform.system() == "Windows"
 
     # ─────────────────────────────────────────────────────────────
     # DETECTION: Does this input want an action?
@@ -112,10 +112,13 @@ class ActionExecutor:
     # ─────────────────────────────────────────────────────────────
 
     def waiting_for_permission(self) -> bool:
-        return self.pending_action is not None
+        return self.pending_action is not None and not self.waiting_for_clarification()
 
     def waiting_for_followup(self) -> bool:
         return self.follow_up is not None
+
+    def waiting_for_clarification(self) -> bool:
+        return bool(self.pending_action and self._clarification_options)
 
     def handle_followup_response(self, user_input: str) -> str:
         """Handle yes/no response to a post-execution follow-up question."""
@@ -143,6 +146,40 @@ class ActionExecutor:
             return "No problem."
 
         return None  # Unrecognised — fall through to brain
+
+    def handle_clarification_response(self, user_input: str) -> Optional[str]:
+        """Resolve a pending clarification, usually a file extension choice."""
+        if not self.waiting_for_clarification():
+            return None
+
+        text = (user_input or "").lower().strip()
+        if not text:
+            return "Say the extension you want, or cancel."
+
+        if any(word in text for word in NO_WORDS):
+            self.pending_action = None
+            self.pending_verdict = None
+            self._clarification_options = []
+            return "Cancelled."
+
+        selected_ext = None
+        for option in self._clarification_options:
+            normalized = option.lower().lstrip(".")
+            if option.lower() in text or normalized in text:
+                selected_ext = option
+                break
+
+        if not selected_ext:
+            opts_str = " or ".join(self._clarification_options)
+            return f"Say {opts_str}, or cancel."
+
+        plan = self.pending_action or {}
+        root, _ = os.path.splitext(plan.get("filename", ""))
+        plan["filename"] = f"{root}{selected_ext}"
+        self.pending_action = plan
+        self._clarification_options = []
+
+        return self._execute_pending()
 
     def handle_permission_response(self, user_input: str) -> str:
         """
@@ -478,7 +515,7 @@ Rules:
 Respond with ONLY the JSON object. No markdown, no explanation."""
 
         response = self.brain._call_api(
-            "groq", plan_prompt,
+            getattr(Config, "PRIMARY_BRAIN", "groq"), plan_prompt,
             use_persona=False, use_memory=False
         )
 
@@ -520,6 +557,8 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
     def handle_plan_choice(self, user_input: str) -> str:
         """User is choosing between Plan A, B, C."""
         plans = self.pending_plans
+        if not plans:
+            return None
 
         # Cancel
         if any(w in user_input.lower() for w in ["cancel", "never mind", "forget it", "no"]):
@@ -567,6 +606,10 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
         verdict = self.pending_verdict
         self.pending_action  = None
         self.pending_verdict = None
+        self._clarification_options = []
+
+        if not plan:
+            return "There isn't anything pending right now."
 
         action_type = plan.get("action_type")
         self._log(f"EXECUTE [{verdict}]: {plan.get('command') or plan.get('description','?')}")
@@ -665,7 +708,7 @@ Respond ONLY with valid JSON in this exact format:
 Respond with ONLY the JSON. No explanation."""
 
         response = self.brain._call_api(
-            "groq", prompt,
+            getattr(Config, "PRIMARY_BRAIN", "groq"), prompt,
             use_persona=False, use_memory=False
         )
 
@@ -929,5 +972,7 @@ Be specific and practical. No preamble."""
     def _log(self, message: str):
         """Log every action to file for transparency."""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if not getattr(self, "log_file", None):
+            self.log_file = "iris_actions.log"
         with open(self.log_file, "a", encoding="utf-8") as f:
             f.write(f"[{timestamp}] {message}\n")
