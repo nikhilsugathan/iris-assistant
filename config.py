@@ -93,8 +93,9 @@ class Config:
     VOICE_VOLUME = os.getenv("VOICE_VOLUME", "+0%")
     SPEAK_IN_TEXT_MODE = os.getenv("SPEAK_IN_TEXT_MODE", "false").lower() == "true"
 
-    WAKE_TIMEOUT = 8
-    WAKE_PHRASE_LIMIT = 10
+    WAKE_TIMEOUT = 4
+    WAKE_PHRASE_LIMIT = 6
+    VOICE_FOLLOWUP_TURNS = 4
 
     MIC_TIMEOUT = 4
     MIC_PHRASE_LIMIT = 8

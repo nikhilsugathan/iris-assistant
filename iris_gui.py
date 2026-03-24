@@ -112,6 +112,30 @@ class OrbWidget(QtWidgets.QWidget):
         painter.setBrush(QtGui.QBrush(halo))
         painter.drawEllipse(center, radius * 1.85, radius * 1.85)
 
+        frame_pen = QtGui.QPen(QtGui.QColor(247, 243, 234, 42), 1.1)
+        frame_pen.setJoinStyle(QtCore.Qt.RoundJoin)
+        painter.setPen(frame_pen)
+        painter.setBrush(QtCore.Qt.NoBrush)
+        frame_scales = (0.88, 1.12, 1.38, 1.70)
+        frame_polygons = []
+        for depth, frame_scale in enumerate(frame_scales):
+            rotation = self._phase * 0.55 + depth * 0.42
+            polygon = QtGui.QPolygonF()
+            for corner in range(4):
+                angle = rotation + corner * (math.pi / 2) + (math.pi / 4)
+                x = center.x() + math.cos(angle) * radius * frame_scale
+                y = center.y() + math.sin(angle) * radius * frame_scale * 0.62
+                polygon.append(QtCore.QPointF(x, y))
+            painter.drawPolygon(polygon)
+            frame_polygons.append(polygon)
+
+        if len(frame_polygons) >= 2:
+            lattice_pen = QtGui.QPen(QtGui.QColor(accent.red(), accent.green(), accent.blue(), 46), 1.0)
+            painter.setPen(lattice_pen)
+            for left, right in zip(frame_polygons, frame_polygons[1:]):
+                for idx in range(4):
+                    painter.drawLine(left[idx], right[idx])
+
         orbit_pen = QtGui.QPen(QtGui.QColor(accent.red(), accent.green(), accent.blue(), 110), 2.2)
         orbit_pen.setCapStyle(QtCore.Qt.RoundCap)
         painter.setPen(orbit_pen)
@@ -160,7 +184,6 @@ class OrbWidget(QtWidgets.QWidget):
 
 
 class FloatingOrbWindow(QtWidgets.QWidget):
-    request_listen = QtCore.Signal()
     request_dashboard = QtCore.Signal()
     position_changed = QtCore.Signal(int, int)
 
@@ -174,19 +197,19 @@ class FloatingOrbWindow(QtWidgets.QWidget):
             | QtCore.Qt.WindowStaysOnTopHint
         )
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
-        self.resize(250, 320)
+        self.resize(270, 290)
         self._drag_offset = None
 
         wrapper = QtWidgets.QVBoxLayout(self)
-        wrapper.setContentsMargins(10, 10, 10, 10)
+        wrapper.setContentsMargins(8, 8, 8, 8)
 
         frame = QtWidgets.QFrame()
         frame.setStyleSheet(
             """
             QFrame {
-                background: rgba(9, 19, 28, 0.72);
-                border: 1px solid rgba(255, 255, 255, 0.12);
-                border-radius: 28px;
+                background: rgba(7, 15, 24, 0.58);
+                border: 1px solid rgba(255, 255, 255, 0.10);
+                border-radius: 30px;
             }
             QLabel {
                 color: #F7F3EA;
@@ -196,28 +219,22 @@ class FloatingOrbWindow(QtWidgets.QWidget):
         wrapper.addWidget(frame)
 
         layout = QtWidgets.QVBoxLayout(frame)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(10)
-
-        title = QtWidgets.QLabel(Config.PUBLIC_NAME)
-        title.setStyleSheet("font-family: 'Bahnschrift SemiBold'; font-size: 15px;")
-        title.setAlignment(QtCore.Qt.AlignCenter)
-        layout.addWidget(title)
+        layout.setContentsMargins(18, 14, 18, 18)
+        layout.setSpacing(6)
 
         self.orb = OrbWidget(compact=True)
-        self.orb.activated.connect(self.request_listen.emit)
         self.orb.secondary_activated.connect(self.request_dashboard.emit)
         layout.addWidget(self.orb, alignment=QtCore.Qt.AlignCenter)
 
-        self.state_label = QtWidgets.QLabel("STANDING BY")
+        self.state_label = QtWidgets.QLabel("VOICE STANDBY")
         self.state_label.setAlignment(QtCore.Qt.AlignCenter)
-        self.state_label.setStyleSheet("color: rgba(247, 243, 234, 0.76); font-size: 11px; letter-spacing: 1px;")
+        self.state_label.setStyleSheet("color: rgba(247, 243, 234, 0.82); font-size: 11px; letter-spacing: 2px;")
         layout.addWidget(self.state_label)
 
-        hint = QtWidgets.QLabel("Click to listen. Double-click to open the dashboard.")
+        hint = QtWidgets.QLabel("Say Iris. Double-click for chat.")
         hint.setWordWrap(True)
         hint.setAlignment(QtCore.Qt.AlignCenter)
-        hint.setStyleSheet("color: rgba(247, 243, 234, 0.60); font-size: 11px;")
+        hint.setStyleSheet("color: rgba(247, 243, 234, 0.58); font-size: 11px;")
         layout.addWidget(hint)
 
     def set_state(self, state: str):
@@ -279,6 +296,101 @@ class EngineWorker(QtCore.QThread):
             self.failed.emit(str(exc))
 
 
+class VoiceStandbyWorker(QtCore.QThread):
+    event = QtCore.Signal(object)
+    failed = QtCore.Signal(str)
+
+    def __init__(self, engine: IRISEngine, should_pause):
+        super().__init__()
+        self.engine = engine
+        self.should_pause = should_pause
+
+    def run(self):
+        try:
+            if not getattr(self.engine.voice, "mic_ready", False):
+                self.event.emit(
+                    {
+                        "type": "feedback",
+                        "text": self.engine.voice.describe_last_listen_feedback(),
+                    }
+                )
+                return
+
+            follow_up_turns = max(1, int(getattr(Config, "VOICE_FOLLOWUP_TURNS", 4)))
+
+            while not self.isInterruptionRequested():
+                if self.should_pause():
+                    self.msleep(180)
+                    continue
+
+                heard_text = self.engine.voice.listen_for_wake()
+                if self.isInterruptionRequested():
+                    break
+                if not heard_text or not self.engine.contains_wake_word(heard_text):
+                    continue
+
+                stripped = self.engine.strip_wake_word(heard_text)
+                if stripped:
+                    if not self._handle_command(heard_text, stripped, follow_up_turns):
+                        break
+                    continue
+
+                ack = getattr(Config, "WAKE_ACKNOWLEDGEMENT", "I'm here.")
+                self.event.emit({"type": "ack", "text": ack})
+                self.engine.voice.speak(ack)
+
+                if self.isInterruptionRequested():
+                    break
+
+                command = self.engine.listen_for_voice_command()
+                if not command:
+                    if getattr(self.engine.voice, "last_listen_status", "") == "transcription_failed":
+                        self.event.emit(
+                            {
+                                "type": "feedback",
+                                "text": self.engine.voice.describe_last_listen_feedback(),
+                            }
+                        )
+                    continue
+
+                if not self._handle_command(command, command, follow_up_turns):
+                    break
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+    def _handle_command(self, display_text: str, command_text: str, follow_up_turns: int) -> bool:
+        self.event.emit({"type": "heard", "text": display_text})
+        result = self.engine.process_user_input(command_text, speak_response=False)
+        self.event.emit({"type": "result", "result": result})
+
+        if result.response:
+            self.engine.voice.speak(result.response)
+        if result.should_exit:
+            self.event.emit({"type": "shutdown"})
+            return False
+
+        for _ in range(follow_up_turns):
+            if self.isInterruptionRequested() or self.should_pause():
+                return True
+
+            follow_up = self.engine.listen_for_voice_command()
+            if not follow_up:
+                break
+            if self.engine.should_end_followup(follow_up):
+                break
+
+            self.event.emit({"type": "heard", "text": follow_up})
+            result = self.engine.process_user_input(follow_up, speak_response=False)
+            self.event.emit({"type": "result", "result": result})
+            if result.response:
+                self.engine.voice.speak(result.response)
+            if result.should_exit:
+                self.event.emit({"type": "shutdown"})
+                return False
+
+        return True
+
+
 class IrisWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
@@ -288,6 +400,7 @@ class IrisWindow(QtWidgets.QMainWindow):
         self.engine.voice.set_state_callback(self.signals.voice_state.emit)
         self.signals.voice_state.connect(self.on_voice_state)
         self.worker = None
+        self.wake_worker = None
         self.busy = False
         self._quitting = False
         self._sticky_footer = False
@@ -297,13 +410,14 @@ class IrisWindow(QtWidgets.QMainWindow):
         self.setWindowIcon(self.app_icon)
 
         self.setWindowTitle(Config.PUBLIC_NAME.upper())
-        self.resize(1380, 860)
-        self.setMinimumSize(1220, 760)
+        self.resize(720, 900)
+        self.setMinimumSize(560, 760)
 
         self._build_ui()
         self._setup_tray()
         self._setup_floating_orb()
         self.refresh_status()
+        self._start_voice_standby()
 
         if self.settings.value("floating_mode", False, type=bool):
             self.set_floating_mode(True, announce=False)
@@ -320,9 +434,6 @@ class IrisWindow(QtWidgets.QMainWindow):
         menu = QtWidgets.QMenu(self)
         show_action = menu.addAction("Show Dashboard")
         show_action.triggered.connect(self.show_dashboard)
-
-        listen_action = menu.addAction("Listen Now")
-        listen_action.triggered.connect(self.on_listen)
 
         self.floating_action = menu.addAction("Floating Orb Mode")
         self.floating_action.setCheckable(True)
@@ -342,10 +453,29 @@ class IrisWindow(QtWidgets.QMainWindow):
 
     def _setup_floating_orb(self):
         self.floating_window = FloatingOrbWindow(self.app_icon)
-        self.floating_window.request_listen.connect(self.on_listen)
         self.floating_window.request_dashboard.connect(self.show_dashboard)
         self.floating_window.position_changed.connect(self._save_floating_orb_position)
         self._restore_floating_orb_position()
+
+    def _start_voice_standby(self):
+        if self.wake_worker and self.wake_worker.isRunning():
+            return
+        self.wake_worker = VoiceStandbyWorker(self.engine, self._voice_standby_paused)
+        self.wake_worker.event.connect(self.on_standby_event)
+        self.wake_worker.failed.connect(self.on_worker_failed)
+        self.wake_worker.start()
+
+    def _stop_voice_standby(self):
+        if not self.wake_worker:
+            return
+        self.wake_worker.requestInterruption()
+        if not self.wake_worker.wait(5500):
+            self.wake_worker.terminate()
+            self.wake_worker.wait(500)
+        self.wake_worker = None
+
+    def _voice_standby_paused(self):
+        return bool(self.busy or self._quitting)
 
     def _build_ui(self):
         self.setStyleSheet(
@@ -356,18 +486,18 @@ class IrisWindow(QtWidgets.QMainWindow):
             }
             QLabel#Title {
                 font-family: 'Bahnschrift SemiBold';
-                font-size: 34px;
-                color: #10202A;
+                font-size: 30px;
+                color: #F7F3EA;
             }
             QLabel#SubTitle {
-                font-size: 13px;
-                color: rgba(16, 32, 42, 0.82);
+                font-size: 12px;
+                color: rgba(247, 243, 234, 0.62);
                 letter-spacing: 1px;
             }
             QFrame#GlassPanel {
-                background: rgba(9, 19, 28, 0.62);
+                background: rgba(7, 16, 24, 0.72);
                 border: 1px solid rgba(255, 255, 255, 0.10);
-                border-radius: 28px;
+                border-radius: 34px;
             }
             QTextBrowser {
                 background: transparent;
@@ -398,38 +528,21 @@ class IrisWindow(QtWidgets.QMainWindow):
             QPushButton#PrimaryButton:hover {
                 background: #E8B776;
             }
-            QPushButton#SecondaryButton {
-                background: rgba(255, 255, 255, 0.10);
-                color: #F7F3EA;
-                border: 1px solid rgba(255, 255, 255, 0.12);
-            }
-            QPushButton#SecondaryButton:hover {
-                background: rgba(255, 255, 255, 0.16);
-            }
             QLabel#Chip {
-                border-radius: 12px;
-                padding: 6px 10px;
-                background: rgba(255, 255, 255, 0.12);
+                border-radius: 13px;
+                padding: 7px 12px;
+                background: rgba(255, 255, 255, 0.09);
                 color: #F7F3EA;
                 font-size: 11px;
             }
             QLabel#StatePill {
-                border-radius: 12px;
-                padding: 8px 14px;
-                background: rgba(217, 162, 95, 0.22);
-                color: #F6E2C2;
+                border-radius: 14px;
+                padding: 8px 16px;
+                background: rgba(244, 176, 102, 0.14);
+                color: #F7E5C8;
                 font-family: 'Bahnschrift SemiBold';
                 font-size: 11px;
-                letter-spacing: 1px;
-            }
-            QCheckBox {
-                spacing: 8px;
-                color: #F7F3EA;
-                font-size: 12px;
-            }
-            QCheckBox::indicator {
-                width: 18px;
-                height: 18px;
+                letter-spacing: 2px;
             }
             """
         )
@@ -437,124 +550,74 @@ class IrisWindow(QtWidgets.QMainWindow):
         backdrop = BackdropWidget()
         self.setCentralWidget(backdrop)
 
-        root = QtWidgets.QHBoxLayout(backdrop)
+        root = QtWidgets.QVBoxLayout(backdrop)
         root.setContentsMargins(28, 28, 28, 28)
-        root.setSpacing(22)
+        root.setSpacing(0)
 
-        left_panel = QtWidgets.QFrame()
-        left_panel.setObjectName("GlassPanel")
-        left_layout = QtWidgets.QVBoxLayout(left_panel)
-        left_layout.setContentsMargins(30, 30, 30, 30)
-        left_layout.setSpacing(18)
+        panel = QtWidgets.QFrame()
+        panel.setObjectName("GlassPanel")
+        layout = QtWidgets.QVBoxLayout(panel)
+        layout.setContentsMargins(28, 24, 28, 24)
+        layout.setSpacing(18)
 
         title = QtWidgets.QLabel(Config.PUBLIC_NAME.upper())
         title.setObjectName("Title")
-        left_layout.addWidget(title)
+        title.setAlignment(QtCore.Qt.AlignCenter)
+        layout.addWidget(title)
 
-        subtitle = QtWidgets.QLabel(Config.SYSTEM_MOTTO.upper())
+        subtitle = QtWidgets.QLabel("VOICE STANDBY ONLINE")
         subtitle.setObjectName("SubTitle")
-        left_layout.addWidget(subtitle)
+        subtitle.setAlignment(QtCore.Qt.AlignCenter)
+        layout.addWidget(subtitle)
 
-        self.state_pill = QtWidgets.QLabel("IDLE")
-        self.state_pill.setObjectName("StatePill")
-        self.state_pill.setAlignment(QtCore.Qt.AlignCenter)
-        left_layout.addWidget(self.state_pill, alignment=QtCore.Qt.AlignLeft)
+        self.mode_label = QtWidgets.QLabel("SAY IRIS ANY TIME")
+        self.mode_label.setObjectName("Chip")
+        self.mode_label.setAlignment(QtCore.Qt.AlignCenter)
+        layout.addWidget(self.mode_label, alignment=QtCore.Qt.AlignCenter)
 
         self.orb = OrbWidget()
-        self.orb.activated.connect(self.on_listen)
         self.orb.secondary_activated.connect(self.open_floating_orb)
-        left_layout.addWidget(self.orb, alignment=QtCore.Qt.AlignCenter, stretch=1)
+        layout.addWidget(self.orb, alignment=QtCore.Qt.AlignCenter)
 
-        controls_row = QtWidgets.QHBoxLayout()
-        controls_row.setSpacing(10)
+        self.state_pill = QtWidgets.QLabel("VOICE STANDBY")
+        self.state_pill.setObjectName("StatePill")
+        self.state_pill.setAlignment(QtCore.Qt.AlignCenter)
+        layout.addWidget(self.state_pill, alignment=QtCore.Qt.AlignCenter)
 
-        self.float_button = QtWidgets.QPushButton("Floating Orb")
-        self.float_button.setObjectName("SecondaryButton")
-        self.float_button.clicked.connect(self.toggle_floating_orb)
-        controls_row.addWidget(self.float_button)
-
-        self.hide_button = QtWidgets.QPushButton("Hide To Tray")
-        self.hide_button.setObjectName("SecondaryButton")
-        self.hide_button.clicked.connect(self.hide_to_tray)
-        controls_row.addWidget(self.hide_button)
-        left_layout.addLayout(controls_row)
-
-        preferences = QtWidgets.QHBoxLayout()
-        preferences.setSpacing(18)
-        self.startup_checkbox = QtWidgets.QCheckBox("Launch at sign-in")
-        self.startup_checkbox.setChecked(self._startup_enabled)
-        self.startup_checkbox.toggled.connect(self.set_launch_at_login)
-        preferences.addWidget(self.startup_checkbox)
-        preferences.addStretch(1)
-        left_layout.addLayout(preferences)
-
-        self.status_stack = QtWidgets.QVBoxLayout()
-        self.status_stack.setSpacing(10)
-        self.brain_chip = QtWidgets.QLabel()
-        self.brain_chip.setObjectName("Chip")
-        self.core_chip = QtWidgets.QLabel()
-        self.core_chip.setObjectName("Chip")
-        self.self_model_chip = QtWidgets.QLabel()
-        self.self_model_chip.setObjectName("Chip")
-        self.memory_chip = QtWidgets.QLabel()
-        self.memory_chip.setObjectName("Chip")
-        for chip in (self.brain_chip, self.core_chip, self.self_model_chip, self.memory_chip):
-            chip.setWordWrap(True)
-            self.status_stack.addWidget(chip)
-        left_layout.addLayout(self.status_stack)
-        left_layout.addStretch(1)
-
-        right_panel = QtWidgets.QFrame()
-        right_panel.setObjectName("GlassPanel")
-        right_layout = QtWidgets.QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(30, 30, 30, 30)
-        right_layout.setSpacing(18)
-
-        header_row = QtWidgets.QHBoxLayout()
-        header_row.setSpacing(12)
-        conversation_title = QtWidgets.QLabel("Conversation")
-        conversation_title.setStyleSheet("font-family: 'Bahnschrift SemiBold'; font-size: 28px; color: #F7F3EA;")
-        header_row.addWidget(conversation_title)
-        header_row.addStretch(1)
-
-        self.mode_label = QtWidgets.QLabel(f"{Config.PUBLIC_NAME.upper()} ACTIVE")
-        self.mode_label.setObjectName("Chip")
-        header_row.addWidget(self.mode_label)
-        right_layout.addLayout(header_row)
+        orbit_hint = QtWidgets.QLabel("Double-click the orb to float it. Voice standby stays active even when hidden.")
+        orbit_hint.setWordWrap(True)
+        orbit_hint.setAlignment(QtCore.Qt.AlignCenter)
+        orbit_hint.setStyleSheet("color: rgba(247, 243, 234, 0.58); font-size: 12px;")
+        layout.addWidget(orbit_hint)
 
         self.transcript = QtWidgets.QTextBrowser()
         self.transcript.setOpenExternalLinks(False)
         self.transcript.document().setDocumentMargin(18)
-        right_layout.addWidget(self.transcript, stretch=1)
+        layout.addWidget(self.transcript, stretch=1)
 
         input_row = QtWidgets.QHBoxLayout()
         input_row.setSpacing(12)
         self.input = QtWidgets.QLineEdit()
-        self.input.setPlaceholderText("Speak your mind, or type it here...")
+        self.input.setPlaceholderText("Type to chat while voice standby stays active...")
         self.input.returnPressed.connect(self.on_send)
         input_row.addWidget(self.input, stretch=1)
-
-        self.listen_button = QtWidgets.QPushButton("Listen")
-        self.listen_button.setObjectName("SecondaryButton")
-        self.listen_button.clicked.connect(self.on_listen)
-        input_row.addWidget(self.listen_button)
 
         self.send_button = QtWidgets.QPushButton("Send")
         self.send_button.setObjectName("PrimaryButton")
         self.send_button.clicked.connect(self.on_send)
         input_row.addWidget(self.send_button)
-        right_layout.addLayout(input_row)
+        layout.addLayout(input_row)
 
-        self.footer = QtWidgets.QLabel("Desktop shell online.")
+        self.footer = QtWidgets.QLabel("Voice standby online. Say Iris at any time.")
         self.footer.setStyleSheet("color: rgba(247, 243, 234, 0.72); font-size: 12px;")
-        right_layout.addWidget(self.footer)
+        self.footer.setAlignment(QtCore.Qt.AlignCenter)
+        layout.addWidget(self.footer)
 
-        root.addWidget(left_panel, 4)
-        root.addWidget(right_panel, 6)
+        root.addWidget(panel)
 
         self.append_message(
             "SYSTEM",
-            f"{Config.PUBLIC_NAME} is online.",
+            f"{Config.PUBLIC_NAME} is online. Say Iris any time, even while minimized or floating.",
             "system",
         )
 
@@ -587,8 +650,8 @@ class IrisWindow(QtWidgets.QMainWindow):
         self.floating_window.set_state(state)
         self.state_pill.setText(state.upper())
         footer_map = {
-            "idle": "Standing by.",
-            "listening": "Listening for your voice.",
+            "idle": "Voice standby online. Say Iris at any time.",
+            "listening": "Listening for 'Iris' or your command.",
             "speaking": "Iris is speaking.",
         }
         if state == "listening" or not self._sticky_footer:
@@ -599,7 +662,6 @@ class IrisWindow(QtWidgets.QMainWindow):
     def set_busy(self, busy: bool, footer: str = ""):
         self.busy = busy
         self.send_button.setEnabled(not busy)
-        self.listen_button.setEnabled(not busy)
         self.input.setEnabled(not busy)
         if footer:
             self.footer.setText(footer)
@@ -623,7 +685,7 @@ class IrisWindow(QtWidgets.QMainWindow):
         self._sticky_footer = False
         self.orb.set_state("listening")
         self.state_pill.setText("LISTENING")
-        self.start_worker(mode="listen", footer="Listening for a command...")
+        self.footer.setText("Voice standby is already active. Say Iris to speak.")
 
     def start_worker(self, mode: str, text: str = "", footer: str = ""):
         self.set_busy(True, footer)
@@ -642,17 +704,8 @@ class IrisWindow(QtWidgets.QMainWindow):
             self.append_message("You", captured, "user")
 
         if result and result.response:
-            self._sticky_footer = False
-            kind = "assistant" if "Diagnostics" not in result.label else "system"
-            self.append_message(result.label, result.response, kind)
-            self.mode_label.setText(f"{result.mode.upper()} MODE")
-            self.refresh_status()
-            self.engine.voice.speak_background(result.response)
-            if self.tray and not self.isVisible():
-                snippet = result.response if len(result.response) < 180 else result.response[:177] + "..."
-                self.tray.showMessage(result.label, snippet, self.app_icon, 7000)
+            self._display_result(result, speak=True)
             if result.should_exit:
-                QtCore.QTimer.singleShot(1500, self.quit_app)
                 return
 
         if mode == "listen" and not captured:
@@ -665,6 +718,56 @@ class IrisWindow(QtWidgets.QMainWindow):
                 self.tray.showMessage(Config.PUBLIC_NAME, feedback, self.app_icon, 5000)
             if getattr(self.engine.voice, "audio_ready", False):
                 self.engine.voice.speak_background(spoken_feedback)
+
+    def on_standby_event(self, payload):
+        event_type = payload.get("type")
+
+        if event_type == "ack":
+            self._sticky_footer = False
+            text = payload.get("text", getattr(Config, "WAKE_ACKNOWLEDGEMENT", "I'm here."))
+            self.append_message(Config.PUBLIC_NAME, text, "assistant")
+            self.mode_label.setText("VOICE STANDBY")
+            self.footer.setText("Listening for your command...")
+            return
+
+        if event_type == "heard":
+            text = payload.get("text", "")
+            if text:
+                self.append_message("You", text, "user")
+                self.mode_label.setText("VOICE MODE")
+            return
+
+        if event_type == "result":
+            result = payload.get("result")
+            if result and result.response:
+                self._display_result(result, speak=False)
+            return
+
+        if event_type == "feedback":
+            feedback = payload.get("text", "I didn't catch that.")
+            self._sticky_footer = True
+            self.append_message("System", feedback, "system")
+            self.footer.setText(feedback)
+            if self.tray and not self.isVisible():
+                self.tray.showMessage(Config.PUBLIC_NAME, feedback, self.app_icon, 5000)
+            return
+
+        if event_type == "shutdown":
+            QtCore.QTimer.singleShot(200, self.quit_app)
+
+    def _display_result(self, result, speak: bool):
+        self._sticky_footer = False
+        kind = "assistant" if "Diagnostics" not in result.label else "system"
+        self.append_message(result.label, result.response, kind)
+        self.mode_label.setText(f"{result.mode.upper()} MODE")
+        self.refresh_status()
+        if speak:
+            self.engine.voice.speak_background(result.response)
+        if self.tray and not self.isVisible():
+            snippet = result.response if len(result.response) < 180 else result.response[:177] + "..."
+            self.tray.showMessage(result.label, snippet, self.app_icon, 7000)
+        if result.should_exit:
+            QtCore.QTimer.singleShot(1500, self.quit_app)
 
     def on_worker_failed(self, message: str):
         self._sticky_footer = True
@@ -686,14 +789,8 @@ class IrisWindow(QtWidgets.QMainWindow):
                 self.footer.setText("Standing by.")
 
     def refresh_status(self):
-        status = self.engine.status_snapshot()
-        self.brain_chip.setText(f"Brains: {status['primary_brain']} -> {status['fallback_brain']}")
-        self.core_chip.setText("Core: adaptive council online")
-        self.self_model_chip.setText(f"Self model: {status['self_model']}")
-        startup_text = "on" if self._startup_enabled else "off"
-        self.memory_chip.setText(f"Memory: {status['memory']} | Startup: {startup_text}")
-        if hasattr(self, "float_button"):
-            self.float_button.setText("Dashboard Mode" if self.floating_window.isVisible() else "Floating Orb")
+        if self.floating_window.isVisible():
+            self.mode_label.setText("FLOATING ORB")
 
     def _restore_floating_orb_position(self):
         x = self.settings.value("floating_orb_x", None, type=int)
@@ -846,6 +943,7 @@ class IrisWindow(QtWidgets.QMainWindow):
 
     def quit_app(self):
         self._quitting = True
+        self._stop_voice_standby()
         if self.tray:
             self.tray.hide()
         self.floating_window.hide()
@@ -857,6 +955,7 @@ class IrisWindow(QtWidgets.QMainWindow):
             event.ignore()
             return
         try:
+            self._stop_voice_standby()
             self.engine.shutdown()
         finally:
             event.accept()
