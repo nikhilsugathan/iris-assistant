@@ -4,9 +4,36 @@ IRIS Configuration
 """
 
 import os
+import sys
+from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+
+def _load_environment() -> None:
+    candidates = []
+
+    if getattr(sys, "frozen", False):
+        candidates.append(Path(sys.executable).resolve().parent / ".env")
+
+    candidates.append(Path(__file__).resolve().parent / ".env")
+    candidates.append(Path.cwd() / ".env")
+
+    loaded = False
+    seen = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        if candidate.exists():
+            load_dotenv(candidate, override=False)
+            loaded = True
+
+    if not loaded:
+        load_dotenv()
+
+
+_load_environment()
 
 
 class Config:
@@ -51,7 +78,7 @@ class Config:
     MEMORY_FILE = "iris_memory.json"
 
     WAKE_WORDS = ["iris"]
-    WAKE_ACKNOWLEDGEMENT = "Yes?"
+    WAKE_ACKNOWLEDGEMENT = "I'm here."
     WAKE_FUZZY_THRESHOLD = 0.75
     SHOW_WAKE_DEBUG = True
 
@@ -60,8 +87,10 @@ class Config:
     # PREFERRED_MIC_NAME = "Headset"
     PREFERRED_MIC_NAME = os.getenv("PREFERRED_MIC_NAME", "").strip()
 
-    VOICE_NAME = os.getenv("VOICE_NAME", "en-GB-SoniaNeural")
-    VOICE_RATE = os.getenv("VOICE_RATE", "+8%")  # Slightly slower = cleaner first word
+    VOICE_NAME = os.getenv("VOICE_NAME", "en-US-JennyNeural")
+    VOICE_RATE = os.getenv("VOICE_RATE", "+4%")
+    VOICE_PITCH = os.getenv("VOICE_PITCH", "+0Hz")
+    VOICE_VOLUME = os.getenv("VOICE_VOLUME", "+0%")
     SPEAK_IN_TEXT_MODE = os.getenv("SPEAK_IN_TEXT_MODE", "false").lower() == "true"
 
     WAKE_TIMEOUT = 8
@@ -90,7 +119,7 @@ class Config:
     TTS_MAX_CHARS_PER_CHUNK = 220
     TTS_PRELOAD_SILENCE_MS = 0
     ACK_ON_SLOW_THINK_MS = 400
-    THINKING_ACKS = ["On it.", "Checking.", "Right.", "One sec."]
+    THINKING_ACKS = ["On it.", "Let me think.", "Checking now.", "Give me a second."]
 
     WEB_KEYWORDS = [
         "today", "latest", "news", "current", "price", "weather",
@@ -131,7 +160,7 @@ Rules:
 - If the user asks for an action, state the action clearly.
 - If the user asks a question, answer first and only then ask a necessary follow-up.
 - Avoid filler like "great question", "absolutely", "I'd be happy to help", or "what do you need help with?" unless it is rewritten more directly.
-- Tone: calm, crisp, slightly formidable, mildly witty, but never fluffy."""
+- Tone: calm, crisp, warm under pressure, quietly witty, and never fluffy."""
 
     VOICE_RESPONSE_STYLE = """The user is speaking live.
 Reply like spoken English.
@@ -141,6 +170,7 @@ If the user is vague, ask one tight follow-up.
 Good examples:
 - "Yes. What's the task?"
 - "Done. Notepad is open."
+- "I'm on it."
 - "I can help with that. Which part is failing?"
 Bad examples:
 - "What do you need help with?"

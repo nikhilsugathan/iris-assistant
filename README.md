@@ -41,12 +41,12 @@ On every push to `main` or `codex/*`, GitHub will build a Windows desktop artifa
 
 For a local build:
 ```bash
-py -3 -m PyInstaller --noconfirm --clean --windowed --onedir --name IrisAletheia --collect-all PySide6 --hidden-import edge_tts --hidden-import pygame --hidden-import speech_recognition iris_gui.py
+py -3 -m PyInstaller --noconfirm --clean --windowed --onefile --name IrisAletheiaPortable --collect-all PySide6 --hidden-import edge_tts --hidden-import pygame --hidden-import speech_recognition iris_gui.py
 ```
 
-The local packaged app is generated in:
+The easiest local packaged app is generated in:
 ```bash
-dist\IrisAletheia\IrisAletheia.exe
+dist\IrisAletheiaPortable.exe
 ```
 
 ## Notes

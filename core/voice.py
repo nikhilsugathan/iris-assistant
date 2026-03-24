@@ -303,8 +303,10 @@ class Voice:
             try:
                 communicate = edge_tts.Communicate(
                     text=chunk,
-                    voice=getattr(Config, "VOICE_NAME", "en-GB-SoniaNeural"),
-                    rate=getattr(Config, "VOICE_RATE", "+8%"),
+                    voice=getattr(Config, "VOICE_NAME", "en-US-JennyNeural"),
+                    rate=getattr(Config, "VOICE_RATE", "+4%"),
+                    pitch=getattr(Config, "VOICE_PITCH", "+0Hz"),
+                    volume=getattr(Config, "VOICE_VOLUME", "+0%"),
                 )
                 await communicate.save(tmp)
 
