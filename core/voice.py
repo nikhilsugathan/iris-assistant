@@ -207,9 +207,7 @@ class Voice:
         if wake_mode:
             text = self._transcribe_google(audio)
         else:
-            text = self._transcribe_groq(audio)
-            if not text:
-                text = self._transcribe_google(audio)
+            text = self._transcribe_command(audio)
 
         if text:
             self.last_listen_status = "heard"
@@ -254,6 +252,18 @@ class Voice:
             return "I heard you, but I couldn't make that out."
         return "I didn't catch that."
 
+    def _transcribe_command(self, audio) -> str:
+        priority = getattr(Config, "STT_PRIORITY", "google_first").lower().strip()
+        order = [self._transcribe_google, self._transcribe_groq]
+        if priority == "groq_first":
+            order = [self._transcribe_groq, self._transcribe_google]
+
+        for recognizer in order:
+            text = recognizer(audio)
+            if text:
+                return text
+        return ""
+
     def _transcribe_groq(self, audio) -> str:
         """Use Groq Whisper API — fastest and most accurate."""
         try:
@@ -284,15 +294,27 @@ class Voice:
 
     def _transcribe_google(self, audio) -> str:
         """Fallback: Google STT."""
-        try:
-            import speech_recognition as sr
-            text = self.recognizer.recognize_google(
-                audio,
-                language=getattr(Config, "STT_LANGUAGE", "en-US"),
-            ).strip()
-            return text
-        except Exception:
-            return ""
+        import speech_recognition as sr
+
+        languages = [
+            getattr(Config, "STT_LANGUAGE", "en-US"),
+            getattr(Config, "STT_FALLBACK_LANGUAGE", "en-IN"),
+            getattr(Config, "STT_SECONDARY_FALLBACK_LANGUAGE", "en-GB"),
+        ]
+
+        tried = set()
+        for language in languages:
+            language = (language or "").strip()
+            if not language or language in tried:
+                continue
+            tried.add(language)
+            try:
+                text = self.recognizer.recognize_google(audio, language=language).strip()
+                if text:
+                    return text
+            except Exception:
+                continue
+        return ""
 
     # ─────────────────────────────────────────────────────────────
     # SPEAK — Edge TTS, immediate playback, no chunking lag
@@ -382,6 +404,11 @@ class Voice:
 
     def stop(self):
         self.stop_speaking()
+
+    def speak_background(self, text: str):
+        thread = threading.Thread(target=self.speak, args=(text,), daemon=True)
+        thread.start()
+        return thread
 
     def _prime_audio_output(self):
         """Warm the output device once so the first spoken word is not clipped."""

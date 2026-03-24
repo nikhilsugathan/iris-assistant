@@ -4,7 +4,6 @@ import html
 import math
 import os
 import sys
-import threading
 from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -270,11 +269,11 @@ class EngineWorker(QtCore.QThread):
                         }
                     )
                     return
-                result = self.engine.process_user_input(captured)
+                result = self.engine.process_user_input(captured, speak_response=False)
                 self.completed.emit({"captured": captured, "result": result, "mode": "listen"})
                 return
 
-            result = self.engine.process_user_input(self.text)
+            result = self.engine.process_user_input(self.text, speak_response=False)
             self.completed.emit({"captured": self.text, "result": result, "mode": "process"})
         except Exception as exc:
             self.failed.emit(str(exc))
@@ -648,11 +647,12 @@ class IrisWindow(QtWidgets.QMainWindow):
             self.append_message(result.label, result.response, kind)
             self.mode_label.setText(f"{result.mode.upper()} MODE")
             self.refresh_status()
+            self.engine.voice.speak_background(result.response)
             if self.tray and not self.isVisible():
                 snippet = result.response if len(result.response) < 180 else result.response[:177] + "..."
                 self.tray.showMessage(result.label, snippet, self.app_icon, 7000)
             if result.should_exit:
-                QtCore.QTimer.singleShot(250, self.quit_app)
+                QtCore.QTimer.singleShot(1500, self.quit_app)
                 return
 
         if mode == "listen" and not captured:
@@ -664,11 +664,7 @@ class IrisWindow(QtWidgets.QMainWindow):
             if self.tray and not self.isVisible():
                 self.tray.showMessage(Config.PUBLIC_NAME, feedback, self.app_icon, 5000)
             if getattr(self.engine.voice, "audio_ready", False):
-                threading.Thread(
-                    target=self.engine.voice.speak,
-                    args=(spoken_feedback,),
-                    daemon=True,
-                ).start()
+                self.engine.voice.speak_background(spoken_feedback)
 
     def on_worker_failed(self, message: str):
         self._sticky_footer = True

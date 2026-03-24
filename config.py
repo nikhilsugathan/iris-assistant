@@ -88,7 +88,7 @@ class Config:
     PREFERRED_MIC_NAME = os.getenv("PREFERRED_MIC_NAME", "").strip()
 
     VOICE_NAME = os.getenv("VOICE_NAME", "en-US-JennyNeural")
-    VOICE_RATE = os.getenv("VOICE_RATE", "+4%")
+    VOICE_RATE = os.getenv("VOICE_RATE", "+6%")
     VOICE_PITCH = os.getenv("VOICE_PITCH", "+0Hz")
     VOICE_VOLUME = os.getenv("VOICE_VOLUME", "+0%")
     SPEAK_IN_TEXT_MODE = os.getenv("SPEAK_IN_TEXT_MODE", "false").lower() == "true"
@@ -96,24 +96,25 @@ class Config:
     WAKE_TIMEOUT = 8
     WAKE_PHRASE_LIMIT = 10
 
-    MIC_TIMEOUT = 6
-    MIC_PHRASE_LIMIT = 10
+    MIC_TIMEOUT = 4
+    MIC_PHRASE_LIMIT = 8
     MIC_CALIBRATION_SECONDS = 2.0
     MIC_ENERGY_THRESHOLD = 60
-    MIC_PAUSE_THRESHOLD = 0.5
+    MIC_PAUSE_THRESHOLD = 0.4
     MIC_PHRASE_THRESHOLD = 0.2
-    MIC_NON_SPEAKING_DURATION = 0.3
+    MIC_NON_SPEAKING_DURATION = 0.2
     MIC_SAMPLE_RATE = 16000
     MIC_CHUNK_SIZE = 1024
 
-    # Use UK English first, then Indian English as fallback
+    STT_PRIORITY = os.getenv("STT_PRIORITY", "google_first")
     STT_LANGUAGE = "en-US"
-    STT_FALLBACK_LANGUAGE = "en-GB"
+    STT_FALLBACK_LANGUAGE = "en-IN"
+    STT_SECONDARY_FALLBACK_LANGUAGE = "en-GB"
 
     PLAYBACK_POLL_SECONDS = 0.03
     AUDIO_SAMPLE_RATE = 24000
     AUDIO_CHANNELS = 2
-    AUDIO_BUFFER_SIZE = 512
+    AUDIO_BUFFER_SIZE = 256
     AUDIO_WARMUP_MS = 120
     TTS_CHUNK_SENTENCES = 1
     TTS_MAX_CHARS_PER_CHUNK = 220
