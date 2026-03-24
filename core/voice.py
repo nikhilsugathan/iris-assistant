@@ -43,7 +43,7 @@ class Voice:
             import speech_recognition as sr
 
             self.recognizer = sr.Recognizer()
-            self.recognizer.dynamic_energy_threshold = True
+            self.recognizer.dynamic_energy_threshold = False
             self.recognizer.energy_threshold = getattr(Config, "MIC_ENERGY_THRESHOLD", 200)
             self.recognizer.pause_threshold = getattr(Config, "MIC_PAUSE_THRESHOLD", 0.9)
             self.recognizer.phrase_threshold = getattr(Config, "MIC_PHRASE_THRESHOLD", 0.2)
@@ -114,8 +114,6 @@ class Voice:
         return input("You: ")
 
     def listen_for_wake(self) -> str:
-        # Brief cooldown to prevent mic picking up TTS echo
-        time.sleep(0.3)
         if self.text_mode:
             return self.listen_text()
 
@@ -126,8 +124,8 @@ class Voice:
             return ""
 
         return self._listen_voice(
-            timeout=getattr(Config, "WAKE_TIMEOUT", 3),
-            phrase_time_limit=getattr(Config, "WAKE_PHRASE_LIMIT", 4),
+            timeout=getattr(Config, "WAKE_TIMEOUT", 8),
+            phrase_time_limit=getattr(Config, "WAKE_PHRASE_LIMIT", 10),
             show_listening=False,
             unknown_msg=False,
             wake_debug=True,
