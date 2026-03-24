@@ -114,6 +114,8 @@ class Voice:
         return input("You: ")
 
     def listen_for_wake(self) -> str:
+        # Brief cooldown to prevent mic picking up TTS echo
+        time.sleep(0.3)
         if self.text_mode:
             return self.listen_text()
 

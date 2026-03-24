@@ -15,9 +15,9 @@ class Config:
     PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY", "")
     CLAUDE_API_KEY = os.getenv("CLAUDE_API_KEY", "")
 
-    BRAIN_PRIORITY = ["claude", "groq", "gemini"]
+    BRAIN_PRIORITY = ["groq", "claude", "gemini"]
     PRIMARY_BRAIN = "groq"
-    FALLBACK_BRAIN = "gemini"
+    FALLBACK_BRAIN = "claude"
 
     GEMINI_MODEL = "gemini-2.0-flash"
     GROQ_MODEL = "llama-3.3-70b-versatile"
@@ -27,14 +27,14 @@ class Config:
     USE_ENSEMBLE = False
     LIVE_VOICE_MODE = True
     SHORT_VOICE_RESPONSES = True
-    VOICE_MAX_SENTENCES = 2
+    VOICE_MAX_SENTENCES = 1
     MAX_MEMORY_TURNS = 8
     MAX_CONTEXT_TOKENS = 2000
     MEMORY_FILE = "iris_memory.json"
 
     WAKE_WORDS = ["hey iris", "hi iris", "iris"]
     WAKE_ACKNOWLEDGEMENT = "Yes?"
-    WAKE_FUZZY_THRESHOLD = 0.82
+    WAKE_FUZZY_THRESHOLD = 0.75
     SHOW_WAKE_DEBUG = True
 
     # Leave blank to use default Windows input device.
@@ -46,22 +46,22 @@ class Config:
     VOICE_RATE = os.getenv("VOICE_RATE", "+18%")
     SPEAK_IN_TEXT_MODE = os.getenv("SPEAK_IN_TEXT_MODE", "false").lower() == "true"
 
-    WAKE_TIMEOUT = 3
-    WAKE_PHRASE_LIMIT = 4
+    WAKE_TIMEOUT = 8
+    WAKE_PHRASE_LIMIT = 10
 
     MIC_TIMEOUT = 6
     MIC_PHRASE_LIMIT = 10
-    MIC_CALIBRATION_SECONDS = 1.5
-    MIC_ENERGY_THRESHOLD = 200
-    MIC_PAUSE_THRESHOLD = 0.9
+    MIC_CALIBRATION_SECONDS = 2.0
+    MIC_ENERGY_THRESHOLD = 60
+    MIC_PAUSE_THRESHOLD = 0.5
     MIC_PHRASE_THRESHOLD = 0.2
-    MIC_NON_SPEAKING_DURATION = 0.4
+    MIC_NON_SPEAKING_DURATION = 0.3
     MIC_SAMPLE_RATE = 16000
     MIC_CHUNK_SIZE = 1024
 
     # Use UK English first, then Indian English as fallback
-    STT_LANGUAGE = "en-GB"
-    STT_FALLBACK_LANGUAGE = "en-IN"
+    STT_LANGUAGE = "en-US"
+    STT_FALLBACK_LANGUAGE = "en-GB"
 
     PLAYBACK_POLL_SECONDS = 0.03
     ACK_ON_SLOW_THINK_MS = 400

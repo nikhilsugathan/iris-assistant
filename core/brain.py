@@ -559,3 +559,46 @@ Return only the improved response."""
             return "Still here."
 
         return "Something upstream failed. Check the API keys, packages, and network, then try again."
+
+# ── Voice-optimised think method patch ──
+_original_think = Brain.think
+
+def _fast_think(self, user_input: str) -> str:
+    """
+    For live voice: always use Groq first (fast, ~0.5s).
+    Claude is only used if Groq fails or for explicit deep tasks.
+    """
+    user_input = (user_input or "").strip()
+    if not user_input:
+        return "Try that again."
+
+    direct = self._rewrite_generic_response(user_input)
+    if direct:
+        self.memory.add("user", user_input)
+        self.memory.add("assistant", direct, source="local")
+        return direct
+
+    self.memory.add("user", user_input)
+    query_type = self._classify_query(user_input)
+
+    # Web search → Perplexity if available
+    if query_type == "web_search" and "perplexity" in self.available_apis:
+        resp = self._call_api("perplexity", user_input, use_persona=False, use_memory=False)
+        if resp:
+            final = self._postprocess_response(resp, user_input)
+            self.memory.add("assistant", final, source="perplexity")
+            return final
+
+    # Voice fast path → Groq first regardless of BRAIN_PRIORITY
+    fast_apis = ["groq", "gemini", "claude"]
+    for api in fast_apis:
+        if api in self.available_apis:
+            resp = self._call_api(api, user_input, use_persona=True, use_memory=True, allow_failover=False)
+            if resp:
+                final = self._postprocess_response(resp, user_input)
+                self.memory.add("assistant", final, source=api)
+                return final
+
+    return self._fallback_response(user_input)
+
+Brain.think = _fast_think
