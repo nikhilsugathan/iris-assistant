@@ -11,6 +11,7 @@ This build is now local-first, voice-capable, and includes a desktop GUI shell w
 - Autonomous action handling with security gating
 - Voice output with state-aware playback improvements
 - Desktop shell in `iris_gui.py`
+- Floating orb mode, tray presence, and launch-at-sign-in support
 - Automated Windows build workflow on git push
 
 ## Install
@@ -41,7 +42,8 @@ On every push to `main` or `codex/*`, GitHub will build a Windows desktop artifa
 
 For a local build:
 ```bash
-py -3 -m PyInstaller --noconfirm --clean --windowed --onefile --name IrisAletheiaPortable --collect-all PySide6 --hidden-import edge_tts --hidden-import pygame --hidden-import speech_recognition iris_gui.py
+py -3 tools/generate_app_icon.py
+py -3 -m PyInstaller --noconfirm --clean --windowed --onefile --name IrisAletheiaPortable --icon assets/iris_aletheia.ico --collect-all PySide6 --hidden-import edge_tts --hidden-import pygame --hidden-import speech_recognition iris_gui.py
 ```
 
 The easiest local packaged app is generated in:

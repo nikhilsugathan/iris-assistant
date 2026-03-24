@@ -26,6 +26,11 @@ jobs:
           py -3 -m pip install --upgrade pip
           py -3 -m pip install -r requirements.txt pyinstaller
 
+      - name: Generate visual identity assets
+        shell: powershell
+        run: |
+          py -3 tools/generate_app_icon.py
+
       - name: Build desktop executable
         shell: powershell
         run: |
@@ -35,6 +40,7 @@ jobs:
             --windowed `
             --onefile `
             --name IrisAletheiaPortable `
+            --icon assets/iris_aletheia.ico `
             --collect-all PySide6 `
             --hidden-import edge_tts `
             --hidden-import pygame `

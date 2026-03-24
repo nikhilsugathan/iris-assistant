@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import html
 import math
+import os
 import sys
+from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from config import Config
 from core.engine import IRISEngine
+from core.visual_identity import create_app_icon
 
 
 class BackdropWidget(QtWidgets.QWidget):
@@ -36,6 +39,9 @@ class BackdropWidget(QtWidgets.QWidget):
 
 
 class OrbWidget(QtWidgets.QWidget):
+    activated = QtCore.Signal()
+    secondary_activated = QtCore.Signal()
+
     COLORS = {
         "idle": ("#2C6E77", "#D9A25F"),
         "listening": ("#1F9DB7", "#8DE8F4"),
@@ -44,12 +50,14 @@ class OrbWidget(QtWidgets.QWidget):
         "error": ("#8D2E2E", "#FF7A7A"),
     }
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, compact: bool = False):
         super().__init__(parent)
         self._phase = 0.0
         self._state = "idle"
-        self._base_radius = 88
-        self.setMinimumSize(340, 340)
+        self._compact = compact
+        self._base_radius = 70 if compact else 88
+        self.setMinimumSize(220, 220) if compact else self.setMinimumSize(340, 340)
+        self.setCursor(QtGui.QCursor(QtCore.Qt.PointingHandCursor))
         self.timer = QtCore.QTimer(self)
         self.timer.timeout.connect(self._tick)
         self.timer.start(16)
@@ -68,6 +76,18 @@ class OrbWidget(QtWidgets.QWidget):
         }.get(self._state, 0.02)
         self._phase += speed
         self.update()
+
+    def mousePressEvent(self, event):
+        if event.button() == QtCore.Qt.LeftButton:
+            self.activated.emit()
+        elif event.button() == QtCore.Qt.RightButton:
+            self.secondary_activated.emit()
+        super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == QtCore.Qt.LeftButton:
+            self.secondary_activated.emit()
+        super().mouseDoubleClickEvent(event)
 
     def paintEvent(self, event):
         painter = QtGui.QPainter(self)
@@ -119,23 +139,105 @@ class OrbWidget(QtWidgets.QWidget):
         painter.setBrush(QtCore.Qt.NoBrush)
         painter.drawEllipse(center, radius * 0.74, radius * 0.74)
 
-        label_font = QtGui.QFont("Bahnschrift SemiBold", 12)
+        label_font = QtGui.QFont("Bahnschrift SemiBold", 12 if not self._compact else 11)
         painter.setFont(label_font)
         painter.setPen(QtGui.QColor("#F6F2E8"))
         painter.drawText(
             QtCore.QRectF(center.x() - 85, center.y() - 18, 170, 36),
             QtCore.Qt.AlignCenter,
-            Config.INNER_CODENAME.upper(),
+            Config.INNER_CODENAME.upper() if not self._compact else "A",
         )
 
-        state_font = QtGui.QFont("Segoe UI Semibold", 10)
-        painter.setFont(state_font)
-        painter.setPen(QtGui.QColor(240, 240, 240, 190))
-        painter.drawText(
-            QtCore.QRectF(0, h - 42, w, 24),
-            QtCore.Qt.AlignCenter,
-            self._state.upper(),
+        if not self._compact:
+            state_font = QtGui.QFont("Segoe UI Semibold", 10)
+            painter.setFont(state_font)
+            painter.setPen(QtGui.QColor(240, 240, 240, 190))
+            painter.drawText(
+                QtCore.QRectF(0, h - 42, w, 24),
+                QtCore.Qt.AlignCenter,
+                self._state.upper(),
+            )
+
+
+class FloatingOrbWindow(QtWidgets.QWidget):
+    request_listen = QtCore.Signal()
+    request_dashboard = QtCore.Signal()
+    position_changed = QtCore.Signal(int, int)
+
+    def __init__(self, app_icon: QtGui.QIcon, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(f"{Config.PUBLIC_NAME} Orb")
+        self.setWindowIcon(app_icon)
+        self.setWindowFlags(
+            QtCore.Qt.FramelessWindowHint
+            | QtCore.Qt.Tool
+            | QtCore.Qt.WindowStaysOnTopHint
         )
+        self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+        self.resize(250, 320)
+        self._drag_offset = None
+
+        wrapper = QtWidgets.QVBoxLayout(self)
+        wrapper.setContentsMargins(10, 10, 10, 10)
+
+        frame = QtWidgets.QFrame()
+        frame.setStyleSheet(
+            """
+            QFrame {
+                background: rgba(9, 19, 28, 0.72);
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 28px;
+            }
+            QLabel {
+                color: #F7F3EA;
+            }
+            """
+        )
+        wrapper.addWidget(frame)
+
+        layout = QtWidgets.QVBoxLayout(frame)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(10)
+
+        title = QtWidgets.QLabel(Config.PUBLIC_NAME)
+        title.setStyleSheet("font-family: 'Bahnschrift SemiBold'; font-size: 15px;")
+        title.setAlignment(QtCore.Qt.AlignCenter)
+        layout.addWidget(title)
+
+        self.orb = OrbWidget(compact=True)
+        self.orb.activated.connect(self.request_listen.emit)
+        self.orb.secondary_activated.connect(self.request_dashboard.emit)
+        layout.addWidget(self.orb, alignment=QtCore.Qt.AlignCenter)
+
+        self.state_label = QtWidgets.QLabel("STANDING BY")
+        self.state_label.setAlignment(QtCore.Qt.AlignCenter)
+        self.state_label.setStyleSheet("color: rgba(247, 243, 234, 0.76); font-size: 11px; letter-spacing: 1px;")
+        layout.addWidget(self.state_label)
+
+        hint = QtWidgets.QLabel("Click to listen. Double-click to open the dashboard.")
+        hint.setWordWrap(True)
+        hint.setAlignment(QtCore.Qt.AlignCenter)
+        hint.setStyleSheet("color: rgba(247, 243, 234, 0.60); font-size: 11px;")
+        layout.addWidget(hint)
+
+    def set_state(self, state: str):
+        self.orb.set_state(state)
+        self.state_label.setText(state.upper())
+
+    def mousePressEvent(self, event):
+        if event.button() == QtCore.Qt.LeftButton:
+            self._drag_offset = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._drag_offset is not None and event.buttons() & QtCore.Qt.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag_offset)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._drag_offset = None
+        self.position_changed.emit(self.x(), self.y())
+        super().mouseReleaseEvent(event)
 
 
 class AppSignals(QtCore.QObject):
@@ -172,19 +274,69 @@ class EngineWorker(QtCore.QThread):
 class IrisWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
+        self.settings = QtCore.QSettings("Aletheia", "IrisDesktop")
         self.engine = IRISEngine(text_mode=False)
         self.signals = AppSignals()
         self.engine.voice.set_state_callback(self.signals.voice_state.emit)
         self.signals.voice_state.connect(self.on_voice_state)
         self.worker = None
         self.busy = False
+        self._quitting = False
+        self._startup_enabled = self._startup_script_path().exists()
+        self._first_tray_hint_shown = self.settings.value("tray_hint_shown", False, type=bool)
+        self.app_icon = create_app_icon()
+        self.setWindowIcon(self.app_icon)
 
         self.setWindowTitle(f"{Config.SYSTEM_NAME} // {Config.INNER_CODENAME}")
         self.resize(1380, 860)
         self.setMinimumSize(1220, 760)
 
         self._build_ui()
+        self._setup_tray()
+        self._setup_floating_orb()
         self.refresh_status()
+
+        if self.settings.value("floating_mode", False, type=bool):
+            self.set_floating_mode(True, announce=False)
+
+    def _setup_tray(self):
+        self.tray = None
+        if not QtWidgets.QSystemTrayIcon.isSystemTrayAvailable():
+            return
+
+        self.tray = QtWidgets.QSystemTrayIcon(self.app_icon, self)
+        self.tray.setToolTip(f"{Config.PUBLIC_NAME} // {Config.INNER_CODENAME}")
+        self.tray.activated.connect(self._on_tray_activated)
+
+        menu = QtWidgets.QMenu(self)
+        show_action = menu.addAction("Show Dashboard")
+        show_action.triggered.connect(self.show_dashboard)
+
+        listen_action = menu.addAction("Listen Now")
+        listen_action.triggered.connect(self.on_listen)
+
+        self.floating_action = menu.addAction("Floating Orb Mode")
+        self.floating_action.setCheckable(True)
+        self.floating_action.triggered.connect(lambda checked: self.set_floating_mode(checked))
+
+        self.startup_action = menu.addAction("Launch At Sign-In")
+        self.startup_action.setCheckable(True)
+        self.startup_action.setChecked(self._startup_enabled)
+        self.startup_action.triggered.connect(self.set_launch_at_login)
+
+        menu.addSeparator()
+        quit_action = menu.addAction("Quit Iris")
+        quit_action.triggered.connect(self.quit_app)
+
+        self.tray.setContextMenu(menu)
+        self.tray.show()
+
+    def _setup_floating_orb(self):
+        self.floating_window = FloatingOrbWindow(self.app_icon)
+        self.floating_window.request_listen.connect(self.on_listen)
+        self.floating_window.request_dashboard.connect(self.show_dashboard)
+        self.floating_window.position_changed.connect(self._save_floating_orb_position)
+        self._restore_floating_orb_position()
 
     def _build_ui(self):
         self.setStyleSheet(
@@ -261,6 +413,15 @@ class IrisWindow(QtWidgets.QMainWindow):
                 font-size: 11px;
                 letter-spacing: 1px;
             }
+            QCheckBox {
+                spacing: 8px;
+                color: #F7F3EA;
+                font-size: 12px;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+            }
             """
         )
 
@@ -291,7 +452,32 @@ class IrisWindow(QtWidgets.QMainWindow):
         left_layout.addWidget(self.state_pill, alignment=QtCore.Qt.AlignLeft)
 
         self.orb = OrbWidget()
+        self.orb.activated.connect(self.on_listen)
+        self.orb.secondary_activated.connect(self.open_floating_orb)
         left_layout.addWidget(self.orb, alignment=QtCore.Qt.AlignCenter, stretch=1)
+
+        controls_row = QtWidgets.QHBoxLayout()
+        controls_row.setSpacing(10)
+
+        self.float_button = QtWidgets.QPushButton("Floating Orb")
+        self.float_button.setObjectName("SecondaryButton")
+        self.float_button.clicked.connect(self.toggle_floating_orb)
+        controls_row.addWidget(self.float_button)
+
+        self.hide_button = QtWidgets.QPushButton("Hide To Tray")
+        self.hide_button.setObjectName("SecondaryButton")
+        self.hide_button.clicked.connect(self.hide_to_tray)
+        controls_row.addWidget(self.hide_button)
+        left_layout.addLayout(controls_row)
+
+        preferences = QtWidgets.QHBoxLayout()
+        preferences.setSpacing(18)
+        self.startup_checkbox = QtWidgets.QCheckBox("Launch at sign-in")
+        self.startup_checkbox.setChecked(self._startup_enabled)
+        self.startup_checkbox.toggled.connect(self.set_launch_at_login)
+        preferences.addWidget(self.startup_checkbox)
+        preferences.addStretch(1)
+        left_layout.addLayout(preferences)
 
         self.status_stack = QtWidgets.QVBoxLayout()
         self.status_stack.setSpacing(10)
@@ -389,6 +575,7 @@ class IrisWindow(QtWidgets.QMainWindow):
 
     def on_voice_state(self, state: str):
         self.orb.set_state(state)
+        self.floating_window.set_state(state)
         self.state_pill.setText(state.upper())
         footer_map = {
             "idle": "Standing by.",
@@ -396,6 +583,8 @@ class IrisWindow(QtWidgets.QMainWindow):
             "speaking": "Iris is speaking.",
         }
         self.footer.setText(footer_map.get(state, self.footer.text()))
+        if self.tray:
+            self.tray.setToolTip(f"{Config.PUBLIC_NAME} // {state.upper()}")
 
     def set_busy(self, busy: bool, footer: str = ""):
         self.busy = busy
@@ -445,8 +634,11 @@ class IrisWindow(QtWidgets.QMainWindow):
             self.append_message(result.label, result.response, kind)
             self.mode_label.setText(f"{result.mode.upper()} MODE")
             self.refresh_status()
+            if self.tray and not self.isVisible():
+                snippet = result.response if len(result.response) < 180 else result.response[:177] + "..."
+                self.tray.showMessage(result.label, snippet, self.app_icon, 7000)
             if result.should_exit:
-                QtCore.QTimer.singleShot(250, self.close)
+                QtCore.QTimer.singleShot(250, self.quit_app)
                 return
 
         if mode == "listen" and not captured:
@@ -454,14 +646,18 @@ class IrisWindow(QtWidgets.QMainWindow):
 
     def on_worker_failed(self, message: str):
         self.orb.set_state("error")
+        self.floating_window.set_state("error")
         self.state_pill.setText("ERROR")
         self.append_message("System", f"Something broke: {message}", "system")
         self.footer.setText("The last operation failed.")
+        if self.tray:
+            self.tray.showMessage("Iris Error", message, self.app_icon, 7000)
 
     def on_worker_finished(self):
         self.set_busy(False)
         if self.engine.voice.current_state == "idle":
             self.orb.set_state("idle")
+            self.floating_window.set_state("idle")
             self.state_pill.setText("IDLE")
             self.footer.setText("Standing by.")
 
@@ -470,18 +666,167 @@ class IrisWindow(QtWidgets.QMainWindow):
         self.brain_chip.setText(f"Brains: {status['primary_brain']} -> {status['fallback_brain']}")
         self.core_chip.setText(f"Core: {status['public_name']} outside, {status['inner_codename']} inside")
         self.self_model_chip.setText(f"Self model: {status['self_model']}")
-        self.memory_chip.setText(f"Memory: {status['memory']}")
+        startup_text = "on" if self._startup_enabled else "off"
+        self.memory_chip.setText(f"Memory: {status['memory']} | Startup: {startup_text}")
+        if hasattr(self, "float_button"):
+            self.float_button.setText("Dashboard Mode" if self.floating_window.isVisible() else "Floating Orb")
+
+    def _restore_floating_orb_position(self):
+        x = self.settings.value("floating_orb_x", None, type=int)
+        y = self.settings.value("floating_orb_y", None, type=int)
+        if x is not None and y is not None:
+            self.floating_window.move(x, y)
+            return
+
+        screen = QtGui.QGuiApplication.primaryScreen()
+        if not screen:
+            return
+        geometry = screen.availableGeometry()
+        margin = 30
+        target = QtCore.QPoint(
+            geometry.right() - self.floating_window.width() - margin,
+            geometry.bottom() - self.floating_window.height() - margin,
+        )
+        self.floating_window.move(target)
+
+    def _save_floating_orb_position(self, x: int, y: int):
+        self.settings.setValue("floating_orb_x", x)
+        self.settings.setValue("floating_orb_y", y)
+
+    def _startup_script_path(self) -> Path:
+        appdata = Path(os.getenv("APPDATA", str(Path.home() / "AppData/Roaming")))
+        return appdata / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "IrisAletheia.cmd"
+
+    def _startup_script_contents(self) -> str:
+        if getattr(sys, "frozen", False):
+            exe_path = Path(sys.executable).resolve()
+            return (
+                "@echo off\n"
+                f'cd /d "{exe_path.parent}"\n'
+                f'start "" "{exe_path}"\n'
+            )
+
+        script_path = Path(__file__).resolve()
+        pythonw = Path(sys.executable)
+        candidate = pythonw.with_name("pythonw.exe")
+        if candidate.exists():
+            pythonw = candidate
+        return (
+            "@echo off\n"
+            f'cd /d "{script_path.parent}"\n'
+            f'start "" "{pythonw}" "{script_path}"\n'
+        )
+
+    def set_launch_at_login(self, enabled: bool):
+        path = self._startup_script_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if enabled:
+            path.write_text(self._startup_script_contents(), encoding="utf-8")
+            self._startup_enabled = True
+            self.footer.setText("Iris will launch at sign-in.")
+        else:
+            try:
+                if path.exists():
+                    path.unlink()
+            except Exception:
+                pass
+            self._startup_enabled = False
+            self.footer.setText("Launch at sign-in disabled.")
+
+        if self.tray and hasattr(self, "startup_action"):
+            self.startup_action.blockSignals(True)
+            self.startup_action.setChecked(self._startup_enabled)
+            self.startup_action.blockSignals(False)
+        if hasattr(self, "startup_checkbox"):
+            self.startup_checkbox.blockSignals(True)
+            self.startup_checkbox.setChecked(self._startup_enabled)
+            self.startup_checkbox.blockSignals(False)
+        self.refresh_status()
+
+    def hide_to_tray(self):
+        self.hide()
+        if self.tray and not self._first_tray_hint_shown:
+            self.tray.showMessage(
+                f"{Config.PUBLIC_NAME} is still here",
+                "I moved into the system tray. Double-click the tray icon to bring me back.",
+                self.app_icon,
+                7000,
+            )
+            self._first_tray_hint_shown = True
+            self.settings.setValue("tray_hint_shown", True)
+
+    def show_dashboard(self, announce: bool = True):
+        self.settings.setValue("floating_mode", False)
+        self.floating_window.hide()
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        if announce:
+            self.footer.setText("Dashboard mode restored.")
+        if self.tray and hasattr(self, "floating_action"):
+            self.floating_action.blockSignals(True)
+            self.floating_action.setChecked(False)
+            self.floating_action.blockSignals(False)
+        self.refresh_status()
+
+    def set_floating_mode(self, enabled: bool, announce: bool = True):
+        if enabled:
+            self.settings.setValue("floating_mode", True)
+            if not self.floating_window.isVisible():
+                self.floating_window.show()
+            self.floating_window.raise_()
+            self.floating_window.activateWindow()
+            self.hide()
+            if announce:
+                self.footer.setText("Floating orb mode enabled.")
+        else:
+            self.show_dashboard(announce=announce)
+            return
+
+        if self.tray and hasattr(self, "floating_action"):
+            self.floating_action.blockSignals(True)
+            self.floating_action.setChecked(enabled)
+            self.floating_action.blockSignals(False)
+        self.refresh_status()
+
+    def toggle_floating_orb(self):
+        self.set_floating_mode(not self.floating_window.isVisible())
+
+    def open_floating_orb(self):
+        self.set_floating_mode(True)
+
+    def _on_tray_activated(self, reason):
+        if reason == QtWidgets.QSystemTrayIcon.DoubleClick:
+            if self.isVisible():
+                self.hide_to_tray()
+            else:
+                self.show_dashboard()
+
+    def quit_app(self):
+        self._quitting = True
+        if self.tray:
+            self.tray.hide()
+        self.floating_window.hide()
+        self.close()
 
     def closeEvent(self, event):
+        if not self._quitting and self.tray:
+            self.hide_to_tray()
+            event.ignore()
+            return
         try:
             self.engine.shutdown()
         finally:
+            event.accept()
             super().closeEvent(event)
 
 
 def main():
     app = QtWidgets.QApplication(sys.argv)
     app.setApplicationName(f"{Config.SYSTEM_NAME} Desktop")
+    app.setOrganizationName("Aletheia")
+    app.setQuitOnLastWindowClosed(False)
+    app.setWindowIcon(create_app_icon())
     app.setStyle("Fusion")
 
     palette = QtGui.QPalette()
