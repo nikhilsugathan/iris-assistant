@@ -195,6 +195,9 @@ def main() -> None:
         console.print("[dim]Standby mode active. Call Iris when you need her.[/dim]")
         console.print(f"[dim]Wake words: {', '.join(Config.WAKE_WORDS)}[/dim]\n")
 
+    # How many follow-up turns Iris listens for after being woken
+    CONVERSATION_TURNS = 5
+
     while True:
         try:
             if args.text:
@@ -206,6 +209,7 @@ def main() -> None:
                     break
                 continue
 
+            # ── Standby: wait for wake word ──────────────────────
             heard_text = voice.listen_for_wake()
             if not heard_text:
                 continue
@@ -215,6 +219,7 @@ def main() -> None:
 
             stripped = strip_wake_word(heard_text)
 
+            # Wake word + command in one phrase (e.g. "Iris open notepad")
             if stripped:
                 console.print(f"[green]Wake detected:[/green] {heard_text}")
                 _, should_exit = handle_user_input(
@@ -222,20 +227,44 @@ def main() -> None:
                 )
                 if should_exit:
                     break
-                continue
+            else:
+                # Wake word only — acknowledge and listen for command
+                ack = getattr(Config, "WAKE_ACKNOWLEDGEMENT", "Yes?")
+                print_response("IRIS", ack)
+                voice.speak(ack)
 
-            ack = getattr(Config, "WAKE_ACKNOWLEDGEMENT", "Yes?")
-            print_response("IRIS", ack)
-            voice.speak(ack)
+                command = voice.listen_for_command()
+                if not command:
+                    continue
 
-            command = voice.listen_for_command()
-            if not command:
-                continue
+                _, should_exit = handle_user_input(
+                    command, voice, autocorrect, executor, copilot, brain
+                )
+                if should_exit:
+                    break
 
-            # voice.py already prints the recognized command, so do not print it again here
-            _, should_exit = handle_user_input(
-                command, voice, autocorrect, executor, copilot, brain
-            )
+            # ── Conversation mode: keep listening for follow-ups ──
+            # No need to say "Iris" again for CONVERSATION_TURNS turns
+            for _ in range(CONVERSATION_TURNS):
+                console.print("[dim]  (follow-up listening...)[/dim]")
+                follow_up = voice.listen_for_command()
+
+                if not follow_up:
+                    # Silence — go back to standby
+                    console.print("[dim]  → Back to standby[/dim]")
+                    break
+
+                # If they say "stop", "bye", "goodbye" — end conversation
+                if any(w in follow_up.lower() for w in ["stop", "bye", "goodbye", "that's all", "thanks iris"]):
+                    console.print("[dim]  → Conversation ended[/dim]")
+                    break
+
+                _, should_exit = handle_user_input(
+                    follow_up, voice, autocorrect, executor, copilot, brain
+                )
+                if should_exit:
+                    break
+
             if should_exit:
                 break
 

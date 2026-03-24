@@ -32,7 +32,7 @@ class Config:
     MAX_CONTEXT_TOKENS = 2000
     MEMORY_FILE = "iris_memory.json"
 
-    WAKE_WORDS = ["hey iris", "hi iris", "iris"]
+    WAKE_WORDS = ["iris"]
     WAKE_ACKNOWLEDGEMENT = "Yes?"
     WAKE_FUZZY_THRESHOLD = 0.75
     SHOW_WAKE_DEBUG = True
