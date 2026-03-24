@@ -121,7 +121,7 @@ class Brain:
 
         return ""
 
-    def think(self, user_input: str) -> str:
+    def think(self, user_input: str, council_packet=None) -> str:
         """
         Smart routing:
         - Simple/short → ollama_fast (phi3.5, instant)
@@ -143,10 +143,12 @@ class Brain:
 
         self.memory.add("user", user_input)
         query_type = self._classify_query(user_input)
+        extra_system = getattr(council_packet, "extra_system", "") if council_packet else ""
+        allow_long_response = bool(getattr(council_packet, "allow_long_response", False))
 
         if getattr(Config, "USE_ENSEMBLE", False):
             final = self._ensemble_think(user_input, query_type)
-            final = self._postprocess_response(final, user_input)
+            final = self._postprocess_response(final, user_input, allow_long_response=allow_long_response)
             self.memory.add("assistant", final, source="ensemble")
             return final
 
@@ -154,7 +156,7 @@ class Brain:
         if query_type == "web_search" and "perplexity" in self.available_apis:
             resp = self._call_api("perplexity", user_input, use_persona=False, use_memory=False)
             if resp:
-                final = self._postprocess_response(resp, user_input)
+                final = self._postprocess_response(resp, user_input, allow_long_response=allow_long_response)
                 self.memory.add("assistant", final, source="perplexity")
                 return final
 
@@ -168,25 +170,48 @@ class Brain:
             "reason", "logic", "proof", "solve", "calculate", "plan", "strategy"
         ])
 
-        # Build priority order based on query type
-        if needs_reasoning and "ollama_deep" in self.available_apis:
-            order = ["ollama_deep", "ollama_smart", "ollama_fast", "groq", "gemini", "claude"]
-        elif is_complex or word_count > 15:
-            order = ["ollama_smart", "ollama_fast", "groq", "gemini", "claude"]
-        else:
-            # Simple voice command — fastest model first
-            order = ["ollama_fast", "ollama_smart", "groq", "gemini", "claude"]
+        order = self._build_api_order(
+            word_count=word_count,
+            is_complex=is_complex,
+            needs_reasoning=needs_reasoning,
+            council_packet=council_packet,
+        )
 
         for api in order:
             if api not in self.available_apis:
                 continue
-            resp = self._call_api(api, user_input, use_persona=True, use_memory=True, allow_failover=False)
+            resp = self._call_api(
+                api,
+                user_input,
+                use_persona=True,
+                use_memory=True,
+                allow_failover=False,
+                extra_system=extra_system,
+            )
             if resp:
-                final = self._postprocess_response(resp, user_input)
+                final = self._postprocess_response(resp, user_input, allow_long_response=allow_long_response)
                 self.memory.add("assistant", final, source=api)
                 return final
 
         return self._fallback_response(user_input)
+
+    def _build_api_order(self, word_count: int, is_complex: bool, needs_reasoning: bool, council_packet=None) -> List[str]:
+        if needs_reasoning and "ollama_deep" in self.available_apis:
+            default_order = ["ollama_deep", "ollama_smart", "ollama_fast", "groq", "gemini", "claude"]
+        elif is_complex or word_count > 15:
+            default_order = ["ollama_smart", "ollama_fast", "groq", "gemini", "claude"]
+        else:
+            default_order = ["ollama_fast", "ollama_smart", "groq", "gemini", "claude"]
+
+        if not council_packet:
+            return default_order
+
+        preferred = list(getattr(council_packet, "preferred_apis", []) or [])
+        ordered: List[str] = []
+        for api in preferred + default_order:
+            if api not in ordered:
+                ordered.append(api)
+        return ordered
 
     # ─────────────────────────────────────────────────────────────
     # FAST LOCAL REWRITES FOR GENERIC VOICE INPUT
@@ -383,13 +408,15 @@ Return only the improved response."""
     # PROMPT + MEMORY
     # ─────────────────────────────────────────────────────────────
 
-    def _persona_text(self) -> str:
+    def _persona_text(self, extra_system: str = "") -> str:
         persona = getattr(Config, "IRIS_PERSONA", "")
         voice_style = getattr(Config, "VOICE_RESPONSE_STYLE", "")
 
         parts = [persona.strip()] if persona else []
         if voice_style:
             parts.append(str(voice_style).strip())
+        if extra_system:
+            parts.append(str(extra_system).strip())
 
         if not parts:
             return (
@@ -433,7 +460,7 @@ Return only the improved response."""
     # POST-PROCESSING
     # ─────────────────────────────────────────────────────────────
 
-    def _postprocess_response(self, text: str, user_input: str) -> str:
+    def _postprocess_response(self, text: str, user_input: str, allow_long_response: bool = False) -> str:
         if not text:
             return self._fallback_response(user_input)
 
@@ -444,7 +471,7 @@ Return only the improved response."""
         clean = re.sub(r"\bI am an AI[^.]*\.\s*", "", clean, flags=re.IGNORECASE)
         clean = re.sub(r"\bI(?:'m| am) happy to help[.!]?\s*", "", clean, flags=re.IGNORECASE)
 
-        short_mode = bool(getattr(Config, "SHORT_VOICE_RESPONSES", False))
+        short_mode = bool(getattr(Config, "SHORT_VOICE_RESPONSES", False)) and not allow_long_response
         if short_mode:
             clean = self._shorten_response(clean)
 
@@ -483,16 +510,21 @@ Return only the improved response."""
             except Exception:
                 pass
 
-    def _call_ollama(self, model: str, prompt: str, use_persona: bool, use_memory: bool) -> Optional[str]:
+    def _call_ollama(
+        self,
+        model: str,
+        prompt: str,
+        use_persona: bool,
+        use_memory: bool,
+        extra_system: str = "",
+    ) -> Optional[str]:
         """Call a local Ollama model."""
         base_url = getattr(Config, "OLLAMA_BASE_URL", "http://localhost:11434")
 
         # Build full prompt with persona and memory
         full_prompt = ""
         if use_persona:
-            persona = getattr(Config, "IRIS_PERSONA", "")
-            voice_style = getattr(Config, "VOICE_RESPONSE_STYLE", "")
-            full_prompt += f"{persona}\n\n{voice_style}\n\n"
+            full_prompt += f"{self._persona_text(extra_system)}\n\n"
         if use_memory:
             ctx = self._memory_context(3)
             for item in ctx:
@@ -534,29 +566,30 @@ Return only the improved response."""
         use_persona: bool = True,
         use_memory: bool = False,
         allow_failover: bool = True,
+        extra_system: str = "",
     ) -> Optional[str]:
         try:
             if api == "ollama_fast":
                 return self._call_ollama(
                     getattr(Config, "OLLAMA_MODEL_FAST", "phi3.5"),
-                    prompt, use_persona, use_memory
+                    prompt, use_persona, use_memory, extra_system=extra_system
                 )
             if api == "ollama_smart":
                 return self._call_ollama(
                     getattr(Config, "OLLAMA_MODEL_SMART", "llama3.1:8b"),
-                    prompt, use_persona, use_memory
+                    prompt, use_persona, use_memory, extra_system=extra_system
                 )
             if api == "ollama_deep":
                 return self._call_ollama(
                     getattr(Config, "OLLAMA_MODEL_DEEP", "deepseek-r1:8b"),
-                    prompt, use_persona, use_memory
+                    prompt, use_persona, use_memory, extra_system=extra_system
                 )
             if api == "claude":
-                return self._call_claude(prompt, use_persona, use_memory)
+                return self._call_claude(prompt, use_persona, use_memory, extra_system=extra_system)
             if api == "gemini":
-                return self._call_gemini(prompt, use_persona, use_memory)
+                return self._call_gemini(prompt, use_persona, use_memory, extra_system=extra_system)
             if api == "groq":
-                return self._call_groq(prompt, use_persona, use_memory)
+                return self._call_groq(prompt, use_persona, use_memory, extra_system=extra_system)
             if api == "perplexity":
                 return self._call_perplexity(prompt)
         except Exception:
@@ -569,10 +602,11 @@ Return only the improved response."""
                         use_persona=use_persona,
                         use_memory=use_memory,
                         allow_failover=False,
+                        extra_system=extra_system,
                     )
         return None
 
-    def _call_groq(self, prompt: str, use_persona: bool, use_memory: bool) -> Optional[str]:
+    def _call_groq(self, prompt: str, use_persona: bool, use_memory: bool, extra_system: str = "") -> Optional[str]:
         headers = {
             "Authorization": f"Bearer {Config.GROQ_API_KEY}",
             "Content-Type": "application/json",
@@ -580,7 +614,7 @@ Return only the improved response."""
 
         messages = []
         if use_persona:
-            messages.append({"role": "system", "content": self._persona_text()})
+            messages.append({"role": "system", "content": self._persona_text(extra_system)})
         if use_memory:
             messages.extend(self._memory_context(getattr(Config, "MAX_MEMORY_TURNS", 8)))
         messages.append({"role": "user", "content": self._build_user_prompt(prompt)})
@@ -602,7 +636,7 @@ Return only the improved response."""
         data = response.json()
         return data["choices"][0]["message"]["content"].strip()
 
-    def _call_gemini(self, prompt: str, use_persona: bool, use_memory: bool) -> Optional[str]:
+    def _call_gemini(self, prompt: str, use_persona: bool, use_memory: bool, extra_system: str = "") -> Optional[str]:
         from google import genai
         from google.genai import types
 
@@ -619,21 +653,21 @@ Return only the improved response."""
             model=Config.GEMINI_MODEL,
             contents=messages,
             config=types.GenerateContentConfig(
-                system_instruction=self._persona_text() if use_persona else None,
+                system_instruction=self._persona_text(extra_system) if use_persona else None,
                 max_output_tokens=500,
                 temperature=0.4,
             ),
         )
         return getattr(response, "text", None)
 
-    def _call_claude(self, prompt: str, use_persona: bool, use_memory: bool) -> Optional[str]:
+    def _call_claude(self, prompt: str, use_persona: bool, use_memory: bool, extra_system: str = "") -> Optional[str]:
         headers = {
             "x-api-key": Config.CLAUDE_API_KEY,
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
         }
 
-        system_text = self._persona_text() if use_persona else ""
+        system_text = self._persona_text(extra_system) if use_persona else ""
         memory_text = ""
         if use_memory:
             chunks = []

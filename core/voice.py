@@ -45,7 +45,14 @@ class Voice:
     def _init_audio(self):
         try:
             import pygame
+            pygame.mixer.pre_init(
+                frequency=getattr(Config, "AUDIO_SAMPLE_RATE", 24000),
+                size=-16,
+                channels=getattr(Config, "AUDIO_CHANNELS", 2),
+                buffer=getattr(Config, "AUDIO_BUFFER_SIZE", 512),
+            )
             pygame.mixer.init()
+            self._prime_audio_output()
             self.audio_ready = True
             console.print("[green]✓ Audio playback ready[/green]")
         except Exception as e:
@@ -243,9 +250,10 @@ class Voice:
         if not clean:
             return
 
-        self.stop_speaking()
-        self._stop_flag.clear()
-        self._speak_blocking(clean)
+        with self._tts_lock:
+            self.stop_speaking()
+            self._stop_flag.clear()
+            self._speak_blocking(clean)
 
     def _speak_blocking(self, text: str):
         """Blocking speak — runs in thread."""
@@ -307,6 +315,40 @@ class Voice:
 
     def stop(self):
         self.stop_speaking()
+
+    def _prime_audio_output(self):
+        """Warm the output device once so the first spoken word is not clipped."""
+        try:
+            import pygame
+
+            duration_ms = max(20, int(getattr(Config, "AUDIO_WARMUP_MS", 120)))
+            sample_rate = int(getattr(Config, "AUDIO_SAMPLE_RATE", 24000))
+            channels = int(getattr(Config, "AUDIO_CHANNELS", 2))
+            frames = max(1, int(sample_rate * duration_ms / 1000))
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f:
+                tmp = f.name
+
+            try:
+                silence_frame = (b"\x00\x00" * channels)
+                with wave.open(tmp, "wb") as wf:
+                    wf.setnchannels(channels)
+                    wf.setsampwidth(2)
+                    wf.setframerate(sample_rate)
+                    wf.writeframes(silence_frame * frames)
+
+                sound = pygame.mixer.Sound(tmp)
+                channel = sound.play()
+                if channel is not None:
+                    while channel.get_busy():
+                        time.sleep(0.01)
+            finally:
+                try:
+                    os.unlink(tmp)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def _clean(self, text: str) -> str:
         text = re.sub(r"```[\s\S]*?```", "code block", text)
