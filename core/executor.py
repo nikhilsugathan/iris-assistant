@@ -39,6 +39,8 @@ from typing import Optional, Tuple
 from config import Config
 from core.security import SecurityGuard, SAFE, WARNING, BLOCKED, NEED_ADMIN
 from core.autocorrect import AutoCorrector
+from core.browser import BrowserAutomation
+from core.improv import ImprovEngine
 
 
 # ── Phrases that mean YES ──────────────────────────────────────
@@ -70,9 +72,12 @@ class ActionExecutor:
         self.pending_action         = None
         self.pending_verdict        = None
         self.follow_up              = None
-        self.autocorrect = AutoCorrector(brain)
-        self.last_action_path = None   # remembers last created file/folder
+        self.autocorrect            = AutoCorrector(brain)
+        self.improv                 = ImprovEngine(brain)
+        self.pending_plans          = None   # stores A/B/C plans waiting for user choice
+        self.last_action_path       = None
         self._clarification_options = []
+        self.browser = BrowserAutomation()  # lazy-init in background
         self.log_file    = "iris_actions.log"
         self.is_windows  = platform.system() == "Windows"
 
@@ -239,7 +244,7 @@ class ActionExecutor:
             self.pending_verdict = verdict
             return f"{header}\n{security_msg}\n\nSay 'override' to run it anyway, or 'cancel' to drop it."
 
-        # ── Simple safe task — just do it ────────────────────
+        # ── Simple safe task — execute with verification ─────
         if self._is_simple_task(plan, verdict):
             self._log(f"AUTO-EXECUTE: {plan.get('action_type')} — {plan.get('description','')}")
             self.pending_action  = plan
@@ -284,7 +289,9 @@ class ActionExecutor:
 
         # ── Create folder ─────────────────────────────────────
         folder_match = re.search(
-            r"(?:create|make|new)\s+(?:a\s+)?folder\s+(?:called|named|as)?\s*['\"]?([^\s'\"]+)['\"]?"
+            r"(?:create|make|new)\s+(?:a\s+)?folder\s+"
+            r"(?:called|named|as|named as)\s+"
+            r"['\"]?([^\s'\"]+)['\"]?"
             r"(?:\s+(?:in|on|at|inside)\s+(?:my\s+)?(.+))?",
             text
         )
@@ -294,8 +301,43 @@ class ActionExecutor:
             folderpath = self._resolve_location(location, foldername)
             return {
                 "action_type": "create_folder",
-                "description": f"create folder '{foldername}' in {location}",
+                "description": f"create folder '{foldername}'",
                 "filename": folderpath,
+                "is_dangerous": False
+            }
+
+        # ── Create unnamed folder ─────────────────────────────
+        unnamed_folder = re.search(
+            r"(?:create|make)\s+(?:a\s+)?(?:new\s+)?folder"
+            r"(?:\s+(?:in|on|at)\s+(?:my\s+)?(.+))?$",
+            text
+        )
+        if unnamed_folder:
+            location   = unnamed_folder.group(1).strip() if unnamed_folder.group(1) else "desktop"
+            folderpath = self._resolve_location(location, "New Folder")
+            return {
+                "action_type": "create_folder",
+                "description": "create a new folder",
+                "filename": folderpath,
+                "is_dangerous": False
+            }
+
+        # ── Play specific song / music ────────────────────────
+        song_match = re.search(
+            r"(?:play|stream|listen to|put on)\s+(.+?)(?:\s+(?:on|from|via|using)\s+\w+)?$",
+            text
+        )
+        if song_match:
+            query = song_match.group(1).strip()
+            # Remove filler words
+            for filler in ["me a song", "some music", "music", "something", "a song"]:
+                if query == filler:
+                    query = ""
+                    break
+            return {
+                "action_type": "play_music",
+                "description": f"play {query or 'music'}",
+                "search_query": query or "popular music",
                 "is_dangerous": False
             }
 
@@ -400,7 +442,7 @@ Rules:
 Respond with ONLY the JSON object. No markdown, no explanation."""
 
         response = self.brain._call_api(
-            Config.PRIMARY_BRAIN, plan_prompt,
+            "groq", plan_prompt,
             use_persona=False, use_memory=False
         )
 
@@ -436,41 +478,169 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
     # EXECUTE: Run the approved action
     # ─────────────────────────────────────────────────────────────
 
+    def waiting_for_plan_choice(self) -> bool:
+        return self.pending_plans is not None
+
+    def handle_plan_choice(self, user_input: str) -> str:
+        """User is choosing between Plan A, B, C."""
+        plans = self.pending_plans
+
+        # Cancel
+        if any(w in user_input.lower() for w in ["cancel", "never mind", "forget it", "no"]):
+            self.pending_plans = None
+            return "Cancelled."
+
+        selected = self.improv.select_plan(plans, user_input)
+
+        if not selected:
+            a = plans.get("plan_a", {}).get("description", "?")
+            b = plans.get("plan_b", {}).get("description", "?")
+            c = plans.get("plan_c", {}).get("description", "?")
+            return f"Which one — A: {a}, B: {b}, or C: {c}?"
+
+        # Plan C needs explicit permission
+        if selected.get("requires_permission"):
+            self.pending_action  = selected
+            self.pending_verdict = WARNING
+            self.pending_plans   = None
+            desc = selected.get("description", "this action")
+            cmd  = selected.get("command", "")
+            msg  = f"Plan C: {desc}."
+            if cmd:
+                msg += f" Command: {cmd}."
+            msg += " This one has real side effects — go ahead?"
+            return msg
+
+        # Plans A and B — just execute
+        self.pending_plans   = None
+        self.pending_action  = selected
+        self.pending_verdict = SAFE
+        return self._execute_pending()
+
     def _execute_pending(self) -> str:
-        """Execute the stored pending action."""
+        """
+        Execute with verification + improv fallback on failure.
+
+        Flow:
+          1. Execute
+          2. Verify it worked
+          3. If failed → generate Plan A/B/C via improv engine
+          4. Present options to user
+        """
         plan    = self.pending_action
         verdict = self.pending_verdict
         self.pending_action  = None
         self.pending_verdict = None
 
         action_type = plan.get("action_type")
-        self._log(f"USER APPROVED [{verdict}]: {plan.get('command') or plan.get('description','?')}")
+        self._log(f"EXECUTE [{verdict}]: {plan.get('command') or plan.get('description','?')}")
+
+        # ── Execute and verify ────────────────────────────────
+        result, success = self._execute_with_verify(plan)
+
+        if success:
+            return result
+
+        # ── Failed — use improv engine ────────────────────────
+        self._log(f"FAILED: {result} — generating improv plans")
+        original_request = plan.get("description", "that action")
+        plans = self.improv.generate_plans(original_request, plan, result)
+
+        if not plans:
+            return result  # Improv also failed to generate plans
+
+        # Store plans for user to choose
+        self.pending_plans = plans
+        spoken = self.improv.format_spoken_options(plans)
+        return spoken
+
+    def _execute_with_verify(self, plan: dict) -> tuple:
+        """
+        Execute an action and verify it actually worked.
+        Returns (message, success_bool)
+        """
+        action_type = plan.get("action_type")
 
         try:
             if action_type in ("install_package", "run_command"):
-                return self._run_command(plan)
+                result = self._run_command(plan)
+                success = "didn't work" not in result.lower() and "error" not in result.lower()
 
             elif action_type == "create_file":
-                return self._create_file(plan)
+                result  = self._create_file(plan)
+                success = self.last_action_path is not None and os.path.isfile(self.last_action_path)
 
             elif action_type == "create_folder":
-                return self._create_folder(plan)
+                result  = self._create_folder(plan)
+                success = self.last_action_path is not None and os.path.isdir(self.last_action_path)
+
+            elif action_type == "play_music":
+                result  = self._play_music(plan)
+                success = result == "Done."
 
             elif action_type == "open_app":
-                return self._open_app(plan)
+                result  = self._open_app(plan)
+                # Can't easily verify app opened — assume success if no exception
+                success = result == "Done."
 
             elif action_type == "search_web":
-                return self._search_web(plan)
+                result  = self._search_web(plan)
+                success = result == "Done."
 
             elif action_type == "write_to_file":
-                return self._write_to_file(plan)
+                result  = self._write_to_file(plan)
+                success = "Done." in result
 
             else:
-                return "I don't know how to execute that type of action yet."
+                return "I don't know how to execute that type of action.", False
+
+            return result, success
 
         except Exception as e:
-            self._log(f"ERROR: {action_type} — {e}")
-            return f"Something went wrong while executing that: {e}. Want me to try a different approach?"
+            self._log(f"EXCEPTION: {action_type} — {e}")
+            return f"That didn't work: {str(e)[:100]}", False
+
+    def _ai_retry_plan(self, original_plan: dict, error_msg: str) -> dict:
+        """
+        Ask the AI to generate an alternative approach when the first attempt fails.
+        """
+        prompt = f"""An action failed on Windows. Generate an alternative approach.
+
+Original action: {json.dumps(original_plan, indent=2)}
+Error/result: {error_msg}
+
+Generate a different plan to achieve the same goal.
+Use a completely different method — if mkdir failed, try os.makedirs via python; 
+if start command failed, try webbrowser; if one path failed, try a different path.
+
+Respond ONLY with valid JSON in this exact format:
+{{
+  "action_type": "install_package | run_command | create_file | create_folder | open_app | search_web | write_to_file",
+  "description": "alternative approach in plain English",
+  "command": "alternative shell command if needed",
+  "filename": "full file path if needed",
+  "content": "",
+  "app_name": "app name if opening",
+  "search_query": "",
+  "url": "direct URL if opening browser",
+  "is_dangerous": false
+}}
+
+Respond with ONLY the JSON. No explanation."""
+
+        response = self.brain._call_api(
+            "groq", prompt,
+            use_persona=False, use_memory=False
+        )
+
+        if not response:
+            return None
+
+        try:
+            clean = response.strip().replace("```json", "").replace("```", "").strip()
+            return json.loads(clean)
+        except Exception:
+            return None
 
     def _run_command(self, plan: dict) -> str:
         """Run a shell command with cognitive thinking."""
@@ -513,25 +683,26 @@ In one sentence, what's the most likely cause and fix?
 Be specific and practical. No preamble."""
 
         response = self.brain._call_api(
-            Config.PRIMARY_BRAIN, prompt,
+            "groq", prompt,
             use_persona=False, use_memory=False
         )
         return response or f"Error: {error[:150]}"
 
     def _get_desktop_path(self) -> str:
-        """Get the correct Desktop path — handles OneDrive Desktop on Windows."""
-        # Standard desktop
-        standard = os.path.join(os.path.expanduser("~"), "Desktop")
-        if os.path.exists(standard):
-            return standard
+        """Get the correct Desktop path — checks OneDrive first (most common on Win10/11)."""
+        home = os.path.expanduser("~")
 
-        # OneDrive desktop (very common on Windows 10/11)
-        onedrive = os.path.join(os.path.expanduser("~"), "OneDrive", "Desktop")
+        # OneDrive Desktop first — most common on Windows 10/11
+        onedrive = os.path.join(home, "OneDrive", "Desktop")
         if os.path.exists(onedrive):
             return onedrive
 
-        # Fallback — just use home directory
-        return os.path.expanduser("~")
+        # Standard desktop
+        standard = os.path.join(home, "Desktop")
+        if os.path.exists(standard):
+            return standard
+
+        return home
 
     def _create_file(self, plan: dict) -> str:
         """Create a file — cognitively corrects extension, auto-renames if exists."""
@@ -612,27 +783,86 @@ Be specific and practical. No preamble."""
 
         try:
             os.makedirs(folder, exist_ok=True)
-            self._log(f"CREATED FOLDER: {folder}")
-            self.last_action_path = folder   # remember for follow-up commands
-            return f"Done. Created folder at {folder}."
+            # Verify it actually exists
+            if os.path.isdir(folder):
+                self._log(f"CREATED FOLDER: {folder}")
+                self.last_action_path = folder
+                return "Done."
+            else:
+                return "Something went wrong — folder wasn't created."
         except Exception as e:
             self._log(f"ERROR creating folder: {e}")
-            return f"Couldn't create the folder. {self._think_of_fix(command or folder, str(e))}"
+            return f"Couldn't create the folder: {str(e)[:100]}"
+
+    def _play_music(self, plan: dict) -> str:
+        """Play music using browser automation."""
+        query = plan.get("search_query", "") or plan.get("description", "music")
+        query = query.replace("play ", "").replace("music", "").strip() or "popular songs"
+        return self.browser.play_music(query)
 
     def _open_app(self, plan: dict) -> str:
-        """Open an application."""
-        app = plan.get("app_name", "")
-        command = plan.get("command", "")
+        """Open an application or URL using Windows start command."""
+        app     = (plan.get("app_name") or "").strip()
+        command = (plan.get("command") or "").strip()
+        url     = (plan.get("url") or "").strip()
 
+        # Direct URL — open in browser
+        if url and url.startswith("http"):
+            import webbrowser
+            webbrowser.open(url)
+            self._log(f"OPENED URL: {url}")
+            return "Done."
+
+        # Known app name map → exact executable or URL
+        app_map = {
+            "notepad":          "notepad.exe",
+            "calculator":       "calc.exe",
+            "explorer":         "explorer.exe",
+            "file explorer":    "explorer.exe",
+            "chrome":           "chrome",
+            "google chrome":    "chrome",
+            "firefox":          "firefox",
+            "edge":             "msedge",
+            "microsoft edge":   "msedge",
+            "powershell":       "powershell",
+            "cmd":              "cmd",
+            "command prompt":   "cmd",
+            "word":             "winword",
+            "excel":            "excel",
+            "paint":            "mspaint",
+            "task manager":     "taskmgr",
+            "spotify":          "https://open.spotify.com",
+            "youtube":          "https://www.youtube.com",
+            "netflix":          "https://www.netflix.com",
+            "whatsapp":         "https://web.whatsapp.com",
+            "gmail":            "https://mail.google.com",
+        }
+
+        target = app_map.get(app.lower(), app)
+
+        # If it's a URL (from app_map or direct) — use browser automation
+        if target and target.startswith("http"):
+            return self.browser.open_url(target)
+
+        # Shell command provided directly
         if command:
-            subprocess.Popen(command, shell=True)
-        elif app:
-            subprocess.Popen(f'start "" "{app}"', shell=True)
-        else:
-            return "I'm not sure which app to open."
+            try:
+                subprocess.Popen(command, shell=True)
+                self._log(f"OPENED: {command}")
+                return "Done."
+            except Exception as e:
+                return f"Couldn't open that: {e}"
 
-        self._log(f"OPENED: {app or command}")
-        return f"Done. Opening {app or 'the application'} now."
+        # Use Windows start command
+        if target:
+            try:
+                subprocess.Popen(f'start "" "{target}"', shell=True)
+                self._log(f"OPENED: {target}")
+                return "Done."
+            except Exception as e:
+                return f"Couldn't open {app}: {e}"
+
+        return "I'm not sure what to open."
 
     def _search_web(self, plan: dict) -> str:
         """Open browser with a search."""
@@ -643,7 +873,7 @@ Be specific and practical. No preamble."""
         url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
         webbrowser.open(url)
         self._log(f"SEARCHED: {query}")
-        return f"Done. Opened a search for '{query}' in your browser."
+        return "Done."
 
     def _write_to_file(self, plan: dict) -> str:
         """Append or write content to an existing file."""
@@ -654,7 +884,7 @@ Be specific and practical. No preamble."""
         with open(filename, "a", encoding="utf-8") as f:
             f.write(content + "\n")
         self._log(f"WROTE TO: {filename}")
-        return f"Done. Added content to '{filename}'."
+        return "Done."
 
     # ─────────────────────────────────────────────────────────────
     # LOGGING
