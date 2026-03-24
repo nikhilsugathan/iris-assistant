@@ -4,6 +4,7 @@ import html
 import math
 import os
 import sys
+import threading
 from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -259,7 +260,15 @@ class EngineWorker(QtCore.QThread):
             if self.mode == "listen":
                 captured = self.engine.listen_for_voice_command()
                 if not captured:
-                    self.completed.emit({"captured": "", "result": None, "mode": "listen"})
+                    self.completed.emit(
+                        {
+                            "captured": "",
+                            "result": None,
+                            "mode": "listen",
+                            "listen_feedback": self.engine.voice.describe_last_listen_feedback(),
+                            "listen_feedback_short": self.engine.voice.short_last_listen_feedback(),
+                        }
+                    )
                     return
                 result = self.engine.process_user_input(captured)
                 self.completed.emit({"captured": captured, "result": result, "mode": "listen"})
@@ -282,6 +291,7 @@ class IrisWindow(QtWidgets.QMainWindow):
         self.worker = None
         self.busy = False
         self._quitting = False
+        self._sticky_footer = False
         self._startup_enabled = self._has_startup_shortcut()
         self._first_tray_hint_shown = self.settings.value("tray_hint_shown", False, type=bool)
         self.app_icon = create_app_icon()
@@ -582,7 +592,8 @@ class IrisWindow(QtWidgets.QMainWindow):
             "listening": "Listening for your voice.",
             "speaking": "Iris is speaking.",
         }
-        self.footer.setText(footer_map.get(state, self.footer.text()))
+        if state == "listening" or not self._sticky_footer:
+            self.footer.setText(footer_map.get(state, self.footer.text()))
         if self.tray:
             self.tray.setToolTip(f"{Config.PUBLIC_NAME} // {state.upper()}")
 
@@ -600,6 +611,7 @@ class IrisWindow(QtWidgets.QMainWindow):
         text = self.input.text().strip()
         if not text:
             return
+        self._sticky_footer = False
         self.input.clear()
         self.append_message("You", text, "user")
         self.orb.set_state("thinking")
@@ -609,6 +621,7 @@ class IrisWindow(QtWidgets.QMainWindow):
     def on_listen(self):
         if self.busy:
             return
+        self._sticky_footer = False
         self.orb.set_state("listening")
         self.state_pill.setText("LISTENING")
         self.start_worker(mode="listen", footer="Listening for a command...")
@@ -630,6 +643,7 @@ class IrisWindow(QtWidgets.QMainWindow):
             self.append_message("You", captured, "user")
 
         if result and result.response:
+            self._sticky_footer = False
             kind = "assistant" if "Diagnostics" not in result.label else "system"
             self.append_message(result.label, result.response, kind)
             self.mode_label.setText(f"{result.mode.upper()} MODE")
@@ -642,9 +656,22 @@ class IrisWindow(QtWidgets.QMainWindow):
                 return
 
         if mode == "listen" and not captured:
-            self.footer.setText("I didn't catch anything that time.")
+            feedback = payload.get("listen_feedback") or "I didn't catch anything that time."
+            spoken_feedback = payload.get("listen_feedback_short") or "I didn't catch that."
+            self._sticky_footer = True
+            self.append_message("System", feedback, "system")
+            self.footer.setText(feedback)
+            if self.tray and not self.isVisible():
+                self.tray.showMessage(Config.PUBLIC_NAME, feedback, self.app_icon, 5000)
+            if getattr(self.engine.voice, "audio_ready", False):
+                threading.Thread(
+                    target=self.engine.voice.speak,
+                    args=(spoken_feedback,),
+                    daemon=True,
+                ).start()
 
     def on_worker_failed(self, message: str):
+        self._sticky_footer = True
         self.orb.set_state("error")
         self.floating_window.set_state("error")
         self.state_pill.setText("ERROR")
@@ -659,7 +686,8 @@ class IrisWindow(QtWidgets.QMainWindow):
             self.orb.set_state("idle")
             self.floating_window.set_state("idle")
             self.state_pill.setText("IDLE")
-            self.footer.setText("Standing by.")
+            if not self._sticky_footer:
+                self.footer.setText("Standing by.")
 
     def refresh_status(self):
         status = self.engine.status_snapshot()

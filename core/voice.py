@@ -36,6 +36,8 @@ class Voice:
         self.selected_mic_index = None
         self.recognizer      = None
         self.microphone      = None
+        self.last_listen_status = "idle"
+        self.last_listen_detail = ""
 
         self._init_audio()
         self._init_mic()
@@ -170,9 +172,13 @@ class Voice:
         import speech_recognition as sr
 
         if not self.mic_ready or self.microphone is None:
+            self.last_listen_status = "mic_unavailable"
+            self.last_listen_detail = self.mic_error or "Microphone is not ready."
             time.sleep(1)
             return ""
 
+        self.last_listen_status = "listening"
+        self.last_listen_detail = ""
         self._emit_state("listening")
         try:
             with self.microphone as source:
@@ -184,9 +190,13 @@ class Voice:
                     phrase_time_limit=phrase_time_limit,
                 )
         except sr.WaitTimeoutError:
+            self.last_listen_status = "timeout"
+            self.last_listen_detail = "No speech was detected before the listen timeout."
             self._emit_state("idle")
             return ""
         except Exception as e:
+            self.last_listen_status = "mic_error"
+            self.last_listen_detail = str(e)
             self._emit_state("idle")
             if not wake_mode:
                 console.print(f"[red]Mic error:[/red] {e}")
@@ -202,16 +212,47 @@ class Voice:
                 text = self._transcribe_google(audio)
 
         if text:
+            self.last_listen_status = "heard"
+            self.last_listen_detail = text
             if wake_mode and getattr(Config, "SHOW_WAKE_DEBUG", True):
                 console.print(f"[dim]Wake heard:[/dim] {text}")
             elif not wake_mode:
                 console.print(f"[green]You:[/green] {text}")
 
         elif not wake_mode:
+            self.last_listen_status = "transcription_failed"
+            self.last_listen_detail = "Audio was captured, but speech recognition could not produce text."
             console.print("[dim]Heard audio but couldn't transcribe it.[/dim]")
+        else:
+            self.last_listen_status = "wake_not_understood"
+            self.last_listen_detail = "Wake audio was captured, but no wake phrase was recognized."
 
         self._emit_state("idle")
         return text or ""
+
+    def describe_last_listen_feedback(self) -> str:
+        status = getattr(self, "last_listen_status", "idle")
+        detail = getattr(self, "last_listen_detail", "")
+
+        if status == "mic_unavailable":
+            return "My microphone is not ready yet. Check the selected input device and try again."
+        if status == "mic_error":
+            return f"My microphone hit an error: {detail or 'unknown microphone failure'}."
+        if status == "timeout":
+            return "I didn't hear anything that time. Try again or type your request."
+        if status == "transcription_failed":
+            return "I heard audio, but I couldn't turn it into text. Try speaking a little closer or type the request."
+        return "That didn't come through clearly. Please try again."
+
+    def short_last_listen_feedback(self) -> str:
+        status = getattr(self, "last_listen_status", "idle")
+        if status == "mic_unavailable":
+            return "My microphone is not ready."
+        if status == "mic_error":
+            return "My microphone ran into a problem."
+        if status == "transcription_failed":
+            return "I heard you, but I couldn't make that out."
+        return "I didn't catch that."
 
     def _transcribe_groq(self, audio) -> str:
         """Use Groq Whisper API — fastest and most accurate."""
