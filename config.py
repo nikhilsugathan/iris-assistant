@@ -43,7 +43,7 @@ class Config:
     PREFERRED_MIC_NAME = os.getenv("PREFERRED_MIC_NAME", "").strip()
 
     VOICE_NAME = os.getenv("VOICE_NAME", "en-GB-SoniaNeural")
-    VOICE_RATE = os.getenv("VOICE_RATE", "+18%")
+    VOICE_RATE = os.getenv("VOICE_RATE", "+8%")  # Slightly slower = cleaner first word
     SPEAK_IN_TEXT_MODE = os.getenv("SPEAK_IN_TEXT_MODE", "false").lower() == "true"
 
     WAKE_TIMEOUT = 8

@@ -267,14 +267,19 @@ class Voice:
             tmp = f.name
 
         try:
+            # Add small pause at start so pygame buffer is ready
+            # Prevents first syllable being clipped
+            padded_text = "  " + text
+
             communicate = edge_tts.Communicate(
-                text=text,
+                text=padded_text,
                 voice=getattr(Config, "VOICE_NAME", "en-GB-SoniaNeural"),
                 rate=getattr(Config, "VOICE_RATE", "+18%"),
             )
             await communicate.save(tmp)
 
             pygame.mixer.music.load(tmp)
+            pygame.mixer.music.set_volume(1.0)
             pygame.mixer.music.play()
 
             while pygame.mixer.music.get_busy():
