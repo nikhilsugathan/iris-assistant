@@ -122,9 +122,10 @@ class Voice:
         return input("You: ")
 
     def listen_for_wake(self) -> str:
+        # Wake detection uses fast Google STT, not Groq Whisper
         if self.text_mode:
             return self.listen_text()
-        time.sleep(0.5)   # Cooldown to avoid TTS echo
+        time.sleep(0.2)   # Brief cooldown to avoid TTS echo
         return self._listen(
             timeout=getattr(Config, "WAKE_TIMEOUT", 8),
             phrase_time_limit=getattr(Config, "WAKE_PHRASE_LIMIT", 10),
@@ -163,12 +164,14 @@ class Voice:
                 console.print(f"[red]Mic error:[/red] {e}")
             return ""
 
-        # Try Groq Whisper first (best accuracy)
-        text = self._transcribe_groq(audio)
-
-        # Fall back to Google STT
-        if not text:
+        # Wake mode: use fast Google STT only (Groq adds 1-2s latency)
+        # Command mode: use accurate Groq Whisper, fall back to Google
+        if wake_mode:
             text = self._transcribe_google(audio)
+        else:
+            text = self._transcribe_groq(audio)
+            if not text:
+                text = self._transcribe_google(audio)
 
         if text:
             if wake_mode and getattr(Config, "SHOW_WAKE_DEBUG", True):

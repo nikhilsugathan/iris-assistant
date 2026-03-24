@@ -295,7 +295,6 @@ class ActionExecutor:
             return {
                 "action_type": "create_folder",
                 "description": f"create folder '{foldername}' in {location}",
-                "command": f'mkdir "{folderpath}"',
                 "filename": folderpath,
                 "is_dangerous": False
             }
@@ -590,15 +589,35 @@ Be specific and practical. No preamble."""
         return f"{prefix}Done. '{os.path.basename(filepath)}' created at {filepath}. Want me to open it?"
 
     def _create_folder(self, plan: dict) -> str:
-        """Create a directory."""
-        command = plan.get("command", "")
-        if command:
-            return self._run_command(plan)
-        folder = plan.get("filename", "new_folder")
-        os.makedirs(folder, exist_ok=True)
-        self._log(f"CREATED FOLDER: {folder}")
-        self.last_action_path = folder   # remember for follow-up rename etc.
-        return f"Done. Created the folder '{folder}'."
+        """Create a folder using os.makedirs — reliable across all Windows paths."""
+        filename = plan.get("filename", "")
+        command  = plan.get("command", "")
+
+        # Resolve the folder path
+        if filename:
+            folder = filename
+        elif command:
+            # Extract path from mkdir command
+            match = re.search(r'mkdir\s+"?([^"]+)"?', command, re.IGNORECASE)
+            folder = match.group(1).strip() if match else None
+        else:
+            folder = None
+
+        if not folder:
+            return "I couldn't determine where to create the folder."
+
+        # Fix desktop path — handle OneDrive
+        if "desktop" in folder.lower():
+            folder = os.path.join(self._get_desktop_path(), os.path.basename(folder))
+
+        try:
+            os.makedirs(folder, exist_ok=True)
+            self._log(f"CREATED FOLDER: {folder}")
+            self.last_action_path = folder   # remember for follow-up commands
+            return f"Done. Created folder at {folder}."
+        except Exception as e:
+            self._log(f"ERROR creating folder: {e}")
+            return f"Couldn't create the folder. {self._think_of_fix(command or folder, str(e))}"
 
     def _open_app(self, plan: dict) -> str:
         """Open an application."""
