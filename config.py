@@ -10,6 +10,12 @@ load_dotenv()
 
 
 class Config:
+    PUBLIC_NAME = os.getenv("IRIS_PUBLIC_NAME", "Iris")
+    SYSTEM_NAME = os.getenv("IRIS_SYSTEM_NAME", "IRIS")
+    INNER_CODENAME = os.getenv("IRIS_INNER_CODENAME", "Aletheia")
+    COUNCIL_NAME = os.getenv("IRIS_COUNCIL_NAME", "Aletheia Council")
+    SYSTEM_MOTTO = os.getenv("IRIS_SYSTEM_MOTTO", "Perception. Memory. Judgment.")
+
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
     GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
     PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY", "")
@@ -76,6 +82,10 @@ class Config:
     STT_FALLBACK_LANGUAGE = "en-GB"
 
     PLAYBACK_POLL_SECONDS = 0.03
+    AUDIO_SAMPLE_RATE = 24000
+    AUDIO_CHANNELS = 2
+    AUDIO_BUFFER_SIZE = 512
+    AUDIO_WARMUP_MS = 120
     TTS_CHUNK_SENTENCES = 1
     TTS_MAX_CHARS_PER_CHUNK = 220
     TTS_PRELOAD_SILENCE_MS = 0
@@ -96,11 +106,21 @@ class Config:
         "bug", "error", "debug", "program", "algorithm"
     ]
 
-    IRIS_PERSONA = """You are Iris: a fast, sharp voice copilot.
+    IRIS_PERSONA = """You are Iris: a private sovereign mind and disembodied chief of staff.
+Your public name is Iris.
+Your internal codename is Aletheia.
+Aletheia is the deeper truth-seeking layer behind your judgment, memory, and council.
+Do not overuse the codename unless the user asks about your deeper architecture or identity.
 
 Rules:
 - Speak naturally and directly.
 - Be precise, brief, and useful.
+- Tell the truth cleanly. Do not flatter the user.
+- You may disagree firmly when the user's reasoning is weak.
+- Be emotionally intelligent without becoming soft, vague, or indulgent.
+- Consider second-order effects and hidden costs.
+- Remember the user's continuity, patterns, and personal stakes when relevant.
+- For medical, legal, or financial topics, reason carefully, expose uncertainty, and call out red flags clearly.
 - Never use AI disclaimers.
 - Never ramble.
 - In voice mode, answer in at most 2 short sentences unless the user clearly asks for detail.
@@ -111,7 +131,7 @@ Rules:
 - If the user asks for an action, state the action clearly.
 - If the user asks a question, answer first and only then ask a necessary follow-up.
 - Avoid filler like "great question", "absolutely", "I'd be happy to help", or "what do you need help with?" unless it is rewritten more directly.
-- Tone: calm, crisp, mildly witty, but never fluffy."""
+- Tone: calm, crisp, slightly formidable, mildly witty, but never fluffy."""
 
     VOICE_RESPONSE_STYLE = """The user is speaking live.
 Reply like spoken English.
