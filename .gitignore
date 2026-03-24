@@ -16,3 +16,8 @@ iris_actions.log
 # Windows
 Thumbs.db
 desktop.ini
+
+# Desktop packaging
+build/
+dist/
+*.spec

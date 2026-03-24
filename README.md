@@ -1,38 +1,55 @@
-# IRIS Ultra Low Latency
+# IRIS // Aletheia
 
-This build prioritizes faster voice turn-taking over long answers.
+IRIS is the public voice.
+Aletheia is the deeper cognitive core.
 
-## What changed
-- Faster default brain: `llama-3.1-8b-instant` on Groq
-- Shorter voice replies by default
-- Less memory context in live conversation
-- Faster mic end-of-speech settings
-- TTS caches generated audio files for repeated phrases
-- Text mode is silent by default to avoid fake voice latency during terminal testing
+This build is now local-first, voice-capable, and includes a desktop GUI shell with a futuristic live visualization.
 
-## Setup
-1. Copy `.env.example` to `.env`
-2. Add at least `GROQ_API_KEY`
-3. Install packages:
+## Current Shape
+- Local-first brain routing through Ollama: `phi3.5`, `llama3.1:8b`, `deepseek-r1:8b`
+- Cognitive routing layer: self-model, dialog manager, council, diagnostics
+- Autonomous action handling with security gating
+- Voice output with state-aware playback improvements
+- Desktop shell in `iris_gui.py`
+- Automated Windows build workflow on git push
 
+## Install
 ```bash
-pip install -r requirements.txt
+py -3 -m pip install -r requirements.txt
+```
+
+Optional build tooling for local packaging:
+```bash
+py -3 -m pip install pyinstaller
 ```
 
 ## Run
+Terminal mode:
 ```bash
-py main.py
+py -3 main.py --text
 ```
 
-For silent keyboard testing:
+Desktop shell:
 ```bash
-py main.py --text
+py -3 iris_gui.py
 ```
 
-To force speech even in `--text` mode, set:
+## Windows Build
+The repo now includes a GitHub Actions workflow at `.github/workflows/build-windows.yml`.
+
+On every push to `main` or `codex/*`, GitHub will build a Windows desktop artifact and upload it.
+
+For a local build:
 ```bash
-set SPEAK_IN_TEXT_MODE=true
+py -3 -m PyInstaller --noconfirm --clean --windowed --onedir --name IrisAletheia --collect-all PySide6 --hidden-import edge_tts --hidden-import pygame --hidden-import speech_recognition iris_gui.py
 ```
 
-## Honest note
-This is still not a true realtime voice agent. For genuinely human interruptible conversation, you need a streaming STT/TTS stack or a realtime voice API.
+The local packaged app is generated in:
+```bash
+dist\IrisAletheia\IrisAletheia.exe
+```
+
+## Notes
+- If Ollama is running, IRIS can function even without cloud API keys.
+- If you want cloud fallback, keep your `.env` file available.
+- `Iris` remains the spoken identity; `Aletheia` is the internal codename and council core.

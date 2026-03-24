@@ -8,3 +8,4 @@ edge-tts
 pygame
 SpeechRecognition
 PyAudio
+PySide6

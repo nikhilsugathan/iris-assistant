@@ -26,6 +26,8 @@ class Voice:
         self.text_mode       = text_mode
         self._tts_lock       = threading.Lock()
         self._stop_flag      = threading.Event()
+        self._state_callback = None
+        self.current_state   = "idle"
         self.audio_ready     = False
         self.mic_ready       = False
         self.mic_error       = None
@@ -57,6 +59,19 @@ class Voice:
             console.print("[green]✓ Audio playback ready[/green]")
         except Exception as e:
             console.print(f"[red]Audio init failed:[/red] {e}")
+
+    def set_state_callback(self, callback):
+        self._state_callback = callback
+
+    def _emit_state(self, state: str):
+        self.current_state = state
+        callback = self._state_callback
+        if not callback:
+            return
+        try:
+            callback(state)
+        except Exception:
+            pass
 
     def _init_mic(self):
         if self.text_mode:
@@ -158,6 +173,7 @@ class Voice:
             time.sleep(1)
             return ""
 
+        self._emit_state("listening")
         try:
             with self.microphone as source:
                 if not wake_mode:
@@ -168,8 +184,10 @@ class Voice:
                     phrase_time_limit=phrase_time_limit,
                 )
         except sr.WaitTimeoutError:
+            self._emit_state("idle")
             return ""
         except Exception as e:
+            self._emit_state("idle")
             if not wake_mode:
                 console.print(f"[red]Mic error:[/red] {e}")
             return ""
@@ -192,6 +210,7 @@ class Voice:
         elif not wake_mode:
             console.print("[dim]Heard audio but couldn't transcribe it.[/dim]")
 
+        self._emit_state("idle")
         return text or ""
 
     def _transcribe_groq(self, audio) -> str:
@@ -253,7 +272,11 @@ class Voice:
         with self._tts_lock:
             self.stop_speaking()
             self._stop_flag.clear()
-            self._speak_blocking(clean)
+            self._emit_state("speaking")
+            try:
+                self._speak_blocking(clean)
+            finally:
+                self._emit_state("idle")
 
     def _speak_blocking(self, text: str):
         """Blocking speak — runs in thread."""
@@ -312,6 +335,7 @@ class Voice:
             pygame.mixer.music.stop()
         except Exception:
             pass
+        self._emit_state("idle")
 
     def stop(self):
         self.stop_speaking()
