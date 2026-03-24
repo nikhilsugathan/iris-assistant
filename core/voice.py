@@ -1,17 +1,20 @@
 """
-IRIS Voice Module
-=================
-Two-stage voice handling for Windows with wake debug.
+IRIS Voice Module v4
+====================
+STT  : Groq Whisper API (fast, accurate, free with your Groq key)
+       Falls back to Google STT if Groq unavailable
+TTS  : Edge TTS with immediate single-chunk playback (no lag)
 """
 
 import asyncio
+import io
 import os
 import tempfile
 import threading
 import time
+import wave
 
 from rich.console import Console
-
 from config import Config
 
 console = Console()
@@ -19,49 +22,56 @@ console = Console()
 
 class Voice:
     def __init__(self, text_mode: bool = False):
-        self.text_mode = text_mode
-        self._tts_lock = threading.Lock()
-        self.audio_ready = False
-        self.mic_ready = False
-        self.mic_error = None
-        self.last_heard_status = ""
-        self.calibrated = False
-        self.selected_mic_name = "Default Windows microphone"
+        self.text_mode       = text_mode
+        self._tts_lock       = threading.Lock()
+        self._stop_flag      = threading.Event()
+        self.audio_ready     = False
+        self.mic_ready       = False
+        self.mic_error       = None
+        self.calibrated      = False
+        self.selected_mic_name  = "Default"
         self.selected_mic_index = None
+        self.recognizer      = None
+        self.microphone      = None
 
+        self._init_audio()
+        self._init_mic()
+
+    # ─────────────────────────────────────────────────────────────
+    # INIT
+    # ─────────────────────────────────────────────────────────────
+
+    def _init_audio(self):
         try:
             import pygame
-
             pygame.mixer.init()
             self.audio_ready = True
             console.print("[green]✓ Audio playback ready[/green]")
         except Exception as e:
-            self.audio_ready = False
             console.print(f"[red]Audio init failed:[/red] {e}")
 
+    def _init_mic(self):
+        if self.text_mode:
+            return
         try:
             import speech_recognition as sr
-
             self.recognizer = sr.Recognizer()
             self.recognizer.dynamic_energy_threshold = False
-            self.recognizer.energy_threshold = getattr(Config, "MIC_ENERGY_THRESHOLD", 200)
-            self.recognizer.pause_threshold = getattr(Config, "MIC_PAUSE_THRESHOLD", 0.9)
-            self.recognizer.phrase_threshold = getattr(Config, "MIC_PHRASE_THRESHOLD", 0.2)
-            self.recognizer.non_speaking_duration = getattr(
-                Config, "MIC_NON_SPEAKING_DURATION", 0.4
-            )
+            self.recognizer.energy_threshold         = getattr(Config, "MIC_ENERGY_THRESHOLD", 50)
+            self.recognizer.pause_threshold          = getattr(Config, "MIC_PAUSE_THRESHOLD", 0.6)
+            self.recognizer.phrase_threshold         = getattr(Config, "MIC_PHRASE_THRESHOLD", 0.2)
+            self.recognizer.non_speaking_duration    = getattr(Config, "MIC_NON_SPEAKING_DURATION", 0.3)
 
             mic_names = sr.Microphone.list_microphone_names()
-            preferred_mic_name = getattr(Config, "PREFERRED_MIC_NAME", "").strip()
-
+            preferred = getattr(Config, "PREFERRED_MIC_NAME", "").strip()
             mic_index = None
-            mic_name = "Default Windows microphone"
+            mic_name  = "Default Windows microphone"
 
-            if preferred_mic_name:
+            if preferred:
                 for i, name in enumerate(mic_names):
-                    if preferred_mic_name.lower() in name.lower():
+                    if preferred.lower() in name.lower():
                         mic_index = i
-                        mic_name = name
+                        mic_name  = name
                         break
 
             self.microphone = sr.Microphone(
@@ -69,46 +79,44 @@ class Voice:
                 sample_rate=getattr(Config, "MIC_SAMPLE_RATE", 16000),
                 chunk_size=getattr(Config, "MIC_CHUNK_SIZE", 1024),
             )
-
             self.selected_mic_index = mic_index
-            self.selected_mic_name = mic_name
-            self.mic_ready = True
+            self.selected_mic_name  = mic_name
+            self.mic_ready          = True
 
-            console.print(
-                f"[green]✓ Microphone ready[/green] [dim]({self.selected_mic_name})[/dim]"
-            )
+            console.print(f"[green]✓ Microphone ready[/green] [dim]({mic_name})[/dim]")
 
             if mic_names:
                 console.print("[dim]Available microphones:[/dim]")
                 for i, name in enumerate(mic_names):
                     console.print(f"[dim]  {i}: {name}[/dim]")
 
-            self._calibrate_once()
+            self._calibrate()
 
         except Exception as e:
-            self.microphone = None
-            self.mic_ready = False
             self.mic_error = str(e)
-            if not self.text_mode:
-                console.print(f"[red]Microphone init failed:[/red] {e}")
+            console.print(f"[red]Microphone init failed:[/red] {e}")
 
-    def _calibrate_once(self):
-        if self.text_mode or not self.mic_ready or self.microphone is None or self.calibrated:
+    def _calibrate(self):
+        if not self.mic_ready or self.calibrated:
             return
-
         try:
             with self.microphone as source:
-                console.print("[dim]Calibrating microphone... stay quiet for a moment.[/dim]")
+                console.print("[dim]Calibrating microphone... stay quiet.[/dim]")
                 self.recognizer.adjust_for_ambient_noise(
                     source,
-                    duration=getattr(Config, "MIC_CALIBRATION_SECONDS", 1.5),
+                    duration=getattr(Config, "MIC_CALIBRATION_SECONDS", 2.0)
                 )
             self.calibrated = True
             console.print(
-                f"[green]✓ Calibration complete[/green] [dim](energy={self.recognizer.energy_threshold:.0f})[/dim]"
+                f"[green]✓ Calibration complete[/green] "
+                f"[dim](energy={self.recognizer.energy_threshold:.0f})[/dim]"
             )
         except Exception as e:
             console.print(f"[yellow]Calibration warning:[/yellow] {e}")
+
+    # ─────────────────────────────────────────────────────────────
+    # LISTEN
+    # ─────────────────────────────────────────────────────────────
 
     def listen_text(self) -> str:
         return input("You: ")
@@ -116,227 +124,177 @@ class Voice:
     def listen_for_wake(self) -> str:
         if self.text_mode:
             return self.listen_text()
-
-        if not self.mic_ready or self.microphone is None:
-            if self.mic_error:
-                console.print(f"[dim]Mic error: {self.mic_error}[/dim]")
-            time.sleep(1)
-            return ""
-
-        return self._listen_voice(
+        time.sleep(0.5)   # Cooldown to avoid TTS echo
+        return self._listen(
             timeout=getattr(Config, "WAKE_TIMEOUT", 8),
             phrase_time_limit=getattr(Config, "WAKE_PHRASE_LIMIT", 10),
-            show_listening=False,
-            unknown_msg=False,
-            wake_debug=True,
+            wake_mode=True,
         )
 
     def listen_for_command(self) -> str:
         if self.text_mode:
             return self.listen_text()
-
-        if not self.mic_ready or self.microphone is None:
-            return ""
-
-        return self._listen_voice(
+        return self._listen(
             timeout=getattr(Config, "MIC_TIMEOUT", 6),
-            phrase_time_limit=getattr(Config, "MIC_PHRASE_LIMIT", 10),
-            show_listening=True,
-            unknown_msg=True,
-            wake_debug=False,
+            phrase_time_limit=getattr(Config, "MIC_PHRASE_LIMIT", 12),
+            wake_mode=False,
         )
 
-    def _listen_voice(
-        self,
-        timeout: int,
-        phrase_time_limit: int,
-        show_listening: bool,
-        unknown_msg: bool,
-        wake_debug: bool,
-    ) -> str:
+    def _listen(self, timeout: int, phrase_time_limit: int, wake_mode: bool) -> str:
         import speech_recognition as sr
 
-        self.last_heard_status = ""
+        if not self.mic_ready or self.microphone is None:
+            time.sleep(1)
+            return ""
 
         try:
             with self.microphone as source:
-                if show_listening:
+                if not wake_mode:
                     console.print("[dim]Listening...[/dim]")
-
                 audio = self.recognizer.listen(
                     source,
                     timeout=timeout,
                     phrase_time_limit=phrase_time_limit,
                 )
         except sr.WaitTimeoutError:
-            self.last_heard_status = "timeout"
             return ""
         except Exception as e:
-            self.last_heard_status = f"listen_error: {e}"
-            if show_listening or wake_debug:
-                console.print(f"[red]Microphone listen failed:[/red] {e}")
+            if not wake_mode:
+                console.print(f"[red]Mic error:[/red] {e}")
             return ""
 
-        # Primary language: UK English
+        # Try Groq Whisper first (best accuracy)
+        text = self._transcribe_groq(audio)
+
+        # Fall back to Google STT
+        if not text:
+            text = self._transcribe_google(audio)
+
+        if text:
+            if wake_mode and getattr(Config, "SHOW_WAKE_DEBUG", True):
+                console.print(f"[dim]Wake heard:[/dim] {text}")
+            elif not wake_mode:
+                console.print(f"[green]You:[/green] {text}")
+
+        elif not wake_mode:
+            console.print("[dim]Heard audio but couldn't transcribe it.[/dim]")
+
+        return text or ""
+
+    def _transcribe_groq(self, audio) -> str:
+        """Use Groq Whisper API — fastest and most accurate."""
         try:
+            import speech_recognition as sr
+
+            # Export audio to WAV bytes
+            wav_data = io.BytesIO()
+            with wave.open(wav_data, "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(audio.sample_width)
+                wf.setframerate(audio.sample_rate)
+                wf.writeframes(audio.frame_data)
+            wav_data.seek(0)
+
+            from groq import Groq
+            client = Groq(api_key=Config.GROQ_API_KEY)
+
+            transcription = client.audio.transcriptions.create(
+                file=("audio.wav", wav_data, "audio/wav"),
+                model="whisper-large-v3-turbo",
+                language="en",
+                response_format="text",
+            )
+            return (transcription or "").strip()
+
+        except Exception:
+            return ""
+
+    def _transcribe_google(self, audio) -> str:
+        """Fallback: Google STT."""
+        try:
+            import speech_recognition as sr
             text = self.recognizer.recognize_google(
                 audio,
-                language=getattr(Config, "STT_LANGUAGE", "en-GB"),
+                language=getattr(Config, "STT_LANGUAGE", "en-US"),
             ).strip()
-
-            if text:
-                self.last_heard_status = "heard"
-                if show_listening:
-                    console.print(f"[green]You:[/green] {text}")
-                elif wake_debug and getattr(Config, "SHOW_WAKE_DEBUG", True):
-                    console.print(f"[dim]Wake heard:[/dim] {text}")
-                return text
-
-            self.last_heard_status = "empty"
+            return text
+        except Exception:
             return ""
 
-        except sr.UnknownValueError:
-            pass
-        except sr.RequestError as e:
-            self.last_heard_status = f"request_error: {e}"
-            if show_listening or wake_debug:
-                console.print(f"[red]Speech recognition service failed:[/red] {e}")
-            return ""
-        except Exception as e:
-            self.last_heard_status = f"recognition_error: {e}"
-            if show_listening or wake_debug:
-                console.print(f"[red]Speech recognition error:[/red] {e}")
-            return ""
-
-        # Fallback language: Indian English
-        try:
-            text = self.recognizer.recognize_google(
-                audio,
-                language=getattr(Config, "STT_FALLBACK_LANGUAGE", "en-IN"),
-            ).strip()
-
-            if text:
-                self.last_heard_status = "heard_fallback"
-                if show_listening:
-                    console.print(f"[green]You:[/green] {text}")
-                elif wake_debug and getattr(Config, "SHOW_WAKE_DEBUG", True):
-                    console.print(f"[dim]Wake heard:[/dim] {text}")
-                return text
-
-        except sr.UnknownValueError:
-            self.last_heard_status = "unknown_value"
-            if unknown_msg and show_listening:
-                console.print("[dim]Heard audio, but speech was not clear enough to transcribe.[/dim]")
-            elif wake_debug and getattr(Config, "SHOW_WAKE_DEBUG", True):
-                console.print("[dim]Wake audio detected, but words were unclear.[/dim]")
-            return ""
-        except sr.RequestError as e:
-            self.last_heard_status = f"request_error: {e}"
-            if show_listening or wake_debug:
-                console.print(f"[red]Speech recognition service failed:[/red] {e}")
-            return ""
-        except Exception as e:
-            self.last_heard_status = f"recognition_error: {e}"
-            if show_listening or wake_debug:
-                console.print(f"[red]Speech recognition error:[/red] {e}")
-            return ""
-
-        return ""
+    # ─────────────────────────────────────────────────────────────
+    # SPEAK — Edge TTS, immediate playback, no chunking lag
+    # ─────────────────────────────────────────────────────────────
 
     def speak(self, text: str):
         if not text:
             return
-
         if self.text_mode and not getattr(Config, "SPEAK_IN_TEXT_MODE", False):
             return
-
         if not self.audio_ready:
-            console.print("[yellow]Audio output unavailable, skipping speech.[/yellow]")
             return
 
         clean = self._clean(text)
         if not clean:
             return
 
-        for chunk in self._chunk_text(clean):
-            self._speak_chunk(chunk)
+        self._stop_flag.clear()
+        with self._tts_lock:
+            try:
+                asyncio.run(self._speak_async(clean))
+            except Exception as e:
+                console.print(f"[red]TTS error:[/red] {e}")
 
-    def _speak_chunk(self, text: str):
+    async def _speak_async(self, text: str):
+        import edge_tts
+        import pygame
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
+            tmp = f.name
+
         try:
-            import edge_tts
-            import pygame
+            communicate = edge_tts.Communicate(
+                text=text,
+                voice=getattr(Config, "VOICE_NAME", "en-GB-SoniaNeural"),
+                rate=getattr(Config, "VOICE_RATE", "+18%"),
+            )
+            await communicate.save(tmp)
 
-            async def _run():
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
-                    temp_file = f.name
+            pygame.mixer.music.load(tmp)
+            pygame.mixer.music.play()
 
-                try:
-                    communicate = edge_tts.Communicate(
-                        text=text,
-                        voice=getattr(Config, "VOICE_NAME", "en-GB-SoniaNeural"),
-                        rate=getattr(Config, "VOICE_RATE", "+18%"),
-                    )
-                    await communicate.save(temp_file)
+            while pygame.mixer.music.get_busy():
+                if self._stop_flag.is_set():
+                    pygame.mixer.music.stop()
+                    break
+                await asyncio.sleep(0.03)
 
-                    pygame.mixer.music.load(temp_file)
-                    pygame.mixer.music.play()
+            try:
+                pygame.mixer.music.unload()
+            except Exception:
+                pass
+        finally:
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
 
-                    while pygame.mixer.music.get_busy():
-                        await asyncio.sleep(getattr(Config, "PLAYBACK_POLL_SECONDS", 0.03))
-                finally:
-                    try:
-                        pygame.mixer.music.unload()
-                    except Exception:
-                        pass
-
-                    if os.path.exists(temp_file):
-                        try:
-                            os.remove(temp_file)
-                        except Exception:
-                            pass
-
-            with self._tts_lock:
-                try:
-                    loop = asyncio.get_running_loop()
-                    loop.create_task(_run())
-                except RuntimeError:
-                    asyncio.run(_run())
-
-        except Exception as e:
-            console.print(f"[red]TTS error:[/red] {e}")
-
-    def _clean(self, text: str) -> str:
-        return text.replace("*", "").strip()
-
-    def _chunk_text(self, text: str):
-        import re
-
-        parts = re.split(r"(?<=[.!?])\s+", text)
-        chunks = []
-        current = ""
-
-        for part in parts:
-            if not part.strip():
-                continue
-
-            if len(current) + len(part) + 1 < 140:
-                current = f"{current} {part}".strip() if current else part
-            else:
-                if current:
-                    chunks.append(current.strip())
-                current = part
-
-        if current:
-            chunks.append(current.strip())
-
-        return chunks
-
-    def stop(self):
+    def stop_speaking(self):
+        self._stop_flag.set()
         try:
             import pygame
             pygame.mixer.music.stop()
         except Exception:
             pass
 
-    def stop_speaking(self):
-        self.stop()
+    def stop(self):
+        self.stop_speaking()
+
+    def _clean(self, text: str) -> str:
+        import re
+        text = re.sub(r"```[\s\S]*?```", "code block", text)
+        text = re.sub(r"[*_`#→|]", "", text)
+        text = re.sub(r"https?://\S+", "link", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        if len(text) > 600:
+            text = text[:600] + "..."
+        return text

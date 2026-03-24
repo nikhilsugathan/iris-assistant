@@ -70,7 +70,8 @@ class ActionExecutor:
         self.pending_action         = None
         self.pending_verdict        = None
         self.follow_up              = None
-        self.autocorrect            = AutoCorrector(brain)
+        self.autocorrect = AutoCorrector(brain)
+        self.last_action_path = None   # remembers last created file/folder
         self._clarification_options = []
         self.log_file    = "iris_actions.log"
         self.is_windows  = platform.system() == "Windows"
@@ -366,9 +367,15 @@ class ActionExecutor:
     def _ai_plan(self, user_input: str) -> Optional[dict]:
         """AI JSON planner — fallback when pattern matching fails."""
         system = platform.system()
-        plan_prompt = f"""The user wants JARVIS to take a real action on their computer.
-System: {system}
 
+        # Inject context about last action so follow-up commands work
+        context = ""
+        if self.last_action_path:
+            context = f'\nLast action path: "{self.last_action_path}" — use this if the user refers to "it", "that folder", "that file", or "the one I just created".\n'
+
+        plan_prompt = f"""The user wants IRIS to take a real action on their computer.
+System: {system}
+{context}
 User request: "{user_input}"
 
 Respond ONLY with valid JSON in this exact format:
@@ -388,6 +395,7 @@ Rules:
 - Windows paths use backslashes
 - For installs use winget (apps) or pip (python packages)
 - is_dangerous only true for delete/format/uninstall
+- For rename: use command like: ren "full\\path\\oldname" "newname"
 - Return unsupported only if truly impossible to determine
 
 Respond with ONLY the JSON object. No markdown, no explanation."""
@@ -569,6 +577,7 @@ Be specific and practical. No preamble."""
             f.write(content)
 
         self._log(f"CREATED FILE: {filepath}")
+        self.last_action_path = filepath   # remember for follow-up commands
         self.follow_up = {"action": "open_file", "path": filepath}
 
         # Build response noting any corrections made
@@ -588,6 +597,7 @@ Be specific and practical. No preamble."""
         folder = plan.get("filename", "new_folder")
         os.makedirs(folder, exist_ok=True)
         self._log(f"CREATED FOLDER: {folder}")
+        self.last_action_path = folder   # remember for follow-up rename etc.
         return f"Done. Created the folder '{folder}'."
 
     def _open_app(self, plan: dict) -> str:
