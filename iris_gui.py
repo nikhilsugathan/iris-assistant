@@ -145,7 +145,7 @@ class OrbWidget(QtWidgets.QWidget):
         painter.drawText(
             QtCore.QRectF(center.x() - 85, center.y() - 18, 170, 36),
             QtCore.Qt.AlignCenter,
-            Config.INNER_CODENAME.upper() if not self._compact else "A",
+            Config.PUBLIC_NAME.upper(),
         )
 
         if not self._compact:
@@ -282,12 +282,12 @@ class IrisWindow(QtWidgets.QMainWindow):
         self.worker = None
         self.busy = False
         self._quitting = False
-        self._startup_enabled = self._startup_script_path().exists()
+        self._startup_enabled = self._has_startup_shortcut()
         self._first_tray_hint_shown = self.settings.value("tray_hint_shown", False, type=bool)
         self.app_icon = create_app_icon()
         self.setWindowIcon(self.app_icon)
 
-        self.setWindowTitle(f"{Config.SYSTEM_NAME} // {Config.INNER_CODENAME}")
+        self.setWindowTitle(Config.PUBLIC_NAME.upper())
         self.resize(1380, 860)
         self.setMinimumSize(1220, 760)
 
@@ -305,7 +305,7 @@ class IrisWindow(QtWidgets.QMainWindow):
             return
 
         self.tray = QtWidgets.QSystemTrayIcon(self.app_icon, self)
-        self.tray.setToolTip(f"{Config.PUBLIC_NAME} // {Config.INNER_CODENAME}")
+        self.tray.setToolTip(Config.PUBLIC_NAME)
         self.tray.activated.connect(self._on_tray_activated)
 
         menu = QtWidgets.QMenu(self)
@@ -438,7 +438,7 @@ class IrisWindow(QtWidgets.QMainWindow):
         left_layout.setContentsMargins(30, 30, 30, 30)
         left_layout.setSpacing(18)
 
-        title = QtWidgets.QLabel(f"{Config.PUBLIC_NAME} // {Config.INNER_CODENAME}")
+        title = QtWidgets.QLabel(Config.PUBLIC_NAME.upper())
         title.setObjectName("Title")
         left_layout.addWidget(title)
 
@@ -508,7 +508,7 @@ class IrisWindow(QtWidgets.QMainWindow):
         header_row.addWidget(conversation_title)
         header_row.addStretch(1)
 
-        self.mode_label = QtWidgets.QLabel("ALETHEIA ACTIVE")
+        self.mode_label = QtWidgets.QLabel(f"{Config.PUBLIC_NAME.upper()} ACTIVE")
         self.mode_label.setObjectName("Chip")
         header_row.addWidget(self.mode_label)
         right_layout.addLayout(header_row)
@@ -545,7 +545,7 @@ class IrisWindow(QtWidgets.QMainWindow):
 
         self.append_message(
             "SYSTEM",
-            f"{Config.PUBLIC_NAME} is online. {Config.INNER_CODENAME} is active underneath.",
+            f"{Config.PUBLIC_NAME} is online.",
             "system",
         )
 
@@ -664,7 +664,7 @@ class IrisWindow(QtWidgets.QMainWindow):
     def refresh_status(self):
         status = self.engine.status_snapshot()
         self.brain_chip.setText(f"Brains: {status['primary_brain']} -> {status['fallback_brain']}")
-        self.core_chip.setText(f"Core: {status['public_name']} outside, {status['inner_codename']} inside")
+        self.core_chip.setText("Core: adaptive council online")
         self.self_model_chip.setText(f"Self model: {status['self_model']}")
         startup_text = "on" if self._startup_enabled else "off"
         self.memory_chip.setText(f"Memory: {status['memory']} | Startup: {startup_text}")
@@ -693,9 +693,16 @@ class IrisWindow(QtWidgets.QMainWindow):
         self.settings.setValue("floating_orb_x", x)
         self.settings.setValue("floating_orb_y", y)
 
-    def _startup_script_path(self) -> Path:
+    def _legacy_startup_script_path(self) -> Path:
         appdata = Path(os.getenv("APPDATA", str(Path.home() / "AppData/Roaming")))
         return appdata / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "IrisAletheia.cmd"
+
+    def _has_startup_shortcut(self) -> bool:
+        return self._startup_script_path().exists() or self._legacy_startup_script_path().exists()
+
+    def _startup_script_path(self) -> Path:
+        appdata = Path(os.getenv("APPDATA", str(Path.home() / "AppData/Roaming")))
+        return appdata / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "IRIS.cmd"
 
     def _startup_script_contents(self) -> str:
         if getattr(sys, "frozen", False):
@@ -719,15 +726,26 @@ class IrisWindow(QtWidgets.QMainWindow):
 
     def set_launch_at_login(self, enabled: bool):
         path = self._startup_script_path()
+        legacy_path = self._legacy_startup_script_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         if enabled:
             path.write_text(self._startup_script_contents(), encoding="utf-8")
+            if legacy_path.exists():
+                try:
+                    legacy_path.unlink()
+                except Exception:
+                    pass
             self._startup_enabled = True
             self.footer.setText("Iris will launch at sign-in.")
         else:
             try:
                 if path.exists():
                     path.unlink()
+            except Exception:
+                pass
+            try:
+                if legacy_path.exists():
+                    legacy_path.unlink()
             except Exception:
                 pass
             self._startup_enabled = False
@@ -823,7 +841,7 @@ class IrisWindow(QtWidgets.QMainWindow):
 
 def main():
     app = QtWidgets.QApplication(sys.argv)
-    app.setApplicationName(f"{Config.SYSTEM_NAME} Desktop")
+    app.setApplicationName(Config.PUBLIC_NAME.upper())
     app.setOrganizationName("Aletheia")
     app.setQuitOnLastWindowClosed(False)
     app.setWindowIcon(create_app_icon())

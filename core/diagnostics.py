@@ -93,7 +93,7 @@ class SelfDiagnostics:
         top_findings = findings[:4]
         top_observations = observations[:2]
 
-        lines = [f"Self-diagnostic report from {Config.INNER_CODENAME}:"]
+        lines = [f"Self-diagnostic report from {Config.PUBLIC_NAME}:"]
         for item in top_findings:
             lines.append(f"- {item}")
         for item in top_observations:

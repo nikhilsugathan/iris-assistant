@@ -242,10 +242,10 @@ class Brain:
             "codename" in text
             or ("aletheia" in text and any(word in text for word in ["who", "what", "why"]))
         ):
-            return f"My public name is {Config.PUBLIC_NAME}. Internally, the deeper core is {Config.INNER_CODENAME}."
+            return f"My public name is {Config.PUBLIC_NAME}. I keep internal implementation details private."
 
         if text in {"who are you", "who are you really"}:
-            return f"{Config.PUBLIC_NAME} on the surface. {Config.INNER_CODENAME} underneath."
+            return f"I'm {Config.PUBLIC_NAME}."
 
         return ""
 

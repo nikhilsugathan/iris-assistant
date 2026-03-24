@@ -1,7 +1,6 @@
-# IRIS // Aletheia
+# IRIS
 
-IRIS is the public voice.
-Aletheia is the deeper cognitive core.
+IRIS is the public-facing identity.
 
 This build is now local-first, voice-capable, and includes a desktop GUI shell with a futuristic live visualization.
 
@@ -43,15 +42,15 @@ On every push to `main` or `codex/*`, GitHub will build a Windows desktop artifa
 For a local build:
 ```bash
 py -3 tools/generate_app_icon.py
-py -3 -m PyInstaller --noconfirm --clean --windowed --onefile --name IrisAletheiaPortable --icon assets/iris_aletheia.ico --collect-all PySide6 --hidden-import edge_tts --hidden-import pygame --hidden-import speech_recognition iris_gui.py
+py -3 -m PyInstaller --noconfirm --clean --windowed --onefile --name IRIS --icon assets/iris_aletheia.ico --collect-all PySide6 --hidden-import edge_tts --hidden-import pygame --hidden-import speech_recognition iris_gui.py
 ```
 
 The easiest local packaged app is generated in:
 ```bash
-dist\IrisAletheiaPortable.exe
+dist\IRIS.exe
 ```
 
 ## Notes
 - If Ollama is running, IRIS can function even without cloud API keys.
 - If you want cloud fallback, keep your `.env` file available.
-- `Iris` remains the spoken identity; `Aletheia` is the internal codename and council core.
+- `Aletheia` remains an internal codename in the architecture, but the application presents itself simply as `IRIS`.

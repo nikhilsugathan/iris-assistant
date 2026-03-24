@@ -39,7 +39,7 @@ jobs:
             --clean `
             --windowed `
             --onefile `
-            --name IrisAletheiaPortable `
+            --name IRIS `
             --icon assets/iris_aletheia.ico `
             --collect-all PySide6 `
             --hidden-import edge_tts `
@@ -50,5 +50,5 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: IrisAletheiaPortable-windows
-          path: dist/IrisAletheiaPortable.exe
+          name: IRIS-windows
+          path: dist/IRIS.exe
