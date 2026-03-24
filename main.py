@@ -47,13 +47,14 @@ def show_status(memory: Memory, text_mode: bool, voice: Voice, self_model: SelfM
             "[bold green]Online[/bold green]\n"
             f"[white]Primary Brain  :[/white] [cyan]{Config.PRIMARY_BRAIN}[/cyan]\n"
             f"[white]Fallback Brain :[/white] [cyan]{Config.FALLBACK_BRAIN}[/cyan]\n"
+            f"[white]Inner Core     :[/white] [cyan]{Config.INNER_CODENAME}[/cyan]\n"
             f"[white]Input Mode     :[/white] [cyan]{'Keyboard' if text_mode else 'Voice standby'}[/cyan]\n"
             f"[white]Microphone     :[/white] [cyan]{mic_status}[/cyan]\n"
             f"[white]Audio Output   :[/white] [cyan]{audio_status}[/cyan]\n"
             f"[white]Wake Words     :[/white] [cyan]{', '.join(Config.WAKE_WORDS)}[/cyan]\n"
             f"[white]Self Model     :[/white] [cyan]{self_model.summary()}[/cyan]\n"
             f"[white]Memory         :[/white] [cyan]{memory.summary()}[/cyan]\n",
-            title="[bold cyan]IRIS[/bold cyan]",
+            title=f"[bold cyan]{Config.SYSTEM_NAME}[/bold cyan]",
             border_style="cyan",
         )
     )

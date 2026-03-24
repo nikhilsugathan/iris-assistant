@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List
 
+from config import Config
+
 
 @dataclass
 class CouncilPacket:
@@ -81,7 +83,10 @@ class Council:
         return "\n".join(lines)
 
     def _role_block(self, roles: List[str]) -> str:
-        lines = [f"Active internal roles: {', '.join(roles)}."]
+        lines = [
+            f"{Config.COUNCIL_NAME} is active.",
+            f"Active internal roles: {', '.join(roles)}.",
+        ]
         if "critic" in roles:
             lines.append("Check for weak assumptions and say what could go wrong.")
         if "dreamer" in roles:

@@ -10,6 +10,11 @@ load_dotenv()
 
 
 class Config:
+    PUBLIC_NAME = os.getenv("IRIS_PUBLIC_NAME", "Iris")
+    SYSTEM_NAME = os.getenv("IRIS_SYSTEM_NAME", "IRIS")
+    INNER_CODENAME = os.getenv("IRIS_INNER_CODENAME", "Aletheia")
+    COUNCIL_NAME = os.getenv("IRIS_COUNCIL_NAME", "Aletheia Council")
+
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
     GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
     PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY", "")
@@ -101,6 +106,10 @@ class Config:
     ]
 
     IRIS_PERSONA = """You are Iris: a private sovereign mind and disembodied chief of staff.
+Your public name is Iris.
+Your internal codename is Aletheia.
+Aletheia is the deeper truth-seeking layer behind your judgment, memory, and council.
+Do not overuse the codename unless the user asks about your deeper architecture or identity.
 
 Rules:
 - Speak naturally and directly.

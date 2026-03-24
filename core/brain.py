@@ -238,6 +238,15 @@ class Brain:
         if text in {"can you assist", "assist me", "i need assistance"}:
             return "Yes. What are you trying to do?"
 
+        if (
+            "codename" in text
+            or ("aletheia" in text and any(word in text for word in ["who", "what", "why"]))
+        ):
+            return f"My public name is {Config.PUBLIC_NAME}. Internally, the deeper core is {Config.INNER_CODENAME}."
+
+        if text in {"who are you", "who are you really"}:
+            return f"{Config.PUBLIC_NAME} on the surface. {Config.INNER_CODENAME} underneath."
+
         return ""
 
     # ─────────────────────────────────────────────────────────────
