@@ -409,6 +409,20 @@ def main() -> None:
         assert_true(followup_result.response == "No problem.", "Follow-up handling did not close cleanly.")
         assert_true(spoken_messages[-1] == "No problem.", "Follow-up response was not routed to speech.")
 
+        ambiguous_voice_result = engine.process_user_input("hello", speak_response=True, input_source="voice")
+        assert_true(
+            ambiguous_voice_result.mode == "voice-repeat",
+            "Courtesy-only voice input should trigger a repeat prompt instead of casual chat.",
+        )
+        assert_true(
+            "tell me what you want me to do" in ambiguous_voice_result.response.lower(),
+            "Ambiguous voice input did not return the expected clarification prompt.",
+        )
+        assert_true(
+            spoken_messages[-1] == ambiguous_voice_result.response,
+            "Ambiguous voice clarification prompt was not routed to speech.",
+        )
+
         blocked_result = engine.process_user_input("run smoke blocked action", speak_response=True)
         assert_true(
             "blocked by the safety contract" in blocked_result.response.lower(),

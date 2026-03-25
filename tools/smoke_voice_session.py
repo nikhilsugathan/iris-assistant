@@ -108,6 +108,7 @@ def main() -> None:
 
     engine = IRISEngine(text_mode=True)
     normal_engine = None
+    repeat_engine = None
     fake_voice = FakeVoice()
     engine.voice = fake_voice
 
@@ -181,12 +182,64 @@ def main() -> None:
             "Normal voice results should return to wake standby instead of forcing an empty follow-up listen loop.",
         )
 
+        repeat_engine = IRISEngine(text_mode=True)
+        repeat_voice = FakeVoice()
+        repeat_engine.voice = repeat_voice
+        repeat_results = iter(
+            [
+                EngineResult(
+                    label=Config.PUBLIC_NAME,
+                    response="Tell me what you want me to do.",
+                    should_exit=False,
+                    mode="voice-repeat",
+                ),
+                EngineResult(
+                    label=Config.PUBLIC_NAME,
+                    response="Opening Notepad.",
+                    should_exit=False,
+                    mode="action",
+                ),
+            ]
+        )
+        repeat_engine.process_voice_turn = lambda command_text, input_source="voice", enable_slow_ack=True: next(repeat_results)  # type: ignore[method-assign]
+        repeat_follow_up_calls: list[bool] = []
+        repeat_engine.listen_for_voice_command = lambda interrupt_speech=True: repeat_follow_up_calls.append(bool(interrupt_speech)) or "open notepad"  # type: ignore[method-assign]
+        repeat_engine.should_end_followup = lambda text: False  # type: ignore[method-assign]
+        repeat_engine.should_hold_voice_followup_open = lambda: False  # type: ignore[method-assign]
+        repeat_engine.executor.waiting_for_followup = lambda: False  # type: ignore[method-assign]
+        repeat_engine.executor.waiting_for_clarification = lambda: False  # type: ignore[method-assign]
+        repeat_engine.executor.waiting_for_plan_choice = lambda: False  # type: ignore[method-assign]
+        repeat_engine.executor.waiting_for_presence_check = lambda: False  # type: ignore[method-assign]
+        repeat_engine.executor.waiting_for_permission = lambda: False  # type: ignore[method-assign]
+        repeat_engine.copilot.active = False
+
+        repeat_worker = VoiceStandbyWorker(repeat_engine, should_pause=lambda: False)
+        repeat_handled = repeat_worker._handle_command("hello", "hello", follow_up_turns=4)
+        assert_true(repeat_handled, "Voice repeat standby handling should keep the worker alive.")
+        assert_true(
+            repeat_voice.sync_spoken == ["Tell me what you want me to do."],
+            "Voice-repeat results should speak synchronously before listening again.",
+        )
+        assert_true(
+            repeat_voice.background_spoken == ["Opening Notepad."],
+            "Follow-up command after a repeat prompt should return to background speech on success.",
+        )
+        assert_true(
+            repeat_follow_up_calls == [True],
+            "Voice-repeat handling should capture one follow-up command without requiring a new wake phrase.",
+        )
+
         print("PASS: IRIS voice standby smoke test completed.")
     finally:
         engine.shutdown()
         try:
             if normal_engine is not None:
                 normal_engine.shutdown()
+        except Exception:
+            pass
+        try:
+            if repeat_engine is not None:
+                repeat_engine.shutdown()
         except Exception:
             pass
         if owns_app:

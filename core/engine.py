@@ -37,6 +37,91 @@ class EngineResult:
 
 
 class IRISEngine:
+    VOICE_COURTESY_ONLY = {
+        "hello",
+        "hello there",
+        "hi",
+        "hi there",
+        "hey",
+        "hey there",
+        "thanks",
+        "thank you",
+        "good morning",
+        "good afternoon",
+        "good evening",
+        "okay",
+        "ok",
+        "alright",
+        "all right",
+    }
+    VOICE_FUZZY_FILLER_PREFIXES = (
+        "come on",
+        "go on",
+        "hold on",
+        "wait a second",
+    )
+    VOICE_REQUEST_PREFIXES = (
+        "what ",
+        "what's ",
+        "what is ",
+        "why ",
+        "how ",
+        "when ",
+        "where ",
+        "who ",
+        "which ",
+        "can you ",
+        "could you ",
+        "would you ",
+        "will you ",
+        "please ",
+        "tell me ",
+        "show me ",
+        "read me ",
+        "help me ",
+    )
+    VOICE_REQUEST_VERBS = {
+        "open",
+        "start",
+        "launch",
+        "run",
+        "create",
+        "make",
+        "write",
+        "type",
+        "press",
+        "click",
+        "close",
+        "save",
+        "search",
+        "find",
+        "show",
+        "list",
+        "play",
+        "focus",
+        "explain",
+        "summarize",
+        "translate",
+        "diagnose",
+        "fix",
+        "help",
+        "tell",
+        "read",
+        "check",
+        "stop",
+        "end",
+        "cancel",
+        "turn",
+        "enable",
+        "disable",
+        "activate",
+        "deactivate",
+        "use",
+        "set",
+        "maximize",
+        "minimize",
+        "restore",
+    }
     SHUTDOWN_COMMANDS = {
         "exit",
         "quit",
@@ -280,6 +365,19 @@ class IRISEngine:
                 input_source=inferred_source,
             )
             self.self_model.observe_user_input(user_input, decision)
+
+            if self._should_reprompt_ambiguous_voice_command(user_input, inferred_source, decision):
+                message = self._ambiguous_voice_prompt(user_input)
+                log_runtime(
+                    "engine_voice_command_unclear",
+                    text=user_input[:240],
+                    normalized=self._normalize_voice_command_text(user_input),
+                    mode=getattr(decision, "mode", ""),
+                    input_source=inferred_source,
+                )
+                self._update_self_model_after_response(message, "voice-repeat")
+                self._speak_if_enabled(message, speak_response)
+                return EngineResult(label=Config.PUBLIC_NAME, response=message, mode="voice-repeat")
 
             if decision.mode == "diagnostics":
                 response = self.diagnostics.run(
@@ -652,6 +750,57 @@ class IRISEngine:
             if message:
                 return message
         return "That sounded uncertain. Please say it again."
+
+    def _should_reprompt_ambiguous_voice_command(self, user_input: str, input_source: str, decision) -> bool:
+        if input_source != "voice":
+            return False
+        if getattr(decision, "mode", "") != "chat":
+            return False
+
+        normalized = self._normalize_voice_command_text(user_input)
+        if not normalized:
+            return False
+        if normalized in self.VOICE_COURTESY_ONLY:
+            return True
+        if normalized.startswith(self.VOICE_FUZZY_FILLER_PREFIXES):
+            return True
+        if normalized.endswith("?"):
+            return False
+        if normalized.startswith(self.VOICE_REQUEST_PREFIXES):
+            return self._request_prefix_looks_unclear(normalized)
+
+        tokens = normalized.split()
+        if not tokens:
+            return False
+        if tokens[0] in self.VOICE_REQUEST_VERBS:
+            return False
+        if len(tokens) <= 2:
+            return True
+        if len(tokens) <= 4 and tokens[0] in {"hello", "hi", "hey", "thanks", "thank", "okay", "ok"}:
+            return True
+        return False
+
+    def _ambiguous_voice_prompt(self, user_input: str) -> str:
+        normalized = self._normalize_voice_command_text(user_input)
+        if normalized in self.VOICE_COURTESY_ONLY:
+            return "Tell me what you want me to do."
+        heard = str(user_input or "").strip()
+        if heard:
+            return f"I heard '{heard}', but that doesn't sound like a clear command. Please say the command again."
+        return "Tell me what you want me to do."
+
+    def _normalize_voice_command_text(self, user_input: str) -> str:
+        normalized = re.sub(r"[^a-z0-9'\s?]+", " ", (user_input or "").lower())
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        return normalized
+
+    def _request_prefix_looks_unclear(self, normalized: str) -> bool:
+        tokens = normalized.split()
+        if len(tokens) >= 3 and tokens[0] in {"can", "could", "would", "will"} and tokens[1] == "you":
+            return tokens[2] not in self.VOICE_REQUEST_VERBS
+        if len(tokens) >= 2 and tokens[0] == "please":
+            return tokens[1] not in self.VOICE_REQUEST_VERBS
+        return False
 
     def _is_terminate_command(self, lowered_input: str) -> bool:
         lowered_input = (lowered_input or "").strip()

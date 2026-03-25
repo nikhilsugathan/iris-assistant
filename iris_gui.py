@@ -451,7 +451,7 @@ class VoiceStandbyWorker(QtCore.QThread):
             self.event.emit({"type": "shutdown", "immediate": getattr(result, "exit_immediately", False)})
             return False
 
-        keep_followup_open = self.engine.should_hold_voice_followup_open()
+        keep_followup_open = self.engine.should_hold_voice_followup_open() or getattr(result, "mode", "") == "voice-repeat"
         if result.response and not getattr(result, "speech_started", False):
             if keep_followup_open:
                 self.engine.voice.speak(result.response)
@@ -480,7 +480,7 @@ class VoiceStandbyWorker(QtCore.QThread):
                 self.event.emit({"type": "shutdown", "immediate": getattr(result, "exit_immediately", False)})
                 return False
             if result.response and not getattr(result, "speech_started", False):
-                if self.engine.should_hold_voice_followup_open():
+                if self.engine.should_hold_voice_followup_open() or getattr(result, "mode", "") == "voice-repeat":
                     self.engine.voice.speak(result.response)
                 else:
                     self.engine.voice.speak_background(result.response)
