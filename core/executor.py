@@ -205,6 +205,76 @@ class ActionExecutor:
         except Exception:
             return ""
 
+    def _active_user_window_title(self) -> str:
+        title = str(self._desktop_context_title() or "").strip()
+        if not title:
+            return ""
+
+        lowered = title.lower()
+        if lowered in {"iris", "iris assistant"}:
+            return ""
+        if lowered.startswith("iris -") or lowered.startswith("iris:"):
+            return ""
+        return title
+
+    def _desktop_context_snapshot(self, limit: int = 6) -> dict:
+        active_window_title = str(self._desktop_context_title() or "").strip()
+        visible_window_titles: list[str] = []
+
+        try:
+            if hasattr(self.desktop, "list_window_titles"):
+                raw_titles = self.desktop.list_window_titles(limit=limit)
+                visible_window_titles = [
+                    str(title).strip()
+                    for title in raw_titles
+                    if str(title or "").strip()
+                ]
+            else:
+                snapshots = self.desktop.list_windows(limit=limit)
+                visible_window_titles = [
+                    str(getattr(item, "title", "") or "").strip()
+                    for item in snapshots
+                    if str(getattr(item, "title", "") or "").strip()
+                ]
+        except Exception:
+            visible_window_titles = []
+
+        deduped_titles: list[str] = []
+        seen: set[str] = set()
+        for title in visible_window_titles:
+            lowered = title.lower()
+            if lowered in seen:
+                continue
+            seen.add(lowered)
+            deduped_titles.append(title)
+
+        return {
+            "active_window_title": active_window_title,
+            "visible_window_titles": deduped_titles[: max(1, int(limit))],
+        }
+
+    def _desktop_context_prompt(self) -> str:
+        snapshot = self._desktop_context_snapshot(limit=6)
+        active_window_title = snapshot.get("active_window_title", "")
+        visible_window_titles = snapshot.get("visible_window_titles", [])
+
+        context_lines: list[str] = []
+        if active_window_title:
+            context_lines.append(f'Active window right now: "{active_window_title}"')
+        if visible_window_titles:
+            rendered_titles = ", ".join(f'"{title}"' for title in visible_window_titles[:6])
+            context_lines.append(f"Visible window titles right now: {rendered_titles}")
+
+        if not context_lines:
+            return ""
+
+        context_lines.append(
+            'If the user says "this", "here", "this window", "that window", or "that tab", '
+            "prefer the active window when it fits the request."
+        )
+        context_lines.append("Do not invent a window title that is not present in the desktop context above.")
+        return "\nDesktop context:\n- " + "\n- ".join(context_lines) + "\n"
+
     def _can_remember_approval(self, plan: dict, verdict: str, security_reason: str = "") -> bool:
         if verdict not in {WARNING, NEED_ADMIN}:
             return False
@@ -318,6 +388,10 @@ class ActionExecutor:
     ]
 
     DESKTOP_ACTION_PATTERNS = [
+        r"^(?:save|save this|save it|save here)$",
+        r"^(?:close|close this|close it|close this tab|close the current tab|close current tab)$",
+        r"^(?:new tab|open (?:a )?new tab|start (?:a )?new tab)$",
+        r"^(?:close|minimize|maximize|restore)\s+(?:this|the current)\s+window$",
         r"^(?:type|enter)\s+.+",
         r"^(?:type|enter)\s+.+\s+(?:in|into)\s+.+",
         r"^(?:press|hit|use|send)\s+.+\s+(?:in|into)\s+.+",
@@ -833,6 +907,53 @@ class ActionExecutor:
         """
         raw = (user_input or "").strip()
         text = raw.lower()
+        active_window_title = self._active_user_window_title()
+
+        if active_window_title and re.search(r"^(?:save|save this|save it|save here)$", text):
+            return {
+                "action_type": "press_hotkey_in_window",
+                "description": f"save in '{active_window_title}'",
+                "keys": ["ctrl", "s"],
+                "window_title": active_window_title,
+                "is_dangerous": False,
+            }
+
+        if active_window_title and re.search(
+            r"^(?:close|close this|close it|close this tab|close the current tab|close current tab)$",
+            text,
+        ):
+            return {
+                "action_type": "press_hotkey_in_window",
+                "description": f"close the current tab in '{active_window_title}'",
+                "keys": ["ctrl", "w"],
+                "window_title": active_window_title,
+                "is_dangerous": False,
+            }
+
+        if active_window_title and re.search(
+            r"^(?:new tab|open (?:a )?new tab|start (?:a )?new tab)$",
+            text,
+        ):
+            return {
+                "action_type": "press_hotkey_in_window",
+                "description": f"open a new tab in '{active_window_title}'",
+                "keys": ["ctrl", "t"],
+                "window_title": active_window_title,
+                "is_dangerous": False,
+            }
+
+        if active_window_title and re.search(
+            r"^(?:close|minimize|maximize|restore)\s+(?:this|the current)\s+window$",
+            text,
+        ):
+            action = text.split()[0]
+            return {
+                "action_type": "window_state",
+                "description": f"{action} the '{active_window_title}' window",
+                "window_title": active_window_title,
+                "window_state": action,
+                "is_dangerous": action == "close",
+            }
 
         click_match = re.search(
             r"^(right click|double click|click)\s+(?:at\s+)?(\d+)\s*(?:,|\s)\s*(\d+)$",
@@ -1263,9 +1384,20 @@ class ActionExecutor:
         system = platform.system()
 
         # Inject context about last action so follow-up commands work
-        context = ""
+        context_blocks: list[str] = []
         if self.last_action_path:
-            context = f'\nLast action path: "{self.last_action_path}" — use this if the user refers to "it", "that folder", "that file", or "the one I just created".\n'
+            context_blocks.append(
+                f'Last action path: "{self.last_action_path}" — use this if the user refers to "it", '
+                '"that folder", "that file", or "the one I just created".'
+            )
+
+        desktop_context = self._desktop_context_prompt().strip()
+        if desktop_context:
+            context_blocks.append(desktop_context)
+
+        context = ""
+        if context_blocks:
+            context = "\n" + "\n\n".join(context_blocks) + "\n"
 
         plan_prompt = f"""The user wants IRIS to take a real action on their computer.
 System: {system}
@@ -1599,7 +1731,10 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
         """
         Ask the AI to generate an alternative approach when the first attempt fails.
         """
+        desktop_context = self._desktop_context_prompt().strip()
+        context = f"\n{desktop_context}\n" if desktop_context else "\n"
         prompt = f"""An action failed on Windows. Generate an alternative approach.
+{context}
 
 Original action: {json.dumps(original_plan, indent=2)}
 Error/result: {error_msg}

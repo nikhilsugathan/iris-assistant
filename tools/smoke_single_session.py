@@ -437,6 +437,23 @@ def main() -> None:
             "Safe write target did not receive the appended content.",
         )
 
+        contextual_save_plan = engine.executor._pattern_match("save this")
+        assert_true(
+            contextual_save_plan is not None
+            and contextual_save_plan.get("action_type") == "press_hotkey_in_window"
+            and contextual_save_plan.get("window_title") == "SmokePad"
+            and contextual_save_plan.get("keys") == ["ctrl", "s"],
+            "Context-aware save command did not target the active window safely.",
+        )
+        contextual_close_window_plan = engine.executor._pattern_match("close this window")
+        assert_true(
+            contextual_close_window_plan is not None
+            and contextual_close_window_plan.get("action_type") == "window_state"
+            and contextual_close_window_plan.get("window_title") == "SmokePad"
+            and contextual_close_window_plan.get("window_state") == "close",
+            "Context-aware close-window command did not target the active window safely.",
+        )
+
         planner_calls: list[dict] = []
         engine.executor.brain.plan_action_json = lambda prompt: planner_calls.append(  # type: ignore[method-assign]
             {"prompt": prompt, "max_tokens": Config.ACTION_PLAN_MAX_TOKENS}
@@ -450,7 +467,26 @@ def main() -> None:
             planner_calls and planner_calls[-1].get("max_tokens") == Config.ACTION_PLAN_MAX_TOKENS,
             "AI planner did not request the dedicated action-planning token budget.",
         )
+        assert_true(
+            planner_calls
+            and 'Active window right now: "SmokePad"' in planner_calls[-1].get("prompt", "")
+            and '"Claude"' in planner_calls[-1].get("prompt", "")
+            and '"Chrome"' in planner_calls[-1].get("prompt", ""),
+            "AI planner prompt did not include the current desktop context for safer disambiguation.",
+        )
         engine.executor.brain.plan_action_json = original_plan_action_json
+
+        contextual_save_warning = engine.process_user_input("save this", speak_response=True)
+        assert_true(
+            engine.executor.waiting_for_permission(),
+            "Context-aware save command should still wait for confirmation.",
+        )
+        assert_true(
+            "smokepad" in contextual_save_warning.response.lower(),
+            "Context-aware save confirmation did not mention the active target window.",
+        )
+        save_cancel = engine.process_user_input("no", speak_response=True)
+        assert_true(save_cancel.response == "Cancelled.", "Context-aware save command did not cancel cleanly.")
 
         safe_command_prompt = engine.process_user_input("run smoke safe command", speak_response=True)
         assert_true(
