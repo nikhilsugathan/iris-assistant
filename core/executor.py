@@ -160,6 +160,8 @@ class ActionExecutor:
         self._background_task       = None
         self._background_updates    = deque()
         self._background_last_update = None
+        self._background_cancel_event = None
+        self._background_process = None
 
     @property
     def browser(self):
@@ -201,6 +203,7 @@ class ActionExecutor:
             "background_action_description": task.get("description", ""),
             "background_action_started_at": task.get("started_at"),
             "background_action_source": task.get("source", ""),
+            "background_action_cancellable": bool(task.get("cancellable", False)),
             "background_last_update": last_update.get("message", ""),
             "background_last_update_at": last_update.get("created_at"),
         }
@@ -214,6 +217,30 @@ class ActionExecutor:
     def _background_task_active(self) -> bool:
         with self._background_lock:
             return self._background_task is not None
+
+    def _register_background_process(self, process) -> None:
+        with self._background_lock:
+            self._background_process = process
+
+    def _clear_background_runtime(self) -> None:
+        with self._background_lock:
+            self._background_task = None
+            self._background_cancel_event = None
+            self._background_process = None
+
+    def _cancel_background_action(self) -> str:
+        with self._background_lock:
+            task = dict(self._background_task) if self._background_task else None
+            cancel_event = self._background_cancel_event
+        if not task:
+            return "No heavy background task is running right now."
+
+        description = str(task.get("description") or "that background task").strip()
+        if cancel_event is None:
+            return f"I can't cancel {description} cleanly right now."
+
+        cancel_event.set()
+        return f"Stopping {description} in the background."
 
     def _is_background_candidate(self, plan: dict, source: str | None) -> bool:
         if not bool(getattr(Config, "BACKGROUND_ACTIONS_ENABLED", True)):
@@ -261,6 +288,13 @@ class ActionExecutor:
             return prefix
         return f"{prefix} {cleaned}"
 
+    def _background_cancelled_message(self, plan: dict, result: str) -> str:
+        cleaned = str(result or "").strip()
+        prefix = "Background action cancelled."
+        if not cleaned:
+            return prefix
+        return f"{prefix} {cleaned}"
+
     def _push_background_update(self, message: str, *, success: bool, label: str | None = None) -> None:
         update = {
             "label": label or f"{Config.PUBLIC_NAME} (Action)",
@@ -272,17 +306,102 @@ class ActionExecutor:
             self._background_last_update = update
             self._background_updates.append(update)
 
+    def _terminate_background_process(self, process) -> None:
+        if process is None:
+            return
+        try:
+            if self.is_windows and getattr(process, "pid", None):
+                subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    capture_output=True,
+                    text=True,
+                    timeout=max(2, int(getattr(Config, "BACKGROUND_ACTION_CANCEL_GRACE_SECONDS", 3))),
+                    check=False,
+                )
+            else:
+                process.terminate()
+        except Exception:
+            try:
+                process.kill()
+            except Exception:
+                pass
+
+    def _run_process_with_cancel(
+        self,
+        args,
+        *,
+        use_shell: bool,
+        timeout: int,
+        cancel_event: threading.Event,
+    ) -> tuple[str, str, int, bool]:
+        process = subprocess.Popen(
+            args,
+            shell=use_shell,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        self._register_background_process(process)
+        poll_seconds = max(0.05, float(getattr(Config, "BACKGROUND_ACTION_PROCESS_POLL_SECONDS", 0.2)))
+        deadline = time.time() + max(1, int(timeout))
+        cancelled = False
+
+        while True:
+            if cancel_event.is_set():
+                cancelled = True
+                self._terminate_background_process(process)
+                break
+
+            try:
+                stdout, stderr = process.communicate(timeout=poll_seconds)
+                self._register_background_process(None)
+                return stdout or "", stderr or "", int(process.returncode or 0), False
+            except subprocess.TimeoutExpired:
+                if time.time() >= deadline:
+                    self._terminate_background_process(process)
+                    self._register_background_process(None)
+                    raise subprocess.TimeoutExpired(args, timeout)
+                continue
+
+        grace = max(0.2, float(getattr(Config, "BACKGROUND_ACTION_CANCEL_GRACE_SECONDS", 3.0)))
+        try:
+            stdout, stderr = process.communicate(timeout=grace)
+        except Exception:
+            stdout = ""
+            stderr = ""
+        self._register_background_process(None)
+        return stdout or "", stderr or "", int(process.returncode or -1), True
+
+    def _execute_background_plan(self, plan: dict, cancel_event: threading.Event) -> tuple[str, bool, bool]:
+        action_type = str(plan.get("action_type", "") or "").strip()
+        if action_type in {"run_command", "install_package"}:
+            return self._run_command_background(plan, cancel_event)
+        if action_type == "manage_package":
+            return self._manage_package_background(plan, cancel_event)
+
+        result, success = self._execute_with_verify(plan)
+        return result, success, False
+
     def _background_worker(self, plan: dict, verdict: str, source: str | None) -> None:
         success = False
         result = ""
+        cancelled = False
+        cancel_event = threading.Event()
+        with self._background_lock:
+            self._background_cancel_event = cancel_event
         try:
-            result, success = self._execute_with_verify(plan)
-            if success:
+            result, success, cancelled = self._execute_background_plan(plan, cancel_event)
+            if success and not cancelled:
                 self._record_executed_action(plan, verdict)
                 self._log(
                     f"BACKGROUND SUCCESS [{verdict}]: {plan.get('command') or plan.get('description','?')}"
                 )
                 self._audit("BACKGROUND_COMPLETED", plan, source=source or "background")
+            elif cancelled:
+                self._log(
+                    f"BACKGROUND CANCELLED [{verdict}]: {plan.get('command') or plan.get('description','?')}"
+                )
+                self._audit("BACKGROUND_CANCELLED", plan, source=source or "background")
             else:
                 self._log(
                     f"BACKGROUND FAILED [{verdict}]: {plan.get('command') or plan.get('description','?')} :: {result}"
@@ -296,11 +415,13 @@ class ActionExecutor:
             )
             self._audit("BACKGROUND_FAILED", plan, source=source or "background")
         finally:
-            with self._background_lock:
-                self._background_task = None
+            self._clear_background_runtime()
 
-        message = self._background_completion_message(plan, result, success)
-        self._push_background_update(message, success=success)
+        if cancelled:
+            message = self._background_cancelled_message(plan, result)
+        else:
+            message = self._background_completion_message(plan, result, success)
+        self._push_background_update(message, success=success and not cancelled)
 
         if source == "voice" and message and bool(getattr(self.voice, "audio_ready", False)):
             try:
@@ -325,6 +446,7 @@ class ActionExecutor:
                 "started_at": datetime.now().isoformat(timespec="seconds"),
                 "source": normalized_source,
                 "action_type": str(plan.get("action_type", "") or "").strip(),
+                "cancellable": True,
             }
 
         self._log(f"BACKGROUND START [{verdict}]: {plan.get('command') or description}")
@@ -550,6 +672,7 @@ class ActionExecutor:
     ]
 
     DESKTOP_ACTION_PATTERNS = [
+        r"^(?:cancel|stop)\s+(?:the\s+)?(?:background|current)\s+(?:task|job|action|command|install)\??$",
         r"^(?:background status|job status|task status|what(?:'s| is)\s+running\s+in\s+the\s+background|what(?:'s| is)\s+the\s+background\s+status)\??$",
         r"^(?:save|save this|save it|save here)$",
         r"^(?:close|close this|close it|close this tab|close the current tab|close current tab)$",
@@ -570,6 +693,7 @@ class ActionExecutor:
     ]
 
     ACTION_INFO_PATTERNS = [
+        r"^(?:cancel|stop)\s+(?:the\s+)?(?:background|current)\s+(?:task|job|action|command|install)\??$",
         r"^(?:background status|job status|task status|what(?:'s| is)\s+running\s+in\s+the\s+background|what(?:'s| is)\s+the\s+background\s+status)\??$",
         r"^(?:what(?:'s| is)|which)\s+(?:window|app)\s+is\s+active\??$",
         r"^active window\??$",
@@ -653,6 +777,15 @@ class ActionExecutor:
             return None
 
         text = (user_input or "").lower().strip()
+        routed_plan = self._pattern_match(user_input)
+        if routed_plan and str(routed_plan.get("action_type", "") or "").strip() in {
+            "background_status",
+            "background_cancel",
+        }:
+            self.pending_presence_check = False
+            self.auto_action_timestamps = []
+            return None
+
         if self._matches_any_phrase(text, YES_WORDS):
             self.pending_presence_check = False
             self.auto_action_timestamps = []
@@ -1120,6 +1253,16 @@ class ActionExecutor:
             }
 
         if re.search(
+            r"^(?:cancel|stop)\s+(?:the\s+)?(?:background|current)\s+(?:task|job|action|command|install)\??$",
+            text,
+        ):
+            return {
+                "action_type": "background_cancel",
+                "description": "cancel the current heavy background task",
+                "is_dangerous": False,
+            }
+
+        if re.search(
             r"^(?:background status|job status|task status|what(?:'s| is)\s+running\s+in\s+the\s+background|what(?:'s| is)\s+the\s+background\s+status)\??$",
             text,
         ):
@@ -1580,7 +1723,7 @@ User request: "{user_input}"
 
 Respond ONLY with valid JSON in this exact format:
 {{
-  "action_type": "install_package | manage_package | run_command | create_file | create_folder | open_app | search_web | write_to_file | type_text | type_in_window | press_hotkey | press_hotkey_in_window | click_at | click_window | focus_window | window_state | active_window | list_windows | background_status | unsupported",
+  "action_type": "install_package | manage_package | run_command | create_file | create_folder | open_app | search_web | write_to_file | type_text | type_in_window | press_hotkey | press_hotkey_in_window | click_at | click_window | focus_window | window_state | active_window | list_windows | background_status | background_cancel | unsupported",
   "description": "what will happen in plain English",
   "command": "exact shell command if needed",
   "filename": "full file path if creating a file",
@@ -1617,6 +1760,7 @@ Rules:
 - Use active_window to report the currently focused desktop window
 - Use list_windows to report visible titled windows
 - Use background_status when the user asks what heavy task IRIS is running in the background
+- Use background_cancel when the user asks IRIS to stop a heavy background task
 - For rename: use command like: ren "full\\path\\oldname" "newname"
 - Return unsupported only if truly impossible to determine
 
@@ -1901,6 +2045,10 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
                 result = self._background_status(plan)
                 success = bool(result)
 
+            elif action_type == "background_cancel":
+                result = self._background_cancel(plan)
+                success = bool(result)
+
             else:
                 return "I don't know how to execute that type of action.", False
 
@@ -1928,7 +2076,7 @@ if start command failed, try webbrowser; if one path failed, try a different pat
 
 Respond ONLY with valid JSON in this exact format:
 {{
-  "action_type": "install_package | manage_package | run_command | create_file | create_folder | open_app | search_web | write_to_file | type_text | type_in_window | press_hotkey | press_hotkey_in_window | click_at | click_window | focus_window | window_state | active_window | list_windows | background_status",
+  "action_type": "install_package | manage_package | run_command | create_file | create_folder | open_app | search_web | write_to_file | type_text | type_in_window | press_hotkey | press_hotkey_in_window | click_at | click_window | focus_window | window_state | active_window | list_windows | background_status | background_cancel",
   "description": "alternative approach in plain English",
   "command": "alternative shell command if needed",
   "filename": "full file path if needed",
@@ -1992,6 +2140,44 @@ Respond with ONLY the JSON. No explanation."""
             fix = self._think_of_fix(command, err)
             return f"That didn't work. {fix}"
 
+    def _run_command_background(self, plan: dict, cancel_event: threading.Event) -> tuple[str, bool, bool]:
+        command = str(plan.get("command", "") or "").strip()
+        if not command:
+            return "No command to run.", False, False
+
+        use_shell = self._command_requires_shell(command)
+        args = command if use_shell else self._split_command_args(command)
+        self._log(f"RUN BACKGROUND: {command}")
+        try:
+            stdout, stderr, returncode, cancelled = self._run_process_with_cancel(
+                args,
+                use_shell=use_shell,
+                timeout=120,
+                cancel_event=cancel_event,
+            )
+        except subprocess.TimeoutExpired:
+            self._log(f"FAILED BACKGROUND: {command} — timed out")
+            return "That command timed out.", False, False
+        except Exception as exc:
+            self._log(f"FAILED BACKGROUND: {command} — {exc}")
+            return f"That didn't work. {exc}", False, False
+
+        if cancelled:
+            return "Stopped the running command.", False, True
+
+        if returncode == 0:
+            output = stdout.strip()
+            msg = "Done."
+            if output and len(output) < 300:
+                msg += f" {output}"
+            self._log(f"SUCCESS BACKGROUND: {command}")
+            return msg, True, False
+
+        err = stderr.strip()
+        self._log(f"FAILED BACKGROUND: {command} — {err}")
+        fix = self._think_of_fix(command, err)
+        return f"That didn't work. {fix}", False, False
+
     def _manage_package(self, plan: dict) -> tuple[str, bool]:
         operation = str(plan.get("package_operation", "") or "").strip().lower()
         package_name = str(plan.get("package_name", "") or "").strip()
@@ -2036,6 +2222,52 @@ Respond with ONLY the JSON. No explanation."""
             return f"Updated '{package_name}'.", True
 
         return (output[:500] if output else "Done."), True
+
+    def _manage_package_background(self, plan: dict, cancel_event: threading.Event) -> tuple[str, bool, bool]:
+        operation = str(plan.get("package_operation", "") or "").strip().lower()
+        package_name = str(plan.get("package_name", "") or "").strip()
+        command = str(plan.get("command", "") or "").strip() or self._build_package_command(operation, package_name)
+        args = self._build_package_args(operation, package_name)
+        if not command and not args:
+            return "I couldn't determine the package command to run.", False, False
+
+        use_shell = False
+        run_args = args
+        if not run_args:
+            use_shell = self._command_requires_shell(command)
+            run_args = command if use_shell else self._split_command_args(command)
+
+        try:
+            stdout, stderr, returncode, cancelled = self._run_process_with_cancel(
+                run_args,
+                use_shell=use_shell,
+                timeout=240,
+                cancel_event=cancel_event,
+            )
+        except subprocess.TimeoutExpired:
+            return "Package management timed out.", False, False
+        except Exception as exc:
+            return f"Package management didn't work: {exc}", False, False
+
+        output = (stdout or "").strip() or (stderr or "").strip()
+        self._log(f"PACKAGE BACKGROUND {operation.upper()}: {package_name or '(all)'} :: rc={returncode}")
+
+        if cancelled:
+            return "Stopped the running package task.", False, True
+
+        if returncode != 0:
+            detail = output[:500] if output else "winget returned a non-zero exit code."
+            return f"Package management didn't work: {detail}", False, False
+
+        if operation == "list":
+            return self._summarize_package_list(output), True, False
+        if operation == "install":
+            return f"Installed '{package_name}'.", True, False
+        if operation == "uninstall":
+            return f"Uninstalled '{package_name}'.", True, False
+        if operation == "upgrade":
+            return f"Updated '{package_name}'.", True, False
+        return (output[:500] if output else "Done."), True, False
 
     def _summarize_package_list(self, output: str) -> str:
         lines = [line.rstrip() for line in (output or "").splitlines() if line.strip()]
@@ -2411,6 +2643,9 @@ Be specific and practical. No preamble."""
             return f"No heavy background task is running right now. Last background update: {last_update}"
 
         return "No heavy background task is running right now."
+
+    def _background_cancel(self, plan: dict) -> str:
+        return self._cancel_background_action()
 
     # ─────────────────────────────────────────────────────────────
     # LOGGING

@@ -147,6 +147,7 @@ def main() -> None:
     original_pattern_match = engine.executor._pattern_match
     original_manage_package = engine.executor._manage_package
     original_run_command = engine.executor._run_command
+    original_execute_background_plan = engine.executor._execute_background_plan
     original_plan_action_json = engine.executor.brain.plan_action_json
 
     def fake_speak(text: str) -> None:
@@ -522,12 +523,12 @@ def main() -> None:
 
         voice_background_calls: list[str] = []
 
-        def fake_slow_run_command(plan: dict):
+        def fake_success_background_execute(plan: dict, cancel_event):
             voice_background_calls.append(str(plan.get("command", "")))
             time.sleep(0.15)
-            return "Done. voice background smoke complete."
+            return "Done. voice background smoke complete.", True, False
 
-        engine.executor._run_command = fake_slow_run_command  # type: ignore[method-assign]
+        engine.executor._execute_background_plan = fake_success_background_execute  # type: ignore[method-assign]
         engine.process_user_input(
             "run smoke safe command",
             speak_response=True,
@@ -596,7 +597,89 @@ def main() -> None:
             and "background action finished." in background_status_idle.response.lower(),
             "Background status query did not fall back to the last completion update once idle.",
         )
-        engine.executor._run_command = lambda plan: "Done. smoke command complete."  # type: ignore[method-assign]
+
+        cancel_background_calls: list[str] = []
+
+        def fake_cancellable_background_execute(plan: dict, cancel_event):
+            cancel_background_calls.append(str(plan.get("command", "")))
+            deadline = time.time() + 2.0
+            while time.time() < deadline:
+                if cancel_event.is_set():
+                    return "Stopped the running command.", False, True
+                time.sleep(0.03)
+            return "Done. unexpected background completion.", True, False
+
+        engine.executor._execute_background_plan = fake_cancellable_background_execute  # type: ignore[method-assign]
+        engine.process_user_input(
+            "run smoke safe command",
+            speak_response=True,
+            input_source="voice",
+        )
+        cancel_start_result = engine.process_user_input(
+            "yes",
+            speak_response=True,
+            input_source="voice",
+        )
+        assert_true(
+            "starting in the background: echo smoke." in cancel_start_result.response.lower(),
+            "Second voice background command did not enter the background lane before cancellation.",
+        )
+        cancel_status_running = engine.process_user_input(
+            "background status",
+            speak_response=True,
+            input_source="voice",
+        )
+        assert_true(
+            "currently running" in cancel_status_running.response.lower(),
+            "Background status did not reflect the cancellable job before stop.",
+        )
+        cancel_result = engine.process_user_input(
+            "stop background task",
+            speak_response=True,
+            input_source="voice",
+        )
+        assert_true(
+            "stopping" in cancel_result.response.lower()
+            and "run a safe smoke command" in cancel_result.response.lower(),
+            "Background cancel command did not return the expected stop acknowledgement.",
+        )
+
+        cancelled_updates = []
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            cancelled_updates = engine.drain_background_updates()
+            if cancelled_updates:
+                break
+            time.sleep(0.05)
+        assert_true(cancelled_updates, "Background cancel path did not emit a completion update.")
+        assert_true(
+            any("background action cancelled." in update.get("message", "").lower() for update in cancelled_updates),
+            "Background cancel path did not emit the cancelled completion message.",
+        )
+        assert_true(
+            background_spoken_messages
+            and "background action cancelled." in background_spoken_messages[-1].lower(),
+            "Background cancel path did not announce cancellation through background speech.",
+        )
+        assert_true(
+            cancel_background_calls == ["echo smoke"],
+            "Background cancel path did not run the expected shell command before cancellation.",
+        )
+        assert_true(
+            not engine.status_snapshot().get("background_action_running"),
+            "Background cancellation did not clear the running-task state.",
+        )
+        cancel_status_idle = engine.process_user_input(
+            "background status",
+            speak_response=True,
+            input_source="voice",
+        )
+        assert_true(
+            "no heavy background task is running" in cancel_status_idle.response.lower()
+            and "background action cancelled." in cancel_status_idle.response.lower(),
+            "Background status did not report the cancelled completion once idle.",
+        )
+        engine.executor._execute_background_plan = original_execute_background_plan
 
         timed_out_prompt = engine.process_user_input("run smoke safe command", speak_response=True)
         assert_true(
@@ -960,6 +1043,7 @@ def main() -> None:
         engine.executor._pattern_match = original_pattern_match
         engine.executor._manage_package = original_manage_package
         engine.executor._run_command = original_run_command
+        engine.executor._execute_background_plan = original_execute_background_plan
         engine.shutdown()
 
 
