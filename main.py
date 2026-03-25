@@ -58,17 +58,13 @@ def print_response(label: str, text: str) -> None:
         return
     console.print(f"\n[bold cyan]{label}:[/bold cyan] {text}\n")
 
-
-def process_voice_turn(engine: IRISEngine, command: str) -> object:
-    ack_token = engine.begin_slow_voice_ack(command, enabled=True)
-    try:
-        result = engine.process_user_input(command, speak_response=False, input_source="voice")
-    finally:
-        engine.finish_slow_voice_ack(ack_token, stop_audio=True)
-
-    if result.response and not getattr(result, "exit_immediately", False):
+def speak_voice_result(engine: IRISEngine, result) -> None:
+    if not result.response or getattr(result, "exit_immediately", False):
+        return
+    if engine.should_hold_voice_followup_open():
         engine.voice.speak(result.response)
-    return result
+    else:
+        engine.voice.speak_background(result.response)
 
 
 def main() -> None:
@@ -111,25 +107,33 @@ def main() -> None:
 
             if stripped:
                 console.print(f"[green]Wake detected:[/green] {heard_text}")
-                result = process_voice_turn(engine, stripped)
+                result = engine.process_voice_turn(stripped, input_source="voice", enable_slow_ack=True)
+                speak_voice_result(engine, result)
                 print_response(result.label, result.response)
                 if result.should_exit:
                     break
+                if not engine.should_hold_voice_followup_open():
+                    console.print("[dim]  → Back to standby[/dim]")
+                    continue
             else:
                 ack = getattr(Config, "WAKE_ACKNOWLEDGEMENT", "I'm here.")
                 print_response(Config.PUBLIC_NAME, ack)
-                voice.speak(ack)
+                voice.speak_quick_ack(ack)
 
-                command = engine.listen_for_voice_command()
+                command = engine.listen_for_voice_command(interrupt_speech=False)
                 if not command:
                     if getattr(voice, "last_listen_status", "") == "transcription_failed":
                         print_response("System", voice.describe_last_listen_feedback())
                     continue
 
-                result = process_voice_turn(engine, command)
+                result = engine.process_voice_turn(command, input_source="voice", enable_slow_ack=True)
+                speak_voice_result(engine, result)
                 print_response(result.label, result.response)
                 if result.should_exit:
                     break
+                if not engine.should_hold_voice_followup_open():
+                    console.print("[dim]  → Back to standby[/dim]")
+                    continue
 
             for _ in range(conversation_turns):
                 console.print("[dim]  (follow-up listening...)[/dim]")
@@ -143,10 +147,14 @@ def main() -> None:
                     console.print("[dim]  → Conversation ended[/dim]")
                     break
 
-                result = process_voice_turn(engine, follow_up)
+                result = engine.process_voice_turn(follow_up, input_source="voice", enable_slow_ack=True)
+                speak_voice_result(engine, result)
                 print_response(result.label, result.response)
                 if result.should_exit:
                     return
+                if not engine.should_hold_voice_followup_open():
+                    console.print("[dim]  → Back to standby[/dim]")
+                    break
     except KeyboardInterrupt:
         console.print("\n\n[bold cyan]IRIS:[/bold cyan] Interrupted. Goodbye!")
         try:

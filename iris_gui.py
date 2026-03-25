@@ -412,11 +412,7 @@ class VoiceStandbyWorker(QtCore.QThread):
 
     def _handle_command(self, display_text: str, command_text: str, follow_up_turns: int) -> bool:
         self.event.emit({"type": "heard", "text": display_text})
-        ack_token = self.engine.begin_slow_voice_ack(command_text, enabled=True)
-        try:
-            result = self.engine.process_user_input(command_text, speak_response=False, input_source="voice")
-        finally:
-            self.engine.finish_slow_voice_ack(ack_token, stop_audio=True)
+        result = self.engine.process_voice_turn(command_text, input_source="voice", enable_slow_ack=True)
         self.event.emit({"type": "result", "result": result})
 
         if result.should_exit:
@@ -427,7 +423,7 @@ class VoiceStandbyWorker(QtCore.QThread):
             self.event.emit({"type": "shutdown", "immediate": getattr(result, "exit_immediately", False)})
             return False
 
-        keep_followup_open = self._should_hold_followup_open()
+        keep_followup_open = self.engine.should_hold_voice_followup_open()
         if result.response:
             if keep_followup_open:
                 self.engine.voice.speak(result.response)
@@ -446,11 +442,7 @@ class VoiceStandbyWorker(QtCore.QThread):
                 break
 
             self.event.emit({"type": "heard", "text": follow_up})
-            ack_token = self.engine.begin_slow_voice_ack(follow_up, enabled=True)
-            try:
-                result = self.engine.process_user_input(follow_up, speak_response=False, input_source="voice")
-            finally:
-                self.engine.finish_slow_voice_ack(ack_token, stop_audio=True)
+            result = self.engine.process_voice_turn(follow_up, input_source="voice", enable_slow_ack=True)
             self.event.emit({"type": "result", "result": result})
             if result.should_exit:
                 if result.response and not getattr(result, "exit_immediately", False):
@@ -460,28 +452,13 @@ class VoiceStandbyWorker(QtCore.QThread):
                 self.event.emit({"type": "shutdown", "immediate": getattr(result, "exit_immediately", False)})
                 return False
             if result.response:
-                if self._should_hold_followup_open():
+                if self.engine.should_hold_voice_followup_open():
                     self.engine.voice.speak(result.response)
                 else:
                     self.engine.voice.speak_background(result.response)
                     return True
 
         return True
-
-    def _should_hold_followup_open(self) -> bool:
-        executor = getattr(self.engine, "executor", None)
-        if executor is None:
-            return False
-        return any(
-            (
-                executor.waiting_for_followup(),
-                executor.waiting_for_clarification(),
-                executor.waiting_for_plan_choice(),
-                executor.waiting_for_presence_check(),
-                executor.waiting_for_permission(),
-                bool(getattr(self.engine.copilot, "active", False)),
-            )
-        )
 
 
 class IrisWindow(QtWidgets.QMainWindow):

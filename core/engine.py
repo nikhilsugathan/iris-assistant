@@ -369,6 +369,31 @@ class IRISEngine:
     def listen_for_voice_command(self, interrupt_speech: bool = True) -> str:
         return self.voice.listen_for_command(interrupt_speech=interrupt_speech)
 
+    def process_voice_turn(
+        self,
+        command_text: str,
+        *,
+        input_source: str = "voice",
+        enable_slow_ack: bool = True,
+    ) -> EngineResult:
+        ack_token = self.begin_slow_voice_ack(command_text, enabled=enable_slow_ack)
+        try:
+            return self.process_user_input(command_text, speak_response=False, input_source=input_source)
+        finally:
+            self.finish_slow_voice_ack(ack_token, stop_audio=True)
+
+    def should_hold_voice_followup_open(self) -> bool:
+        return any(
+            (
+                self.executor.waiting_for_followup(),
+                self.executor.waiting_for_clarification(),
+                self.executor.waiting_for_plan_choice(),
+                self.executor.waiting_for_presence_check(),
+                self.executor.waiting_for_permission(),
+                bool(getattr(self.copilot, "active", False)),
+            )
+        )
+
     def begin_slow_voice_ack(self, user_input: str, enabled: bool = True):
         if not enabled or not getattr(self.voice, "audio_ready", False):
             return None
