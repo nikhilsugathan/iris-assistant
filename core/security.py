@@ -91,7 +91,7 @@ SAFE_DOWNLOAD_DOMAINS = [
 
 # Commands that always require admin on Windows
 ADMIN_REQUIRED_PATTERNS = [
-    r"winget\s+install", r"winget\s+uninstall",
+    r"winget\s+install", r"winget\s+uninstall", r"winget\s+upgrade",
     r"choco\s+install", r"choco\s+uninstall",
     r"sc\s+(create|delete|start|stop)",   # Windows services
     r"netsh\s+", r"ipconfig\s+/",         # Network config

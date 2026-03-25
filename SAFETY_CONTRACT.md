@@ -58,6 +58,7 @@ These actions are acceptable for silent or near-silent execution when they stay 
 - focusing an existing local window
 - opening trusted URLs
 - local status checks and diagnostics
+- installed-app inventory and read-only package inspection
 - read-only inspection tasks
 - low-risk desktop assistance that does not alter security posture or remove user data
 

@@ -15,6 +15,7 @@ PERMISSION GATE FLOW:
 SUPPORTED ACTION TYPES:
   - install_package  : winget / pip / npm install
   - run_command      : any shell command
+  - manage_package   : install / uninstall / upgrade / list app packages
   - create_file      : create a file with content
   - create_folder    : make a directory
   - open_app         : launch an application
@@ -164,6 +165,8 @@ class ActionExecutor:
             "filename": plan.get("filename", ""),
             "content": plan.get("content", ""),
             "app_name": plan.get("app_name", ""),
+            "package_operation": plan.get("package_operation", ""),
+            "package_name": plan.get("package_name", ""),
             "search_query": plan.get("search_query", ""),
             "url": plan.get("url", ""),
             "text_to_type": plan.get("text_to_type", ""),
@@ -582,6 +585,25 @@ class ActionExecutor:
 
         return permission_msg
 
+    def _shell_quote(self, value: str) -> str:
+        text = str(value or "")
+        return '"' + text.replace('"', '\\"') + '"'
+
+    def _build_package_command(self, operation: str, package_name: str = "") -> str:
+        op = (operation or "").strip().lower()
+        pkg = str(package_name or "").strip()
+        quoted = self._shell_quote(pkg) if pkg else ""
+
+        if op == "list":
+            return "winget list"
+        if op == "install":
+            return f"winget install --name {quoted} --accept-package-agreements --accept-source-agreements"
+        if op == "uninstall":
+            return f"winget uninstall --name {quoted}"
+        if op == "upgrade":
+            return f"winget upgrade --name {quoted} --accept-package-agreements --accept-source-agreements"
+        return ""
+
     def _pattern_match(self, user_input: str) -> Optional[dict]:
         """
         Fast pattern-based action detection for common requests.
@@ -688,6 +710,19 @@ class ActionExecutor:
                 "is_dangerous": False,
             }
 
+        if re.search(
+            r"^(?:list|show|what(?:'s| is))\s+(?:my\s+)?(?:installed\s+apps?|installed\s+programs?|apps\s+installed)\??$|^what apps are installed\??$",
+            text,
+        ):
+            return {
+                "action_type": "manage_package",
+                "description": "list installed applications",
+                "package_operation": "list",
+                "package_name": "",
+                "command": "winget list",
+                "is_dangerous": False,
+            }
+
         hotkey_window_match = re.search(
             r"^(?:press|hit|use|send)\s+(?:the\s+)?(?:(?:hotkey|shortcut|key(?: combo)?)\s+)?(.+?)\s+(?:in|into)\s+(?:the\s+)?(.+?)(?:\s+window)?$",
             raw,
@@ -751,6 +786,57 @@ class ActionExecutor:
                     "action_type": "focus_window",
                     "description": f"focus the '{window_title}' window",
                     "window_title": window_title,
+                    "is_dangerous": False,
+                }
+
+        install_match = re.search(
+            r"^(?:install|set up|add)\s+(?:the\s+)?(?:app|application|program|package)?\s*(.+)$",
+            raw,
+            re.IGNORECASE,
+        )
+        if install_match:
+            package_name = install_match.group(1).strip(" \"'")
+            if package_name:
+                return {
+                    "action_type": "manage_package",
+                    "description": f"install '{package_name}'",
+                    "package_operation": "install",
+                    "package_name": package_name,
+                    "command": self._build_package_command("install", package_name),
+                    "is_dangerous": False,
+                }
+
+        uninstall_match = re.search(
+            r"^(?:uninstall|remove)\s+(?:the\s+)?(?:app|application|program|package)?\s*(.+)$",
+            raw,
+            re.IGNORECASE,
+        )
+        if uninstall_match:
+            package_name = uninstall_match.group(1).strip(" \"'")
+            if package_name:
+                return {
+                    "action_type": "manage_package",
+                    "description": f"uninstall '{package_name}'",
+                    "package_operation": "uninstall",
+                    "package_name": package_name,
+                    "command": self._build_package_command("uninstall", package_name),
+                    "is_dangerous": True,
+                }
+
+        upgrade_match = re.search(
+            r"^(?:upgrade|update)\s+(?:the\s+)?(?:app|application|program|package)?\s*(.+)$",
+            raw,
+            re.IGNORECASE,
+        )
+        if upgrade_match:
+            package_name = upgrade_match.group(1).strip(" \"'")
+            if package_name and package_name.lower() not in {"windows", "the system"}:
+                return {
+                    "action_type": "manage_package",
+                    "description": f"update '{package_name}'",
+                    "package_operation": "upgrade",
+                    "package_name": package_name,
+                    "command": self._build_package_command("upgrade", package_name),
                     "is_dangerous": False,
                 }
 
@@ -964,12 +1050,14 @@ User request: "{user_input}"
 
 Respond ONLY with valid JSON in this exact format:
 {{
-  "action_type": "install_package | run_command | create_file | create_folder | open_app | search_web | write_to_file | type_text | type_in_window | press_hotkey | press_hotkey_in_window | click_at | click_window | focus_window | window_state | active_window | list_windows | unsupported",
+  "action_type": "install_package | manage_package | run_command | create_file | create_folder | open_app | search_web | write_to_file | type_text | type_in_window | press_hotkey | press_hotkey_in_window | click_at | click_window | focus_window | window_state | active_window | list_windows | unsupported",
   "description": "what will happen in plain English",
   "command": "exact shell command if needed",
   "filename": "full file path if creating a file",
   "content": "",
   "app_name": "app name if opening",
+  "package_operation": "",
+  "package_name": "",
   "search_query": "query if searching",
   "url": "",
   "text_to_type": "",
@@ -986,6 +1074,7 @@ Respond ONLY with valid JSON in this exact format:
 Rules:
 - Windows paths use backslashes
 - For installs use winget (apps) or pip (python packages)
+- Use manage_package for winget-backed install, uninstall, upgrade, or installed-app listing
 - is_dangerous only true for delete/format/uninstall
 - Use type_text for typing into the currently focused app
 - Use type_in_window for typing into a specific named window
@@ -1140,7 +1229,14 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
         action_type = plan.get("action_type")
 
         try:
-            if action_type in ("install_package", "run_command"):
+            if action_type == "install_package":
+                result = self._run_command(plan)
+                success = "didn't work" not in result.lower() and "error" not in result.lower()
+
+            elif action_type == "manage_package":
+                result, success = self._manage_package(plan)
+
+            elif action_type == "run_command":
                 result = self._run_command(plan)
                 success = "didn't work" not in result.lower() and "error" not in result.lower()
 
@@ -1236,12 +1332,14 @@ if start command failed, try webbrowser; if one path failed, try a different pat
 
 Respond ONLY with valid JSON in this exact format:
 {{
-  "action_type": "install_package | run_command | create_file | create_folder | open_app | search_web | write_to_file | type_text | type_in_window | press_hotkey | press_hotkey_in_window | click_at | click_window | focus_window | window_state | active_window | list_windows",
+  "action_type": "install_package | manage_package | run_command | create_file | create_folder | open_app | search_web | write_to_file | type_text | type_in_window | press_hotkey | press_hotkey_in_window | click_at | click_window | focus_window | window_state | active_window | list_windows",
   "description": "alternative approach in plain English",
   "command": "alternative shell command if needed",
   "filename": "full file path if needed",
   "content": "",
   "app_name": "app name if opening",
+  "package_operation": "",
+  "package_name": "",
   "search_query": "",
   "url": "direct URL if opening browser",
   "text_to_type": "",
@@ -1300,6 +1398,72 @@ Respond with ONLY the JSON. No explanation."""
             # Cognitive thinking — try to suggest a fix
             fix = self._think_of_fix(command, err)
             return f"That didn't work. {fix}"
+
+    def _manage_package(self, plan: dict) -> tuple[str, bool]:
+        operation = str(plan.get("package_operation", "") or "").strip().lower()
+        package_name = str(plan.get("package_name", "") or "").strip()
+        command = str(plan.get("command", "") or "").strip() or self._build_package_command(operation, package_name)
+        if not command:
+            return "I couldn't determine the package command to run.", False
+
+        try:
+            result = subprocess.run(
+                command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=240,
+            )
+        except Exception as exc:
+            return f"Package management didn't work: {exc}", False
+
+        stdout = (result.stdout or "").strip()
+        stderr = (result.stderr or "").strip()
+        output = stdout or stderr
+        self._log(f"PACKAGE {operation.upper()}: {package_name or '(all)'} :: rc={result.returncode}")
+
+        if result.returncode != 0:
+            detail = output[:500] if output else "winget returned a non-zero exit code."
+            return f"Package management didn't work: {detail}", False
+
+        if operation == "list":
+            return self._summarize_package_list(output), True
+
+        if operation == "install":
+            return f"Installed '{package_name}'.", True
+
+        if operation == "uninstall":
+            return f"Uninstalled '{package_name}'.", True
+
+        if operation == "upgrade":
+            return f"Updated '{package_name}'.", True
+
+        return (output[:500] if output else "Done."), True
+
+    def _summarize_package_list(self, output: str) -> str:
+        lines = [line.rstrip() for line in (output or "").splitlines() if line.strip()]
+        if not lines:
+            return "I couldn't find any installed apps from winget."
+
+        filtered = []
+        for line in lines:
+            stripped = line.strip()
+            lowered = stripped.lower()
+            if lowered.startswith("name ") or lowered.startswith("name\t"):
+                continue
+            if set(stripped) <= {"-", " ", "\t"}:
+                continue
+            filtered.append(stripped)
+
+        preview = filtered[:10] if filtered else lines[:10]
+        if not preview:
+            return "I couldn't find any installed apps from winget."
+
+        body = "\n".join(f"- {line}" for line in preview)
+        suffix = ""
+        if filtered and len(filtered) > len(preview):
+            suffix = f"\n...and {len(filtered) - len(preview)} more."
+        return f"Installed apps:\n{body}{suffix}"
 
     def _think_of_fix(self, command: str, error: str) -> str:
         """Cognitively suggest a fix when a command fails."""

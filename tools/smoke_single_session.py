@@ -139,6 +139,7 @@ def main() -> None:
     original_speak = engine.voice.speak
     original_think = engine.brain.think
     original_pattern_match = engine.executor._pattern_match
+    original_manage_package = engine.executor._manage_package
 
     def fake_speak(text: str) -> None:
         spoken_messages.append(text)
@@ -238,6 +239,33 @@ def main() -> None:
                 "window_state": "close",
                 "is_dangerous": True,
             }
+        if user_input == "run smoke package list":
+            return {
+                "action_type": "manage_package",
+                "description": "list installed applications",
+                "package_operation": "list",
+                "package_name": "",
+                "command": "winget list",
+                "is_dangerous": False,
+            }
+        if user_input == "run smoke package install":
+            return {
+                "action_type": "manage_package",
+                "description": "install Git",
+                "package_operation": "install",
+                "package_name": "Git",
+                "command": 'winget install --name "Git" --accept-package-agreements --accept-source-agreements',
+                "is_dangerous": False,
+            }
+        if user_input == "run smoke package uninstall":
+            return {
+                "action_type": "manage_package",
+                "description": "uninstall Git",
+                "package_operation": "uninstall",
+                "package_name": "Git",
+                "command": 'winget uninstall --name "Git"',
+                "is_dangerous": True,
+            }
         if user_input == "run smoke chain step 1":
             return {
                 "action_type": "create_file",
@@ -262,6 +290,24 @@ def main() -> None:
         engine.voice.speak = fake_speak
         engine.brain.think = fake_think
         engine.executor._pattern_match = fake_pattern_match
+
+        package_events: list[tuple[str, str]] = []
+
+        def fake_manage_package(plan: dict):
+            operation = plan.get("package_operation", "")
+            package_name = plan.get("package_name", "")
+            package_events.append((operation, package_name))
+            if operation == "list":
+                return "Installed apps:\n- Git\n- Python\n- PowerToys", True
+            if operation == "install":
+                return f"Installed '{package_name}'.", True
+            if operation == "uninstall":
+                return f"Uninstalled '{package_name}'.", True
+            if operation == "upgrade":
+                return f"Updated '{package_name}'.", True
+            return "Unsupported package operation.", False
+
+        engine.executor._manage_package = fake_manage_package
 
         assert_true(engine.contains_wake_word("iris status check"), "Wake-word detection failed.")
         assert_true(
@@ -468,6 +514,47 @@ def main() -> None:
             "Window close action did not reach the desktop controller.",
         )
 
+        engine.executor.auto_action_timestamps = []
+        package_list_result = engine.process_user_input("run smoke package list", speak_response=True)
+        assert_true(
+            "Installed apps:" in package_list_result.response,
+            "Package list action did not return the installed-app summary.",
+        )
+        assert_true(
+            ("list", "") in package_events,
+            "Package list action did not reach the package manager path.",
+        )
+
+        package_install_warning = engine.process_user_input("run smoke package install", speak_response=True)
+        assert_true(
+            engine.executor.waiting_for_permission(),
+            "Package install action should wait for confirmation.",
+        )
+        package_install_result = engine.process_user_input("yes", speak_response=True)
+        assert_true(
+            package_install_result.response == "Installed 'Git'.",
+            "Package install action did not execute after confirmation.",
+        )
+        assert_true(
+            ("install", "Git") in package_events,
+            "Package install action did not reach the package manager path.",
+        )
+
+        package_uninstall_warning = engine.process_user_input("run smoke package uninstall", speak_response=True)
+        assert_true(
+            engine.executor.waiting_for_permission(),
+            "Package uninstall action should wait for confirmation.",
+        )
+        package_uninstall_result = engine.process_user_input("yes", speak_response=True)
+        assert_true(
+            package_uninstall_result.response == "Uninstalled 'Git'.",
+            "Package uninstall action did not execute after confirmation.",
+        )
+        assert_true(
+            ("uninstall", "Git") in package_events,
+            "Package uninstall action did not reach the package manager path.",
+        )
+
         chain_step_one = engine.process_user_input("run smoke chain step 1", speak_response=True)
         assert_true(sensitive_smoke_file.exists(), "Sensitive smoke chain file was not created.")
         assert_true(
@@ -559,6 +646,7 @@ def main() -> None:
         engine.voice.speak = original_speak
         engine.brain.think = original_think
         engine.executor._pattern_match = original_pattern_match
+        engine.executor._manage_package = original_manage_package
         engine.shutdown()
 
 
