@@ -10,6 +10,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from config import Config
 from core.engine import IRISEngine
+from core.runtime_log import get_runtime_log_path, log_runtime
 from core.visual_identity import apply_windows_app_user_model_id, create_app_icon
 
 
@@ -354,7 +355,12 @@ class VoiceStandbyWorker(QtCore.QThread):
 
     def run(self):
         try:
+            log_runtime("standby_worker_started")
             if not getattr(self.engine.voice, "mic_ready", False):
+                log_runtime(
+                    "standby_worker_no_mic",
+                    feedback=self.engine.voice.describe_last_listen_feedback(),
+                )
                 self.event.emit(
                     {
                         "type": "feedback",
@@ -372,6 +378,14 @@ class VoiceStandbyWorker(QtCore.QThread):
 
                 heard_text = self.engine.voice.listen_for_wake()
                 normalized_heard = self.engine.normalize_wake_transcript(heard_text)
+                log_runtime(
+                    "wake_cycle_completed",
+                    heard_text=heard_text,
+                    normalized=normalized_heard,
+                    contains_wake=self.engine.contains_wake_word(normalized_heard),
+                    listen_status=getattr(self.engine.voice, "last_listen_status", ""),
+                    listen_detail=getattr(self.engine.voice, "last_listen_detail", ""),
+                )
                 if self.isInterruptionRequested():
                     break
                 if not normalized_heard or not self.engine.contains_wake_word(normalized_heard):
@@ -385,6 +399,7 @@ class VoiceStandbyWorker(QtCore.QThread):
 
                 ack = getattr(Config, "WAKE_ACKNOWLEDGEMENT", "I'm here.")
                 self.event.emit({"type": "ack", "text": ack})
+                log_runtime("wake_acknowledged", text=ack)
                 quick_ack = getattr(self.engine.voice, "speak_quick_ack", None)
                 if callable(quick_ack):
                     quick_ack(ack)
@@ -396,6 +411,11 @@ class VoiceStandbyWorker(QtCore.QThread):
 
                 command = self.engine.listen_for_voice_command(interrupt_speech=False)
                 if not command:
+                    log_runtime(
+                        "wake_command_missing",
+                        listen_status=getattr(self.engine.voice, "last_listen_status", ""),
+                        listen_detail=getattr(self.engine.voice, "last_listen_detail", ""),
+                    )
                     if getattr(self.engine.voice, "last_listen_status", "") == "transcription_failed":
                         self.event.emit(
                             {
@@ -408,11 +428,19 @@ class VoiceStandbyWorker(QtCore.QThread):
                 if not self._handle_command(command, command, follow_up_turns):
                     break
         except Exception as exc:
+            log_runtime("standby_worker_failed", error=str(exc))
             self.failed.emit(str(exc))
 
     def _handle_command(self, display_text: str, command_text: str, follow_up_turns: int) -> bool:
+        log_runtime("voice_command_handling", display_text=display_text, command_text=command_text)
         self.event.emit({"type": "heard", "text": display_text})
         result = self.engine.process_voice_turn(command_text, input_source="voice", enable_slow_ack=True)
+        log_runtime(
+            "voice_command_result",
+            mode=getattr(result, "mode", ""),
+            should_exit=getattr(result, "should_exit", False),
+            response=getattr(result, "response", ""),
+        )
         self.event.emit({"type": "result", "result": result})
 
         if result.should_exit:
@@ -557,6 +585,12 @@ class IrisWindow(QtWidgets.QMainWindow):
         self.wake_worker.event.connect(self.on_standby_event)
         self.wake_worker.failed.connect(self.on_worker_failed)
         self.wake_worker.start()
+        log_runtime(
+            "voice_standby_started",
+            mic_ready=getattr(self.engine.voice, "mic_ready", False),
+            selected_mic=getattr(self.engine.voice, "selected_mic_name", ""),
+            log_file=str(get_runtime_log_path()),
+        )
         if getattr(self.engine.voice, "mic_ready", False):
             self.orb.set_state("standby")
             self.floating_window.set_state("standby")

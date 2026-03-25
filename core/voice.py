@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from rich.console import Console
 from config import Config
 from core.resource_guard import ResourceGuard
+from core.runtime_log import log_runtime
 
 console = Console()
 
@@ -88,6 +89,14 @@ class Voice:
 
         self._init_audio()
         self._init_mic()
+        log_runtime(
+            "voice_initialized",
+            text_mode=self.text_mode,
+            audio_ready=self.audio_ready,
+            mic_ready=self.mic_ready,
+            selected_mic=self.selected_mic_name,
+            mic_error=self.mic_error,
+        )
 
     # ─────────────────────────────────────────────────────────────
     # INIT
@@ -106,8 +115,10 @@ class Voice:
             self._prime_audio_output()
             self.audio_ready = True
             console.print("[green]✓ Audio playback ready[/green]")
+            log_runtime("audio_ready", backend="pygame")
         except Exception as e:
             console.print(f"[red]Audio init failed:[/red] {e}")
+            log_runtime("audio_init_failed", error=str(e))
 
     def set_state_callback(self, callback):
         self._state_callback = callback
@@ -115,7 +126,9 @@ class Voice:
     def _emit_state(self, state: str):
         if state == self.current_state:
             return
+        previous = self.current_state
         self.current_state = state
+        log_runtime("voice_state", previous=previous, state=state)
         callback = self._state_callback
         if not callback:
             return
@@ -158,6 +171,13 @@ class Voice:
             self.mic_ready          = True
 
             console.print(f"[green]✓ Microphone ready[/green] [dim]({mic_name})[/dim]")
+            log_runtime(
+                "microphone_ready",
+                selected_mic=mic_name,
+                selected_index=mic_index,
+                preferred=str(preferred or ""),
+                available_count=len(mic_names),
+            )
 
             if mic_names:
                 console.print("[dim]Available microphones:[/dim]")
@@ -169,6 +189,7 @@ class Voice:
         except Exception as e:
             self.mic_error = str(e)
             console.print(f"[red]Microphone init failed:[/red] {e}")
+            log_runtime("microphone_init_failed", error=str(e))
 
     def _select_microphone_device(self, mic_names: list[str], preferred: str) -> tuple[int | None, str]:
         preferred = str(preferred or "").strip()
@@ -292,8 +313,14 @@ class Voice:
                 f"[green]✓ Calibration complete[/green] "
                 f"[dim](energy={self.recognizer.energy_threshold:.0f})[/dim]"
             )
+            log_runtime(
+                "microphone_calibrated",
+                selected_mic=self.selected_mic_name,
+                energy_threshold=getattr(self.recognizer, "energy_threshold", 0),
+            )
         except Exception as e:
             console.print(f"[yellow]Calibration warning:[/yellow] {e}")
+            log_runtime("microphone_calibration_warning", error=str(e), selected_mic=self.selected_mic_name)
 
     def _source_stream_ready(self, source) -> bool:
         try:
@@ -309,6 +336,11 @@ class Voice:
         self.last_calibrated_at = time.time()
         self.listen_failures = 0
         self.calibrated = True
+        log_runtime(
+            "microphone_recalibrated",
+            selected_mic=self.selected_mic_name,
+            energy_threshold=getattr(self.recognizer, "energy_threshold", 0),
+        )
 
     def _clamp_energy_threshold(self) -> None:
         recognizer = getattr(self, "recognizer", None)
@@ -347,6 +379,7 @@ class Voice:
             self._recalibrate_with_source(source, duration=duration)
         except Exception as e:
             console.print(f"[yellow]Mic recalibration warning:[/yellow] {e}")
+            log_runtime("microphone_recalibration_warning", wake_mode=wake_mode, error=str(e))
 
     # ─────────────────────────────────────────────────────────────
     # LISTEN
@@ -359,6 +392,7 @@ class Voice:
         if self.text_mode:
             return self.listen_text()
         time.sleep(0.2)   # Brief cooldown to avoid TTS echo
+        log_runtime("wake_listen_requested", selected_mic=self.selected_mic_name)
         return self._listen(
             timeout=getattr(Config, "WAKE_TIMEOUT", 8),
             phrase_time_limit=getattr(Config, "WAKE_PHRASE_LIMIT", 10),
@@ -371,6 +405,11 @@ class Voice:
         # Stop Iris speaking if she is — user interrupted
         if interrupt_speech:
             self.stop_speaking()
+        log_runtime(
+            "command_listen_requested",
+            selected_mic=self.selected_mic_name,
+            interrupt_speech=interrupt_speech,
+        )
         return self._listen(
             timeout=getattr(Config, "MIC_TIMEOUT", 6),
             phrase_time_limit=getattr(Config, "MIC_PHRASE_LIMIT", 12),
@@ -401,6 +440,14 @@ class Voice:
         self.last_uncertain_transcript_backend = ""
         self.last_uncertain_transcript_confidence = 0.0
         self._emit_state(active_state)
+        log_runtime(
+            "listen_started",
+            wake_mode=wake_mode,
+            timeout=timeout,
+            phrase_time_limit=phrase_time_limit,
+            selected_mic=self.selected_mic_name,
+            state=active_state,
+        )
         listen_started_at = time.perf_counter()
         try:
             with self._mic_lock:
@@ -424,6 +471,12 @@ class Voice:
             self.last_listen_detail = "No speech was detected before the listen timeout."
             self.listen_failures += 1
             self.last_total_listen_duration_ms = int((time.perf_counter() - listen_started_at) * 1000)
+            log_runtime(
+                "listen_timeout",
+                wake_mode=wake_mode,
+                total_ms=self.last_total_listen_duration_ms,
+                listen_failures=self.listen_failures,
+            )
             self._emit_state(settle_state)
             return ""
         except Exception as e:
@@ -431,6 +484,13 @@ class Voice:
             self.last_listen_detail = str(e)
             self.listen_failures += 1
             self.last_total_listen_duration_ms = int((time.perf_counter() - listen_started_at) * 1000)
+            log_runtime(
+                "listen_mic_error",
+                wake_mode=wake_mode,
+                error=str(e),
+                total_ms=self.last_total_listen_duration_ms,
+                listen_failures=self.listen_failures,
+            )
             self._emit_state("idle")
             if not wake_mode:
                 console.print(f"[red]Mic error:[/red] {e}")
@@ -448,6 +508,18 @@ class Voice:
             self.last_listen_status = "uncertain_transcript" if self.last_transcript_uncertain and not wake_mode else "heard"
             self.last_listen_detail = text
             self.listen_failures = 0
+            log_runtime(
+                "listen_heard",
+                wake_mode=wake_mode,
+                status=self.last_listen_status,
+                text=text,
+                backend=self.last_transcript_backend,
+                confidence=self.last_transcript_confidence,
+                attempts=self.last_transcript_attempts,
+                capture_ms=self.last_capture_duration_ms,
+                transcribe_ms=self.last_transcription_duration_ms,
+                total_ms=self.last_total_listen_duration_ms,
+            )
             if wake_mode and getattr(Config, "SHOW_WAKE_DEBUG", True):
                 console.print(f"[dim]Wake heard:[/dim] {text}")
             elif self.last_transcript_uncertain:
@@ -459,11 +531,30 @@ class Voice:
             self.last_listen_status = "transcription_failed"
             self.last_listen_detail = "Audio was captured, but speech recognition could not produce text."
             self.listen_failures += 1
+            log_runtime(
+                "listen_transcription_failed",
+                wake_mode=False,
+                attempts=self.last_transcript_attempts,
+                capture_ms=self.last_capture_duration_ms,
+                transcribe_ms=self.last_transcription_duration_ms,
+                total_ms=self.last_total_listen_duration_ms,
+            )
             console.print("[dim]Heard audio but couldn't transcribe it.[/dim]")
         else:
             self.last_listen_status = "wake_not_understood"
             self.last_listen_detail = "Wake audio was captured, but no wake phrase was recognized."
             self.listen_failures += 1
+            log_runtime(
+                "wake_not_understood",
+                attempts=self.last_transcript_attempts,
+                capture_ms=self.last_capture_duration_ms,
+                transcribe_ms=self.last_transcription_duration_ms,
+                total_ms=self.last_total_listen_duration_ms,
+                rejected_text=self.last_rejected_wake_text,
+                rejected_backend=self.last_rejected_wake_backend,
+                rejected_confidence=self.last_rejected_wake_confidence,
+                rejected_score=self.last_rejected_wake_score,
+            )
 
         self._emit_state(settle_state)
         return text or ""
@@ -533,6 +624,13 @@ class Voice:
             if not order:
                 order = ["google"]
 
+        log_runtime(
+            "wake_transcribe_order",
+            priority=priority,
+            order=order,
+            allow_local_stt=allow_local_stt,
+            has_local_whisper=has_local_whisper,
+        )
         return self._select_transcript(order, audio, wake_mode=True)
 
     def _transcribe_command(self, audio) -> str:
@@ -993,7 +1091,18 @@ if ($best) {{
                 continue
 
             if wake_mode:
-                if self._accept_wake_candidate(candidate):
+                score = self._wake_phrase_score(candidate.text)
+                accepted = self._accept_wake_candidate(candidate)
+                log_runtime(
+                    "wake_candidate",
+                    backend=backend,
+                    text=candidate.text,
+                    confidence=candidate.confidence,
+                    language=candidate.language,
+                    score=score,
+                    accepted=accepted,
+                )
+                if accepted:
                     self.last_transcript_attempts = " > ".join(attempted)
                     self._remember_transcript_candidate(candidate, wake_mode=True)
                     return candidate.text

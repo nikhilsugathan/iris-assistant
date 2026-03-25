@@ -19,6 +19,7 @@ from PySide6 import QtGui, QtTest, QtWidgets
 
 from config import Config
 from core.engine import IRISEngine
+from core.runtime_log import get_runtime_log_path
 from core.visual_identity import create_app_icon
 from iris_gui import IrisWindow
 
@@ -55,8 +56,9 @@ def main() -> None:
     dashboard_preview = smoke_dir / "iris_gui_dashboard.png"
     floating_preview = smoke_dir / "iris_gui_floating_orb.png"
     audit_log = smoke_dir / "iris_gui_audit.log"
+    runtime_log = get_runtime_log_path()
 
-    for artifact in (dashboard_preview, floating_preview, audit_log):
+    for artifact in (dashboard_preview, floating_preview, audit_log, runtime_log):
         if artifact.exists():
             artifact.unlink()
 
@@ -158,6 +160,7 @@ def main() -> None:
         assert_true(window.isVisible(), "Dashboard did not restore after floating orb mode.")
         assert_true(not window.floating_window.isVisible(), "Floating orb did not hide when restoring dashboard.")
         assert_true(audit_log.exists(), "GUI overdrive smoke did not produce an audit log.")
+        assert_true(runtime_log.exists(), "GUI startup did not produce the runtime diagnostics log.")
 
         print("PASS: IRIS GUI shell smoke test completed.")
         print(f"Dashboard preview: {dashboard_preview}")
