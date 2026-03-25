@@ -951,8 +951,20 @@ if ($best) {{
             "compute_type": compute_type,
         }
 
+    def _default_cpu_local_whisper_model(self) -> str:
+        profile = self._local_whisper_hardware_profile()
+        total_ram_gb = float(profile.get("total_ram_gb", 0.0) or 0.0)
+        if total_ram_gb >= 16:
+            return "small.en"
+        if total_ram_gb >= 8:
+            return "base"
+        return "tiny.en"
+
     def _cpu_local_whisper_runtime(self, model: str) -> dict[str, str]:
+        configured_model = str(getattr(Config, "LOCAL_WHISPER_MODEL", "auto") or "auto").strip() or "auto"
         normalized_model = str(model or "").strip() or "base"
+        if configured_model.lower() == "auto":
+            normalized_model = self._default_cpu_local_whisper_model()
         return {
             "model": normalized_model,
             "device": "cpu",

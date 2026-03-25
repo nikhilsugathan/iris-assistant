@@ -222,13 +222,13 @@ def main() -> None:
         assert_true(
             FakeWhisperModel.calls == [
                 ("distil-large-v3", "cuda", "float16"),
-                ("distil-large-v3", "cpu", "int8"),
+                ("small.en", "cpu", "int8"),
             ],
-            "CUDA Whisper fallback should retry the same model on CPU int8 after a missing CUDA runtime.",
+            "CUDA Whisper fallback should downshift to the auto CPU profile after a missing CUDA runtime.",
         )
         assert_true(
             fallback_voice._resolve_local_whisper_runtime() == {
-                "model": "distil-large-v3",
+                "model": "small.en",
                 "device": "cpu",
                 "compute_type": "int8",
             },
