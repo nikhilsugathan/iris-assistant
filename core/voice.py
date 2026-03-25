@@ -3,7 +3,7 @@ IRIS Voice Module v4
 ====================
 STT  : Windows wake recognition, optional local faster-whisper for commands,
        then Groq Whisper and Google fallback
-TTS  : Windows SAPI voices first, then Edge TTS fallback
+TTS  : Optional Piper local neural voice, then Windows SAPI and Edge fallback
 """
 
 import asyncio
@@ -11,6 +11,7 @@ import difflib
 import io
 import json
 import os
+from pathlib import Path
 import re
 import subprocess
 import tempfile
@@ -73,6 +74,9 @@ class Voice:
         self._recent_wake_language = ""
         self._faster_whisper_model = None
         self._faster_whisper_error = ""
+        self._piper_tts_voice = None
+        self._piper_tts_voice_key = ""
+        self._piper_tts_error = ""
 
         self._init_audio()
         self._init_mic()
@@ -1069,6 +1073,9 @@ if ($best) {{
         self.last_tts_backend = ""
         for backend in self._tts_backend_order(backend_priority=backend_priority):
             try:
+                if backend == "piper" and self._speak_piper_blocking(text):
+                    self.last_tts_backend = "piper"
+                    return
                 if backend == "system" and self._speak_local_blocking(text):
                     self.last_tts_backend = "system"
                     return
@@ -1086,21 +1093,174 @@ if ($best) {{
             backend_priority if backend_priority is not None else getattr(Config, "TTS_BACKEND_PRIORITY", "system_first")
         ).lower().strip()
         allow_local_tts, _ = self.resource_guard.allows_local_tts()
+        piper_available = self._supports_piper()
 
-        if priority == "edge_first":
-            order = ["edge", "system"]
+        if priority == "piper_first":
+            order = ["piper", "edge", "system"]
+        elif priority == "piper_only":
+            order = ["piper"]
+        elif priority == "edge_first":
+            order = ["piper", "edge", "system"] if piper_available else ["edge", "system"]
         elif priority == "system_only":
             order = ["system"]
         elif priority == "edge_only":
             order = ["edge"]
         else:
-            order = ["system", "edge"]
+            order = ["system", "piper", "edge"] if piper_available else ["system", "edge"]
 
         if not allow_local_tts:
-            order = [backend for backend in order if backend != "system"]
+            order = [backend for backend in order if backend not in {"system", "piper"}]
             if "edge" not in order:
                 order.append("edge")
-        return order
+        return list(dict.fromkeys(order))
+
+    def _supports_piper(self) -> bool:
+        model_path, _ = self._resolve_piper_voice_paths()
+        return model_path is not None
+
+    def _resolve_piper_voice_paths(self) -> tuple[str | None, str | None]:
+        if not bool(getattr(Config, "PIPER_TTS_ENABLED", True)):
+            return None, None
+
+        model_raw = str(getattr(Config, "PIPER_TTS_MODEL_PATH", "") or "").strip()
+        config_raw = str(getattr(Config, "PIPER_TTS_CONFIG_PATH", "") or "").strip()
+        download_dir_raw = str(getattr(Config, "PIPER_TTS_DOWNLOAD_DIR", "") or "").strip()
+        voice_name = str(getattr(Config, "PIPER_TTS_VOICE", "") or "").strip()
+
+        model_path = self._resolve_runtime_path(model_raw) if model_raw else None
+        if model_path is None and download_dir_raw and voice_name:
+            download_dir = self._resolve_runtime_path(download_dir_raw)
+            if download_dir is not None:
+                candidate = Path(download_dir) / f"{voice_name}.onnx"
+                if candidate.exists():
+                    model_path = str(candidate)
+
+        if model_path is None:
+            return None, None
+
+        config_path = self._resolve_runtime_path(config_raw) if config_raw else None
+        if config_path is None:
+            model = Path(model_path)
+            candidates = [
+                model.with_suffix(model.suffix + ".json"),
+                model.with_suffix(".json"),
+            ]
+            for candidate in candidates:
+                if candidate.exists():
+                    config_path = str(candidate)
+                    break
+
+        return str(model_path), (str(config_path) if config_path else None)
+
+    def _resolve_runtime_path(self, raw_path: str) -> str | None:
+        if not raw_path:
+            return None
+        candidate = Path(raw_path).expanduser()
+        if not candidate.is_absolute():
+            candidate = Path(os.getcwd()) / candidate
+        if candidate.exists():
+            return str(candidate)
+        return None
+
+    def _get_piper_tts_voice(self, force_reinit: bool = False):
+        model_path, config_path = self._resolve_piper_voice_paths()
+        if not model_path:
+            return None
+
+        voice_key = "|".join(
+            [
+                model_path,
+                config_path or "",
+                "cuda" if bool(getattr(Config, "PIPER_TTS_USE_CUDA", False)) else "cpu",
+            ]
+        )
+        if force_reinit:
+            self._reset_piper_tts_voice()
+        if self._piper_tts_voice is not None and self._piper_tts_voice_key == voice_key:
+            return self._piper_tts_voice
+
+        try:
+            from piper import PiperVoice
+
+            self._piper_tts_voice = PiperVoice.load(
+                model_path,
+                config_path=config_path or None,
+                use_cuda=bool(getattr(Config, "PIPER_TTS_USE_CUDA", False)),
+            )
+            self._piper_tts_voice_key = voice_key
+            self._piper_tts_error = ""
+            return self._piper_tts_voice
+        except Exception as exc:
+            self._piper_tts_voice = None
+            self._piper_tts_voice_key = ""
+            self._piper_tts_error = str(exc)
+            return None
+
+    def _reset_piper_tts_voice(self) -> None:
+        self._piper_tts_voice = None
+        self._piper_tts_voice_key = ""
+
+    def _piper_synthesis_config(self):
+        speaker_raw = str(getattr(Config, "PIPER_TTS_SPEAKER_ID", "") or "").strip()
+        volume = self._local_tts_volume()
+        if not speaker_raw and abs(volume - 1.0) < 0.001:
+            return None
+
+        try:
+            from piper.config import SynthesisConfig
+
+            speaker_id = int(speaker_raw) if speaker_raw else None
+            return SynthesisConfig(speaker_id=speaker_id, volume=volume)
+        except Exception:
+            return None
+
+    def _speak_piper_blocking(self, text: str) -> bool:
+        voice = self._get_piper_tts_voice()
+        if voice is None:
+            return False
+
+        syn_config = self._piper_synthesis_config()
+        for attempt in range(2):
+            if voice is None:
+                return False
+            try:
+                for chunk in self._chunk_text(text):
+                    if self._stop_flag.is_set():
+                        break
+                    audio_chunks = list(voice.synthesize(chunk, syn_config=syn_config))
+                    if not audio_chunks:
+                        continue
+                    self._play_piper_audio_chunks(audio_chunks)
+                return True
+            except Exception:
+                self._reset_piper_tts_voice()
+                if attempt == 0:
+                    voice = self._get_piper_tts_voice(force_reinit=True)
+                    continue
+                return False
+        return False
+
+    def _play_piper_audio_chunks(self, audio_chunks) -> None:
+        if not audio_chunks:
+            return
+        first = audio_chunks[0]
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f:
+            tmp = f.name
+        try:
+            with wave.open(tmp, "wb") as wf:
+                wf.setnchannels(int(getattr(first, "sample_channels", 1)))
+                wf.setsampwidth(int(getattr(first, "sample_width", 2)))
+                wf.setframerate(int(getattr(first, "sample_rate", 22050)))
+                for audio_chunk in audio_chunks:
+                    if self._stop_flag.is_set():
+                        break
+                    wf.writeframes(audio_chunk.audio_int16_bytes)
+            self._play_audio_file_blocking(tmp)
+        finally:
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
 
     def _speak_local_blocking(self, text: str) -> bool:
         try:
@@ -1190,6 +1350,24 @@ if ($best) {{
         except ValueError:
             return 1.0
 
+    def _play_audio_file_blocking(self, path: str) -> None:
+        import pygame
+
+        pygame.mixer.music.load(path)
+        pygame.mixer.music.set_volume(1.0)
+        pygame.mixer.music.play()
+
+        while pygame.mixer.music.get_busy():
+            if self._stop_flag.is_set():
+                pygame.mixer.music.stop()
+                break
+            time.sleep(getattr(Config, "PLAYBACK_POLL_SECONDS", 0.03))
+
+        try:
+            pygame.mixer.music.unload()
+        except Exception:
+            pass
+
     def _speak_edge_blocking(self, text: str) -> bool:
         loop = asyncio.new_event_loop()
         try:
@@ -1225,21 +1403,7 @@ if ($best) {{
                     volume=getattr(Config, "VOICE_VOLUME", "+0%"),
                 )
                 await communicate.save(tmp)
-
-                pygame.mixer.music.load(tmp)
-                pygame.mixer.music.set_volume(1.0)
-                pygame.mixer.music.play()
-
-                while pygame.mixer.music.get_busy():
-                    if self._stop_flag.is_set():
-                        pygame.mixer.music.stop()
-                        break
-                    await asyncio.sleep(getattr(Config, "PLAYBACK_POLL_SECONDS", 0.03))
-
-                try:
-                    pygame.mixer.music.unload()
-                except Exception:
-                    pass
+                self._play_audio_file_blocking(tmp)
             finally:
                 try:
                     os.unlink(tmp)
@@ -1268,6 +1432,7 @@ if ($best) {{
     def stop(self):
         self.stop_speaking()
         self._reset_local_tts_engine(already_stopped=True)
+        self._reset_piper_tts_voice()
 
     def begin_background_speech_sequence(self, cancel_pending: bool = True) -> int:
         if cancel_pending:

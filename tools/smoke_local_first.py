@@ -174,6 +174,7 @@ def test_voice_preferences() -> None:
     original_tts = Config.TTS_BACKEND_PRIORITY
     original_stt = Config.STT_PRIORITY
     original_wake = Config.WAKE_STT_PRIORITY
+    original_piper_enabled = Config.PIPER_TTS_ENABLED
 
     voice = Voice(text_mode=True)
     voice.text_mode = False
@@ -183,12 +184,20 @@ def test_voice_preferences() -> None:
     try:
         tts_calls: list[str] = []
         voice._clean = lambda text: text
+        voice._supports_piper = lambda: True  # type: ignore[method-assign]
+        voice._speak_piper_blocking = lambda text: tts_calls.append("piper") or True  # type: ignore[method-assign]
         voice._speak_local_blocking = lambda text: tts_calls.append("system") or True
         voice._speak_edge_blocking = lambda text: tts_calls.append("edge") or True
 
+        Config.PIPER_TTS_ENABLED = True
+        Config.TTS_BACKEND_PRIORITY = "edge_first"
+        voice.speak("Piper rollout voice check.")
+        assert_true(tts_calls == ["piper"], "Installed Piper voice should take the primary TTS slot before cloud fallback.")
+
+        tts_calls.clear()
         Config.TTS_BACKEND_PRIORITY = "system_first"
         voice.speak("Local first voice check.")
-        assert_true(tts_calls == ["system"], "TTS did not prefer the local backend first.")
+        assert_true(tts_calls == ["system"], "TTS did not prefer the requested local backend first.")
 
         stt_calls: list[str] = []
         voice._supports_faster_whisper = lambda: False  # type: ignore[method-assign]
@@ -222,12 +231,14 @@ def test_voice_preferences() -> None:
 
         fallback_tts_calls: list[str] = []
         voice.resource_guard = FakeGuard(allow_stt=False, allow_tts=False)
+        voice._supports_piper = lambda: True  # type: ignore[method-assign]
+        voice._speak_piper_blocking = lambda text: fallback_tts_calls.append("piper") or True  # type: ignore[method-assign]
         voice._speak_local_blocking = lambda text: fallback_tts_calls.append("system") or True
         voice._speak_edge_blocking = lambda text: fallback_tts_calls.append("edge") or True
         voice.speak("Guarded voice check.")
         assert_true(
             fallback_tts_calls == ["edge"],
-            "Resource guard should skip local TTS and fall back safely.",
+            "Resource guard should skip both local TTS backends and fall back safely.",
         )
 
         guarded_stt_calls: list[str] = []
@@ -257,6 +268,7 @@ def test_voice_preferences() -> None:
         Config.TTS_BACKEND_PRIORITY = original_tts
         Config.STT_PRIORITY = original_stt
         Config.WAKE_STT_PRIORITY = original_wake
+        Config.PIPER_TTS_ENABLED = original_piper_enabled
         voice.stop()
 
 
@@ -354,6 +366,48 @@ def test_local_tts_engine_reuse() -> None:
             voice.stop()
         except Exception:
             pass
+
+
+def test_piper_tts_backend() -> None:
+    voice = Voice(text_mode=True)
+    voice.text_mode = False
+    voice.audio_ready = True
+
+    class FakeAudioChunk:
+        sample_rate = 22050
+        sample_width = 2
+        sample_channels = 1
+
+        def __init__(self, payload: bytes) -> None:
+            self.audio_int16_bytes = payload
+
+    class FakePiperVoice:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def synthesize(self, text: str, syn_config=None):
+            self.calls.append(text)
+            return [FakeAudioChunk(b"\x00\x00" * 32)]
+
+    fake_voice = FakePiperVoice()
+    original_get_piper = voice._get_piper_tts_voice
+    original_play = voice._play_audio_file_blocking
+    original_chunk_text = voice._chunk_text
+
+    played_files: list[str] = []
+    voice._get_piper_tts_voice = lambda force_reinit=False: fake_voice  # type: ignore[method-assign]
+    voice._play_audio_file_blocking = lambda path: played_files.append(path)  # type: ignore[method-assign]
+    voice._chunk_text = lambda text: [text]  # type: ignore[method-assign]
+
+    try:
+        assert_true(voice._speak_piper_blocking("Piper test line."), "Piper backend should synthesize and play successfully with a fake voice.")
+        assert_true(fake_voice.calls == ["Piper test line."], "Piper backend should synthesize the requested utterance.")
+        assert_true(len(played_files) == 1, "Piper backend should hand off the rendered WAV to playback once.")
+    finally:
+        voice._get_piper_tts_voice = original_get_piper  # type: ignore[method-assign]
+        voice._play_audio_file_blocking = original_play  # type: ignore[method-assign]
+        voice._chunk_text = original_chunk_text  # type: ignore[method-assign]
+        voice.stop()
 
 
 def test_system_performance_queries() -> None:
@@ -483,6 +537,7 @@ def main() -> None:
     test_voice_preferences()
     test_background_speech_cancellation()
     test_local_tts_engine_reuse()
+    test_piper_tts_backend()
     test_system_performance_queries()
     test_local_first_planner_routing()
     test_ollama_stream_chunk_parsing()

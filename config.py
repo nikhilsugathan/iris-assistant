@@ -161,6 +161,13 @@ class Config:
     VOICE_NAME = os.getenv("VOICE_NAME", "en-US-JennyNeural")
     LOCAL_TTS_VOICE_HINT = os.getenv("LOCAL_TTS_VOICE_HINT", "zira").strip()
     TTS_BACKEND_PRIORITY = os.getenv("TTS_BACKEND_PRIORITY", "edge_first").strip().lower()
+    PIPER_TTS_ENABLED = os.getenv("PIPER_TTS_ENABLED", "true").lower() == "true"
+    PIPER_TTS_VOICE = os.getenv("PIPER_TTS_VOICE", "en_GB-alan-medium").strip()
+    PIPER_TTS_MODEL_PATH = os.getenv("PIPER_TTS_MODEL_PATH", "").strip()
+    PIPER_TTS_CONFIG_PATH = os.getenv("PIPER_TTS_CONFIG_PATH", "").strip()
+    PIPER_TTS_DOWNLOAD_DIR = os.getenv("PIPER_TTS_DOWNLOAD_DIR", os.path.join("build", "piper")).strip()
+    PIPER_TTS_USE_CUDA = os.getenv("PIPER_TTS_USE_CUDA", "false").lower() == "true"
+    PIPER_TTS_SPEAKER_ID = os.getenv("PIPER_TTS_SPEAKER_ID", "").strip()
     VOICE_RATE = os.getenv("VOICE_RATE", "-4%")
     VOICE_PITCH = os.getenv("VOICE_PITCH", "+0Hz")
     VOICE_VOLUME = os.getenv("VOICE_VOLUME", "+10%")

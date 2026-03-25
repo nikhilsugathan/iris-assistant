@@ -6,6 +6,7 @@ requests
 python-dotenv
 rich
 edge-tts
+piper-tts
 pygame
 SpeechRecognition
 PyAudio
