@@ -90,6 +90,7 @@ class Voice:
 
         self._init_audio()
         self._init_mic()
+        self._warm_tts_backends_async()
         log_runtime(
             "voice_initialized",
             text_mode=self.text_mode,
@@ -120,6 +121,24 @@ class Voice:
         except Exception as e:
             console.print(f"[red]Audio init failed:[/red] {e}")
             log_runtime("audio_init_failed", error=str(e))
+
+    def _warm_tts_backends_async(self) -> None:
+        if not self.audio_ready:
+            return
+        if not bool(getattr(Config, "PIPER_TTS_WARMUP", True)):
+            return
+
+        worker = threading.Thread(target=self._warm_tts_backends, daemon=True)
+        worker.start()
+
+    def _warm_tts_backends(self) -> None:
+        try:
+            if self._supports_piper():
+                log_runtime("piper_warm_start", voice=getattr(Config, "PIPER_TTS_VOICE", ""))
+                warmed = self._get_piper_tts_voice() is not None
+                log_runtime("piper_warm_result", warmed=warmed, voice=getattr(Config, "PIPER_TTS_VOICE", ""))
+        except Exception as exc:
+            log_runtime("piper_warm_failed", error=str(exc), voice=getattr(Config, "PIPER_TTS_VOICE", ""))
 
     def set_state_callback(self, callback):
         self._state_callback = callback

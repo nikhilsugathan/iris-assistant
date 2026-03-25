@@ -189,6 +189,7 @@ class Config:
     PIPER_TTS_DOWNLOAD_DIR = os.getenv("PIPER_TTS_DOWNLOAD_DIR", os.path.join("build", "piper")).strip()
     PIPER_TTS_USE_CUDA = os.getenv("PIPER_TTS_USE_CUDA", "false").lower() == "true"
     PIPER_TTS_SPEAKER_ID = os.getenv("PIPER_TTS_SPEAKER_ID", "").strip()
+    PIPER_TTS_WARMUP = os.getenv("PIPER_TTS_WARMUP", "true").lower() == "true"
     VOICE_RATE = os.getenv("VOICE_RATE", "-4%")
     VOICE_PITCH = os.getenv("VOICE_PITCH", "+0Hz")
     VOICE_VOLUME = os.getenv("VOICE_VOLUME", "+10%")
@@ -246,8 +247,8 @@ class Config:
     AUDIO_CHANNELS = 2
     AUDIO_BUFFER_SIZE = 256
     AUDIO_WARMUP_MS = 120
-    TTS_CHUNK_SENTENCES = 2
-    TTS_MAX_CHARS_PER_CHUNK = 180
+    TTS_CHUNK_SENTENCES = int(os.getenv("TTS_CHUNK_SENTENCES", "1"))
+    TTS_MAX_CHARS_PER_CHUNK = int(os.getenv("TTS_MAX_CHARS_PER_CHUNK", "180"))
     TTS_PRELOAD_SILENCE_MS = 0
     ACK_ON_SLOW_THINK_MS = 550
     THINKING_ACKS = [
