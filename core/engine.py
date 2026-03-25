@@ -611,7 +611,15 @@ class IRISEngine:
             return cleaned
 
         matched_phrase, canonical_wake = match
-        remainder = cleaned[len(matched_phrase):].strip(" ,:.-")
+        phrase_tokens = re.findall(r"[a-z0-9']+", matched_phrase.lower())
+        if phrase_tokens:
+            prefix_pattern = r"^\s*" + r"[^a-z0-9']*".join(re.escape(token) for token in phrase_tokens)
+            prefix_match = re.match(prefix_pattern, cleaned.lower())
+            cut_index = prefix_match.end() if prefix_match else len(matched_phrase)
+        else:
+            cut_index = len(matched_phrase)
+
+        remainder = cleaned[cut_index:].strip(" ,:.-")
         canonical_display = canonical_wake.capitalize()
         return f"{canonical_display} {remainder}".strip()
 
@@ -631,11 +639,16 @@ class IRISEngine:
         return cleaned
 
     def _leading_wake_match(self, text: str) -> tuple[str, str] | None:
-        normalized = (text or "").strip().lower()
-        if not normalized:
+        raw = (text or "").strip().lower()
+        if not raw:
             return None
 
         wake_aliases = getattr(Config, "WAKE_WORD_ALIASES", {}) or {}
+        wake_prefixes = [
+            str(prefix or "").strip().lower()
+            for prefix in getattr(Config, "WAKE_WORD_PREFIXES", []) or []
+            if str(prefix or "").strip()
+        ]
         variants: list[tuple[str, str]] = []
 
         for wake in getattr(Config, "WAKE_WORDS", []) or []:
@@ -643,17 +656,28 @@ class IRISEngine:
             if not wake_l:
                 continue
             variants.append((wake_l, wake_l))
+            for prefix in wake_prefixes:
+                variants.append((f"{prefix} {wake_l}".strip(), wake_l))
             for alias in wake_aliases.get(wake_l, []) or []:
                 alias_l = str(alias or "").lower().strip()
                 if alias_l:
                     variants.append((alias_l, wake_l))
+                    for prefix in wake_prefixes:
+                        variants.append((f"{prefix} {alias_l}".strip(), wake_l))
+
+        normalized = re.sub(r"[^a-z0-9'\s]+", " ", raw)
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        if not normalized:
+            return None
 
         for variant, canonical in sorted(variants, key=lambda item: len(item[0]), reverse=True):
-            if normalized == variant:
+            variant_norm = re.sub(r"[^a-z0-9'\s]+", " ", variant)
+            variant_norm = re.sub(r"\s+", " ", variant_norm).strip()
+            if not variant_norm:
+                continue
+            if normalized == variant_norm:
                 return variant, canonical
-            if normalized.startswith(f"{variant} "):
-                return variant, canonical
-            if normalized.startswith(f"{variant},") or normalized.startswith(f"{variant}.") or normalized.startswith(f"{variant}:"):
+            if normalized.startswith(f"{variant_norm} "):
                 return variant, canonical
 
         return None

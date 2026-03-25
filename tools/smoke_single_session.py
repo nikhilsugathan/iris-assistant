@@ -342,9 +342,14 @@ def main() -> None:
         engine.executor._run_command = lambda plan: "Done. smoke command complete."  # type: ignore[method-assign]
 
         assert_true(engine.contains_wake_word("iris status check"), "Wake-word detection failed.")
+        assert_true(engine.contains_wake_word("hey iris"), "Prefixed wake-word detection failed.")
         assert_true(
             engine.strip_wake_word("iris status check") == "status check",
             "Wake-word stripping failed.",
+        )
+        assert_true(
+            engine.strip_wake_word("hey iris") == "",
+            "Pure prefixed wake phrase should not be treated as a full command.",
         )
 
         chat_result = engine.process_user_input("give me a smoke response", speak_response=True)
