@@ -67,6 +67,8 @@ class Voice:
         self.last_uncertain_transcript = ""
         self.last_uncertain_transcript_backend = ""
         self.last_uncertain_transcript_confidence = 0.0
+        self._recent_command_language = ""
+        self._recent_wake_language = ""
         self._faster_whisper_model = None
         self._faster_whisper_error = ""
 
@@ -492,7 +494,7 @@ class Voice:
             self._write_audio_wav(audio, tmp_path)
             escaped_path = tmp_path.replace("'", "''")
             languages = []
-            for lang in self._stt_languages():
+            for lang in self._system_stt_languages(wake_mode=True):
                 safe_lang = str(lang or "").replace("'", "''")
                 if safe_lang:
                     languages.append(f"'{safe_lang}'")
@@ -592,7 +594,7 @@ if ($best) {{
             self._write_audio_wav(audio, tmp_path)
             escaped_path = tmp_path.replace("'", "''")
             languages = []
-            for lang in self._stt_languages():
+            for lang in self._system_stt_languages(wake_mode=False):
                 safe_lang = str(lang or "").replace("'", "''")
                 if safe_lang:
                     languages.append(f"'{safe_lang}'")
@@ -817,7 +819,7 @@ if ($best) {{
             if wake_mode:
                 if self._accept_wake_candidate(candidate):
                     self.last_transcript_attempts = " > ".join(attempted)
-                    self._remember_transcript_candidate(candidate)
+                    self._remember_transcript_candidate(candidate, wake_mode=True)
                     return candidate.text
                 continue
 
@@ -825,11 +827,11 @@ if ($best) {{
                 accepted = self._accept_local_command_candidate(candidate, audio)
                 if accepted:
                     self.last_transcript_attempts = " > ".join(attempted)
-                    self._remember_transcript_candidate(candidate)
+                    self._remember_transcript_candidate(candidate, wake_mode=False)
                     return candidate.text
                 if order == ["system"]:
                     self.last_transcript_attempts = " > ".join(attempted)
-                    self._remember_transcript_candidate(candidate)
+                    self._remember_transcript_candidate(candidate, wake_mode=False)
                     self._mark_uncertain_transcript(candidate)
                     return candidate.text
                 fallback_local = candidate
@@ -843,11 +845,11 @@ if ($best) {{
                 accepted = self._accept_local_whisper_candidate(candidate, audio)
                 if accepted:
                     self.last_transcript_attempts = " > ".join(attempted)
-                    self._remember_transcript_candidate(candidate)
+                    self._remember_transcript_candidate(candidate, wake_mode=False)
                     return candidate.text
                 if order == ["faster_whisper"]:
                     self.last_transcript_attempts = " > ".join(attempted)
-                    self._remember_transcript_candidate(candidate)
+                    self._remember_transcript_candidate(candidate, wake_mode=False)
                     self._mark_uncertain_transcript(candidate)
                     return candidate.text
                 fallback_local = candidate
@@ -857,21 +859,26 @@ if ($best) {{
                 continue
 
             self.last_transcript_attempts = " > ".join(attempted)
-            self._remember_transcript_candidate(candidate)
+            self._remember_transcript_candidate(candidate, wake_mode=False)
             return candidate.text
 
         if fallback_local:
             self.last_transcript_attempts = " > ".join(attempted)
-            self._remember_transcript_candidate(fallback_local)
+            self._remember_transcript_candidate(fallback_local, wake_mode=False)
             self._mark_uncertain_transcript(fallback_local)
             return fallback_local.text
         self.last_transcript_attempts = " > ".join(attempted)
         return ""
 
-    def _remember_transcript_candidate(self, candidate: TranscriptCandidate) -> None:
+    def _remember_transcript_candidate(self, candidate: TranscriptCandidate, wake_mode: bool = False) -> None:
         self.last_transcript_backend = candidate.backend
         self.last_transcript_confidence = float(candidate.confidence or 0.0)
         self.last_transcript_language = str(candidate.language or "")
+        if self.last_transcript_language:
+            if wake_mode:
+                self._recent_wake_language = self.last_transcript_language
+            else:
+                self._recent_command_language = self.last_transcript_language
 
     def _mark_uncertain_transcript(self, candidate: TranscriptCandidate) -> None:
         self.last_transcript_uncertain = True
@@ -1290,6 +1297,27 @@ if ($best) {{
             if language and language not in languages:
                 languages.append(language)
         return languages
+
+    def _system_stt_languages(self, wake_mode: bool) -> list[str]:
+        recent_language = self._recent_wake_language if wake_mode else self._recent_command_language
+        configured = [recent_language, *self._stt_languages()]
+        languages: list[str] = []
+        for language in configured:
+            language = str(language or "").strip()
+            if language and language not in languages:
+                languages.append(language)
+
+        max_languages = int(
+            getattr(
+                Config,
+                "WAKE_SYSTEM_MAX_LANGUAGES" if wake_mode else "SYSTEM_STT_MAX_LANGUAGES",
+                2,
+            )
+            or 2
+        )
+        if max_languages <= 0:
+            return languages
+        return languages[:max_languages]
 
     def _local_whisper_language_hint(self) -> str:
         configured = str(getattr(Config, "LOCAL_WHISPER_LANGUAGE_HINT", "") or "").strip().lower()

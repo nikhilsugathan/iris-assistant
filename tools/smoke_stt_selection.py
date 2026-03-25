@@ -47,9 +47,15 @@ class StubVoice(Voice):
 
 def main() -> None:
     original_priority = Config.STT_PRIORITY
+    original_system_stt_max_languages = Config.SYSTEM_STT_MAX_LANGUAGES
+    original_wake_system_max_languages = Config.WAKE_SYSTEM_MAX_LANGUAGES
+    original_additional_languages = list(Config.STT_ADDITIONAL_LANGUAGES)
 
     try:
         Config.STT_PRIORITY = "adaptive"
+        Config.SYSTEM_STT_MAX_LANGUAGES = 2
+        Config.WAKE_SYSTEM_MAX_LANGUAGES = 2
+        Config.STT_ADDITIONAL_LANGUAGES = ["de-DE", "fr-FR"]
         voice = StubVoice(text_mode=True)
         voice.resource_guard = DummyGuard()
         voice._supports_faster_whisper = lambda: True  # type: ignore[method-assign]
@@ -131,6 +137,10 @@ def main() -> None:
         voice._transcribe_groq_candidate = lambda audio: TranscriptCandidate(backend="groq", text="")  # type: ignore[method-assign]
         text = voice._transcribe_command(short_audio)
         assert_true(text == "terminate", "Short, clear local safety commands should stay local.")
+        assert_true(
+            voice._recent_command_language == "en-US",
+            "Accepted local command transcripts should update the recent command language cache.",
+        )
 
         local_whisper_calls["count"] = 0
         voice._transcribe_faster_whisper_candidate = lambda audio: TranscriptCandidate(backend="faster_whisper", text="")  # type: ignore[method-assign]
@@ -148,9 +158,26 @@ def main() -> None:
             "A weak local transcript should still be returned when every fallback recognizer fails.",
         )
 
+        voice._recent_command_language = "de-DE"
+        command_languages = voice._system_stt_languages(wake_mode=False)
+        assert_true(
+            command_languages == ["de-DE", "en-US"],
+            "System command STT should prioritize the recent language and then the primary configured language.",
+        )
+
+        voice._recent_wake_language = "en-GB"
+        wake_languages = voice._system_stt_languages(wake_mode=True)
+        assert_true(
+            wake_languages == ["en-GB", "en-US"],
+            "Wake STT should prioritize the most recent wake language without scanning the full language list.",
+        )
+
         print("PASS: IRIS adaptive STT selection smoke test completed.")
     finally:
         Config.STT_PRIORITY = original_priority
+        Config.SYSTEM_STT_MAX_LANGUAGES = original_system_stt_max_languages
+        Config.WAKE_SYSTEM_MAX_LANGUAGES = original_wake_system_max_languages
+        Config.STT_ADDITIONAL_LANGUAGES = original_additional_languages
 
 
 if __name__ == "__main__":
