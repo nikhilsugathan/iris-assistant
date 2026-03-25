@@ -1315,12 +1315,7 @@ Rules:
 
 Respond with ONLY the JSON object. No markdown, no explanation."""
 
-        response = self.brain._call_api(
-            getattr(Config, "PRIMARY_BRAIN", "groq"), plan_prompt,
-            use_persona=False,
-            use_memory=False,
-            max_tokens=getattr(Config, "ACTION_PLAN_MAX_TOKENS", 480),
-        )
+        response = self.brain.plan_action_json(plan_prompt)
 
         if not response:
             return None
@@ -1638,12 +1633,7 @@ Respond ONLY with valid JSON in this exact format:
 
 Respond with ONLY the JSON. No explanation."""
 
-        response = self.brain._call_api(
-            getattr(Config, "PRIMARY_BRAIN", "groq"), prompt,
-            use_persona=False,
-            use_memory=False,
-            max_tokens=getattr(Config, "ACTION_PLAN_MAX_TOKENS", 480),
-        )
+        response = self.brain.plan_action_json(prompt)
 
         if not response:
             return None
@@ -1764,13 +1754,7 @@ Error: {error[:300]}
 In one sentence, what's the most likely cause and fix?
 Be specific and practical. No preamble."""
 
-        response = self.brain._call_api(
-            getattr(Config, "PRIMARY_BRAIN", "groq"),
-            prompt,
-            use_persona=False,
-            use_memory=False,
-            max_tokens=getattr(Config, "COMMAND_FIX_MAX_TOKENS", 160),
-        )
+        response = self.brain.diagnose_command_failure(prompt)
         return response or f"Error: {error[:150]}"
 
     def _get_desktop_path(self) -> str:

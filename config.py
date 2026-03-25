@@ -52,6 +52,7 @@ class Config:
     OLLAMA_MODEL_FAST = os.getenv("OLLAMA_MODEL_FAST", "phi3.5")
     OLLAMA_MODEL_SMART = os.getenv("OLLAMA_MODEL_SMART", "llama3.1:8b")
     OLLAMA_MODEL_DEEP = os.getenv("OLLAMA_MODEL_DEEP", "deepseek-r1:8b")
+    OLLAMA_MODEL_PLANNER = os.getenv("OLLAMA_MODEL_PLANNER", OLLAMA_MODEL_SMART)
     LOCATION_NAME_OVERRIDE = os.getenv("IRIS_LOCATION_NAME", "").strip()
     LATITUDE_OVERRIDE = os.getenv("IRIS_LATITUDE", "").strip()
     LONGITUDE_OVERRIDE = os.getenv("IRIS_LONGITUDE", "").strip()

@@ -123,6 +123,60 @@ class Brain:
             default="Systems online. Ready when you are.",
         )
 
+    def plan_action_json(self, prompt: str) -> Optional[str]:
+        return self._call_local_first_planner(
+            prompt,
+            max_tokens=getattr(Config, "ACTION_PLAN_MAX_TOKENS", 480),
+        )
+
+    def diagnose_command_failure(self, prompt: str) -> Optional[str]:
+        return self._call_local_first_planner(
+            prompt,
+            max_tokens=getattr(Config, "COMMAND_FIX_MAX_TOKENS", 160),
+        )
+
+    def _call_local_first_planner(self, prompt: str, max_tokens: int) -> Optional[str]:
+        planner_model = getattr(
+            Config,
+            "OLLAMA_MODEL_PLANNER",
+            getattr(Config, "OLLAMA_MODEL_SMART", "llama3.1:8b"),
+        )
+
+        if any(api in self.available_apis for api in ("ollama_fast", "ollama_smart", "ollama_deep")):
+            response = self._call_ollama(
+                planner_model,
+                prompt,
+                use_persona=False,
+                use_memory=False,
+                max_tokens=max_tokens,
+            )
+            if response:
+                return response
+
+        primary = getattr(Config, "PRIMARY_BRAIN", "groq")
+        response = self._call_api(
+            primary,
+            prompt,
+            use_persona=False,
+            use_memory=False,
+            max_tokens=max_tokens,
+        )
+        if response:
+            return response
+
+        fallback = getattr(Config, "FALLBACK_BRAIN", primary)
+        if fallback and fallback != primary:
+            return self._call_api(
+                fallback,
+                prompt,
+                use_persona=False,
+                use_memory=False,
+                allow_failover=False,
+                max_tokens=max_tokens,
+            )
+
+        return None
+
     def quick_ack(self, user_input: str) -> str:
         text = (user_input or "").lower().strip()
 

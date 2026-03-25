@@ -394,6 +394,55 @@ def test_system_performance_queries() -> None:
         intel._read_performance_snapshot = original_reader  # type: ignore[method-assign]
 
 
+def test_local_first_planner_routing() -> None:
+    engine = IRISEngine(text_mode=True)
+    original_ollama = engine.brain._call_ollama
+    original_call_api = engine.brain._call_api
+    original_available = list(engine.brain.available_apis)
+
+    ollama_calls: list[dict] = []
+    api_calls: list[dict] = []
+
+    try:
+        engine.brain.available_apis = ["ollama_smart", "groq"]
+        engine.brain._call_ollama = lambda model, prompt, use_persona, use_memory, **kwargs: ollama_calls.append(  # type: ignore[method-assign]
+            {"model": model, "max_tokens": kwargs.get("max_tokens")}
+        ) or '{"action_type":"unsupported"}'
+        engine.brain._call_api = lambda api, prompt, **kwargs: api_calls.append(  # type: ignore[method-assign]
+            {"api": api, "max_tokens": kwargs.get("max_tokens")}
+        ) or None
+
+        plan_response = engine.brain.plan_action_json("Generate a plan.")
+        fix_response = engine.brain.diagnose_command_failure("Explain a command failure.")
+
+        assert_true(
+            plan_response == '{"action_type":"unsupported"}' and fix_response == '{"action_type":"unsupported"}',
+            "Planner routing smoke did not return the mocked local planner response.",
+        )
+        assert_true(
+            len(ollama_calls) == 2,
+            "Local planner routing should prefer the local Ollama planner path for planning and fixes.",
+        )
+        assert_true(
+            ollama_calls[0]["model"] == Config.OLLAMA_MODEL_PLANNER,
+            "Local planner routing did not use the dedicated planner model.",
+        )
+        assert_true(
+            ollama_calls[0]["max_tokens"] == Config.ACTION_PLAN_MAX_TOKENS
+            and ollama_calls[1]["max_tokens"] == Config.COMMAND_FIX_MAX_TOKENS,
+            "Local planner routing did not use the dedicated planner token budgets.",
+        )
+        assert_true(
+            api_calls == [],
+            "Local planner routing should not fall through to cloud APIs when local Ollama is available.",
+        )
+    finally:
+        engine.brain._call_ollama = original_ollama  # type: ignore[method-assign]
+        engine.brain._call_api = original_call_api  # type: ignore[method-assign]
+        engine.brain.available_apis = original_available
+        engine.shutdown()
+
+
 def test_ollama_stream_chunk_parsing() -> None:
     engine = IRISEngine(text_mode=True)
     original_post = brain_module.requests.post
@@ -435,6 +484,7 @@ def main() -> None:
     test_background_speech_cancellation()
     test_local_tts_engine_reuse()
     test_system_performance_queries()
+    test_local_first_planner_routing()
     test_ollama_stream_chunk_parsing()
     print("PASS: IRIS local-first smoke test completed.")
 

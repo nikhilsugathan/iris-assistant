@@ -144,7 +144,7 @@ def main() -> None:
     original_pattern_match = engine.executor._pattern_match
     original_manage_package = engine.executor._manage_package
     original_run_command = engine.executor._run_command
-    original_call_api = engine.executor.brain._call_api
+    original_plan_action_json = engine.executor.brain.plan_action_json
 
     def fake_speak(text: str) -> None:
         spoken_messages.append(text)
@@ -438,7 +438,9 @@ def main() -> None:
         )
 
         planner_calls: list[dict] = []
-        engine.executor.brain._call_api = lambda api, prompt, **kwargs: planner_calls.append({"api": api, **kwargs}) or '{"action_type":"unsupported"}'  # type: ignore[method-assign]
+        engine.executor.brain.plan_action_json = lambda prompt: planner_calls.append(  # type: ignore[method-assign]
+            {"prompt": prompt, "max_tokens": Config.ACTION_PLAN_MAX_TOKENS}
+        ) or '{"action_type":"unsupported"}'
         plan = engine.executor._ai_plan("perform a novel smoke action")
         assert_true(
             plan is not None and plan.get("action_type") == "unsupported",
@@ -448,7 +450,7 @@ def main() -> None:
             planner_calls and planner_calls[-1].get("max_tokens") == Config.ACTION_PLAN_MAX_TOKENS,
             "AI planner did not request the dedicated action-planning token budget.",
         )
-        engine.executor.brain._call_api = original_call_api
+        engine.executor.brain.plan_action_json = original_plan_action_json
 
         safe_command_prompt = engine.process_user_input("run smoke safe command", speak_response=True)
         assert_true(
@@ -827,7 +829,7 @@ def main() -> None:
         print("PASS: IRIS single-session smoke test completed.")
         print(f"Artifact: {smoke_file}")
     finally:
-        engine.executor.brain._call_api = original_call_api
+        engine.executor.brain.plan_action_json = original_plan_action_json
         engine.voice.speak = original_speak
         engine.brain.think = original_think
         engine.brain.think_with_stream = original_think_with_stream
