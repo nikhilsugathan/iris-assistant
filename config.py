@@ -78,6 +78,17 @@ class Config:
     BACKGROUND_ACTION_POLL_MS = int(os.getenv("BACKGROUND_ACTION_POLL_MS", "700"))
     BACKGROUND_ACTION_PROCESS_POLL_SECONDS = float(os.getenv("BACKGROUND_ACTION_PROCESS_POLL_SECONDS", "0.2"))
     BACKGROUND_ACTION_CANCEL_GRACE_SECONDS = float(os.getenv("BACKGROUND_ACTION_CANCEL_GRACE_SECONDS", "3.0"))
+    FOCUS_MODE_DEFAULT_MINUTES = int(os.getenv("FOCUS_MODE_DEFAULT_MINUTES", "60"))
+    FOCUS_MODE_MAX_MINUTES = int(os.getenv("FOCUS_MODE_MAX_MINUTES", "240"))
+    FOCUS_MODE_DISTRACTION_WINDOWS = [
+        title.strip()
+        for title in os.getenv("FOCUS_MODE_DISTRACTION_WINDOWS", "Slack,Discord,Teams,WhatsApp,Telegram").split(",")
+        if title.strip()
+    ]
+    FOCUS_MODE_COMPLETION_MESSAGE = os.getenv(
+        "FOCUS_MODE_COMPLETION_MESSAGE",
+        "Focus mode finished. Ready for the next step?",
+    ).strip()
     CLIPBOARD_CONTEXT_MAX_CHARS = int(os.getenv("CLIPBOARD_CONTEXT_MAX_CHARS", "4000"))
     CLIPBOARD_PREVIEW_CHARS = int(os.getenv("CLIPBOARD_PREVIEW_CHARS", "260"))
 

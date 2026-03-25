@@ -113,6 +113,7 @@ class IRISEngine:
             else None,
         }
         snapshot.update(self.executor.background_task_snapshot())
+        snapshot.update(self.executor.focus_mode_snapshot())
         return snapshot
 
     def drain_background_updates(self) -> list[dict]:

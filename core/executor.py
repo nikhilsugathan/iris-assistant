@@ -114,10 +114,27 @@ class ActionExecutor:
     VOICE_CONFIRM_ACTIONS = {
         "create_file",
         "create_folder",
-        "write_to_file",
     }
     ALWAYS_CONFIRM_ACTIONS = {
         "run_command",
+        "write_to_file",
+    }
+    TIER_ZERO_ACTIONS = {
+        "active_window",
+        "focus_mode_status",
+        "focus_mode_stop",
+        "list_windows",
+        "background_status",
+        "background_cancel",
+    }
+    TIER_ONE_ACTIONS = {
+        "create_file",
+        "create_folder",
+        "focus_mode_start",
+        "focus_window",
+        "open_app",
+        "search_web",
+        "window_state",
     }
     BACKGROUND_ACTION_TYPES = {
         "install_package",
@@ -162,6 +179,9 @@ class ActionExecutor:
         self._background_last_update = None
         self._background_cancel_event = None
         self._background_process = None
+        self._focus_mode_lock = threading.Lock()
+        self._focus_mode = None
+        self._focus_mode_timer = None
 
     @property
     def browser(self):
@@ -213,6 +233,19 @@ class ActionExecutor:
             updates = list(self._background_updates)
             self._background_updates.clear()
         return updates
+
+    def focus_mode_snapshot(self) -> dict:
+        with self._focus_mode_lock:
+            state = dict(self._focus_mode) if self._focus_mode else {}
+
+        return {
+            "focus_mode_active": bool(state),
+            "focus_mode_started_at": state.get("started_at"),
+            "focus_mode_ends_at": state.get("ends_at"),
+            "focus_mode_anchor": state.get("anchor", ""),
+            "focus_mode_duration_seconds": state.get("duration_seconds", 0),
+            "focus_mode_minimized_windows": list(state.get("minimized_windows", [])),
+        }
 
     def _background_task_active(self) -> bool:
         with self._background_lock:
@@ -672,6 +705,9 @@ class ActionExecutor:
     ]
 
     DESKTOP_ACTION_PATTERNS = [
+        r"^(?:start\s+)?(?:focus mode|my work session)(?:\s+for\s+\d+\s*(?:seconds?|minutes?|hours?))?\??$",
+        r"^(?:focus mode status|work session status|how long is left in focus mode|how long is left in my work session|is focus mode on|is my work session on)\??$",
+        r"^(?:stop|end|cancel|turn off)\s+(?:focus mode|my work session)\??$",
         r"^(?:cancel|stop)\s+(?:the\s+)?(?:background|current)\s+(?:task|job|action|command|install)\??$",
         r"^(?:background status|job status|task status|what(?:'s| is)\s+running\s+in\s+the\s+background|what(?:'s| is)\s+the\s+background\s+status)\??$",
         r"^(?:save|save this|save it|save here)$",
@@ -693,6 +729,9 @@ class ActionExecutor:
     ]
 
     ACTION_INFO_PATTERNS = [
+        r"^(?:start\s+)?(?:focus mode|my work session)(?:\s+for\s+\d+\s*(?:seconds?|minutes?|hours?))?\??$",
+        r"^(?:focus mode status|work session status|how long is left in focus mode|how long is left in my work session|is focus mode on|is my work session on)\??$",
+        r"^(?:stop|end|cancel|turn off)\s+(?:focus mode|my work session)\??$",
         r"^(?:cancel|stop)\s+(?:the\s+)?(?:background|current)\s+(?:task|job|action|command|install)\??$",
         r"^(?:background status|job status|task status|what(?:'s| is)\s+running\s+in\s+the\s+background|what(?:'s| is)\s+the\s+background\s+status)\??$",
         r"^(?:what(?:'s| is)|which)\s+(?:window|app)\s+is\s+active\??$",
@@ -781,6 +820,9 @@ class ActionExecutor:
         if routed_plan and str(routed_plan.get("action_type", "") or "").strip() in {
             "background_status",
             "background_cancel",
+            "focus_mode_start",
+            "focus_mode_status",
+            "focus_mode_stop",
         }:
             self.pending_presence_check = False
             self.auto_action_timestamps = []
@@ -888,11 +930,6 @@ class ActionExecutor:
     # SIMPLE TASK DETECTION: These run without asking permission
     # ─────────────────────────────────────────────────────────────
 
-    SIMPLE_ACTIONS = [
-        "create_file", "create_folder", "open_app",
-        "search_web", "write_to_file"
-    ]
-
     def _approval_level(self, plan: dict, verdict: str) -> int:
         if verdict == BLOCKED:
             return 3
@@ -903,14 +940,20 @@ class ActionExecutor:
         if action_type in self.ALWAYS_CONFIRM_ACTIONS:
             return 2
 
-        if action_type == "manage_package":
-            operation = str(plan.get("package_operation", "") or "").strip().lower()
-            return 0 if operation == "list" else 2
-
         if (
             self.current_input_source == "voice"
             and action_type in self.VOICE_CONFIRM_ACTIONS
         ):
+            return 2
+
+        if action_type in self.TIER_ZERO_ACTIONS:
+            return 0
+
+        if action_type == "manage_package":
+            operation = str(plan.get("package_operation", "") or "").strip().lower()
+            return 1 if operation == "list" else 2
+
+        if action_type in self.TIER_ONE_ACTIONS:
             return 1
 
         return 0
@@ -932,8 +975,13 @@ class ActionExecutor:
                 return "This removes a package from the machine. I need explicit confirmation before I continue."
             if operation == "upgrade":
                 return "This updates a package on the machine. I need explicit confirmation before I continue."
+            if operation == "list":
+                return ""
 
-        if level == 1 and self.current_input_source == "voice":
+        if action_type == "write_to_file":
+            return "This edits an existing file. I need explicit confirmation before I make that change."
+
+        if self.current_input_source == "voice" and action_type in self.VOICE_CONFIRM_ACTIONS:
             return (
                 "This changes local files, and the request came from voice input. "
                 "I want explicit confirmation before I make that change."
@@ -1002,6 +1050,19 @@ class ActionExecutor:
         if verdict in (BLOCKED, WARNING, NEED_ADMIN):
             return False
         return self._approval_level(plan, verdict) == 0
+
+    def _prepend_tier_one_announcement(self, plan: dict, verdict: str, result: str) -> str:
+        if self._approval_level(plan, verdict) != 1:
+            return result
+
+        description = str(plan.get("description", "") or "").strip()
+        if not description:
+            return result
+
+        prefix = f"I'll {description}."
+        if not result:
+            return prefix
+        return f"{prefix} {result}".strip()
 
     # ─────────────────────────────────────────────────────────────
     # COGNITIVE FILE NAMING: auto-rename if file already exists
@@ -1082,6 +1143,12 @@ class ActionExecutor:
                     security_reason=security_msg,
                 )
                 return self._execute_pending()
+
+        if self._approval_level(plan, verdict) == 1:
+            self._log(f"ANNOUNCED AUTO-EXECUTE: {plan.get('action_type')} — {plan.get('description','')}")
+            self._set_pending_action(plan, verdict, security_reason=security_msg)
+            result = self._execute_pending()
+            return self._prepend_tier_one_announcement(plan, verdict, result)
 
         # ── Simple safe task — execute with verification ─────
         if self._is_simple_task(plan, verdict):
@@ -1205,6 +1272,57 @@ class ActionExecutor:
         raw = (user_input or "").strip()
         text = raw.lower()
         active_window_title = self._active_user_window_title()
+
+        focus_status_match = re.search(
+            r"^(?:focus mode status|work session status|how long is left in focus mode|how long is left in my work session|is focus mode on|is my work session on)\??$",
+            text,
+        )
+        if focus_status_match:
+            return {
+                "action_type": "focus_mode_status",
+                "description": "report the current focus mode status",
+                "is_dangerous": False,
+            }
+
+        focus_stop_match = re.search(
+            r"^(?:stop|end|cancel|turn off)\s+(?:focus mode|my work session)\??$",
+            text,
+        )
+        if focus_stop_match:
+            return {
+                "action_type": "focus_mode_stop",
+                "description": "end the current focus mode session",
+                "is_dangerous": False,
+            }
+
+        focus_start_match = re.search(
+            r"^(?:start\s+)?(?:focus mode|my work session)(?:\s+for\s+(\d+)\s*(seconds?|minutes?|hours?))?\??$",
+            text,
+        )
+        if focus_start_match:
+            quantity_raw = focus_start_match.group(1)
+            unit_raw = str(focus_start_match.group(2) or "minutes").strip().lower()
+            duration_seconds = max(1, int(getattr(Config, "FOCUS_MODE_DEFAULT_MINUTES", 60))) * 60
+            if quantity_raw:
+                quantity = max(1, int(quantity_raw))
+                if unit_raw.startswith("hour"):
+                    max_hours = max(1, int(getattr(Config, "FOCUS_MODE_MAX_MINUTES", 240)) // 60)
+                    quantity = min(quantity, max_hours)
+                    duration_seconds = quantity * 3600
+                elif unit_raw.startswith("second"):
+                    duration_seconds = quantity
+                else:
+                    max_minutes = max(1, int(getattr(Config, "FOCUS_MODE_MAX_MINUTES", 240)))
+                    quantity = min(quantity, max_minutes)
+                    duration_seconds = quantity * 60
+
+            minutes = max(1, int(round(duration_seconds / 60.0)))
+            return {
+                "action_type": "focus_mode_start",
+                "description": f"start focus mode for about {minutes} minute{'s' if minutes != 1 else ''}",
+                "duration_seconds": duration_seconds,
+                "is_dangerous": False,
+            }
 
         if active_window_title and re.search(r"^(?:save|save this|save it|save here)$", text):
             return {
@@ -1723,7 +1841,7 @@ User request: "{user_input}"
 
 Respond ONLY with valid JSON in this exact format:
 {{
-  "action_type": "install_package | manage_package | run_command | create_file | create_folder | open_app | search_web | write_to_file | type_text | type_in_window | press_hotkey | press_hotkey_in_window | click_at | click_window | focus_window | window_state | active_window | list_windows | background_status | background_cancel | unsupported",
+  "action_type": "install_package | manage_package | run_command | create_file | create_folder | open_app | search_web | write_to_file | type_text | type_in_window | press_hotkey | press_hotkey_in_window | click_at | click_window | focus_window | window_state | active_window | list_windows | background_status | background_cancel | focus_mode_start | focus_mode_status | focus_mode_stop | unsupported",
   "description": "what will happen in plain English",
   "command": "exact shell command if needed",
   "filename": "full file path if creating a file",
@@ -1761,6 +1879,9 @@ Rules:
 - Use list_windows to report visible titled windows
 - Use background_status when the user asks what heavy task IRIS is running in the background
 - Use background_cancel when the user asks IRIS to stop a heavy background task
+- Use focus_mode_start when the user asks to start focus mode or a work session
+- Use focus_mode_status when the user asks for focus mode or work session status
+- Use focus_mode_stop when the user asks to stop focus mode or a work session
 - For rename: use command like: ren "full\\path\\oldname" "newname"
 - Return unsupported only if truly impossible to determine
 
@@ -2049,6 +2170,18 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
                 result = self._background_cancel(plan)
                 success = bool(result)
 
+            elif action_type == "focus_mode_start":
+                result = self._start_focus_mode(plan)
+                success = bool(result)
+
+            elif action_type == "focus_mode_status":
+                result = self._focus_mode_status(plan)
+                success = bool(result)
+
+            elif action_type == "focus_mode_stop":
+                result = self._stop_focus_mode(plan)
+                success = bool(result)
+
             else:
                 return "I don't know how to execute that type of action.", False
 
@@ -2076,7 +2209,7 @@ if start command failed, try webbrowser; if one path failed, try a different pat
 
 Respond ONLY with valid JSON in this exact format:
 {{
-  "action_type": "install_package | manage_package | run_command | create_file | create_folder | open_app | search_web | write_to_file | type_text | type_in_window | press_hotkey | press_hotkey_in_window | click_at | click_window | focus_window | window_state | active_window | list_windows | background_status | background_cancel",
+  "action_type": "install_package | manage_package | run_command | create_file | create_folder | open_app | search_web | write_to_file | type_text | type_in_window | press_hotkey | press_hotkey_in_window | click_at | click_window | focus_window | window_state | active_window | list_windows | background_status | background_cancel | focus_mode_start | focus_mode_status | focus_mode_stop",
   "description": "alternative approach in plain English",
   "command": "alternative shell command if needed",
   "filename": "full file path if needed",
@@ -2646,6 +2779,154 @@ Be specific and practical. No preamble."""
 
     def _background_cancel(self, plan: dict) -> str:
         return self._cancel_background_action()
+
+    def _focus_mode_duration_seconds(self, plan: dict) -> int:
+        raw_seconds = int(plan.get("duration_seconds", 0) or 0)
+        if raw_seconds > 0:
+            max_minutes = max(1, int(getattr(Config, "FOCUS_MODE_MAX_MINUTES", 240)))
+            return min(raw_seconds, max_minutes * 3600)
+        default_minutes = max(1, int(getattr(Config, "FOCUS_MODE_DEFAULT_MINUTES", 60)))
+        return default_minutes * 60
+
+    def _format_duration_short(self, total_seconds: int) -> str:
+        seconds = max(0, int(total_seconds))
+        if seconds < 60:
+            return f"{seconds} second{'s' if seconds != 1 else ''}"
+        minutes, remainder = divmod(seconds, 60)
+        if minutes < 60:
+            if remainder == 0:
+                return f"{minutes} minute{'s' if minutes != 1 else ''}"
+            return f"{minutes} minute{'s' if minutes != 1 else ''} {remainder} second{'s' if remainder != 1 else ''}"
+        hours, minutes = divmod(minutes, 60)
+        if minutes == 0:
+            return f"{hours} hour{'s' if hours != 1 else ''}"
+        return f"{hours} hour{'s' if hours != 1 else ''} {minutes} minute{'s' if minutes != 1 else ''}"
+
+    def _focus_mode_distraction_targets(self) -> list[str]:
+        return [
+            str(title or "").strip()
+            for title in getattr(Config, "FOCUS_MODE_DISTRACTION_WINDOWS", []) or []
+            if str(title or "").strip()
+        ]
+
+    def _minimize_focus_distractions(self, anchor_window: str) -> list[str]:
+        minimized: list[str] = []
+        anchor_lower = str(anchor_window or "").strip().lower()
+        for title_query in self._focus_mode_distraction_targets():
+            if anchor_lower and title_query.lower() in anchor_lower:
+                continue
+            try:
+                result = self.desktop.set_window_state(title_query, "minimize")
+            except Exception:
+                continue
+            message = str(getattr(result, "message", "") or "").strip()
+            match = re.search(r"'([^']+)'", message)
+            actual_title = match.group(1) if match else title_query
+            if actual_title not in minimized:
+                minimized.append(actual_title)
+        return minimized
+
+    def _focus_mode_complete_message(self, state: dict) -> str:
+        configured = str(getattr(Config, "FOCUS_MODE_COMPLETION_MESSAGE", "") or "").strip()
+        anchor = str(state.get("anchor", "") or "").strip()
+        if anchor:
+            return f"{configured} You were anchored on {anchor}."
+        return configured or "Focus mode finished. Ready for the next step?"
+
+    def _finish_focus_mode(self) -> None:
+        with self._focus_mode_lock:
+            state = dict(self._focus_mode) if self._focus_mode else None
+            self._focus_mode = None
+            self._focus_mode_timer = None
+
+        if not state:
+            return
+
+        message = self._focus_mode_complete_message(state)
+        self._push_background_update(message, success=True, label=f"{Config.PUBLIC_NAME} (Focus)")
+        if message and bool(getattr(self.voice, "audio_ready", False)):
+            try:
+                self.voice.speak_background(message)
+            except Exception:
+                pass
+
+    def _start_focus_mode(self, plan: dict) -> str:
+        with self._focus_mode_lock:
+            active_state = dict(self._focus_mode) if self._focus_mode else None
+
+        if active_state:
+            return self._focus_mode_status(plan)
+
+        duration_seconds = self._focus_mode_duration_seconds(plan)
+        anchor_window = self._active_user_window_title() or "your current task"
+        minimized_windows = self._minimize_focus_distractions(anchor_window)
+        now = datetime.now()
+        ends_at = now + timedelta(seconds=duration_seconds)
+
+        timer = threading.Timer(duration_seconds, self._finish_focus_mode)
+        timer.daemon = True
+        state = {
+            "started_at": now.isoformat(timespec="seconds"),
+            "ends_at": ends_at.isoformat(timespec="seconds"),
+            "duration_seconds": duration_seconds,
+            "anchor": anchor_window,
+            "minimized_windows": minimized_windows,
+        }
+
+        with self._focus_mode_lock:
+            self._focus_mode = state
+            self._focus_mode_timer = timer
+
+        timer.start()
+
+        message = f"Focus mode is on for {self._format_duration_short(duration_seconds)}."
+        if anchor_window:
+            message += f" Staying anchored on {anchor_window}."
+        if minimized_windows:
+            message += f" Minimized {', '.join(minimized_windows)}."
+        message += " I'll let you know when the session ends."
+        return message
+
+    def _focus_mode_status(self, plan: dict) -> str:
+        with self._focus_mode_lock:
+            state = dict(self._focus_mode) if self._focus_mode else None
+
+        if not state:
+            return "Focus mode is off."
+
+        ends_at_raw = str(state.get("ends_at", "") or "").strip()
+        anchor_window = str(state.get("anchor", "") or "").strip()
+        minimized_windows = list(state.get("minimized_windows", []))
+        try:
+            ends_at = datetime.fromisoformat(ends_at_raw)
+        except Exception:
+            ends_at = datetime.now()
+        remaining = max(0, int((ends_at - datetime.now()).total_seconds()))
+
+        message = f"Focus mode has about {self._format_duration_short(remaining)} left."
+        if anchor_window:
+            message += f" Anchor: {anchor_window}."
+        if minimized_windows:
+            message += f" Minimized: {', '.join(minimized_windows)}."
+        return message
+
+    def _stop_focus_mode(self, plan: dict) -> str:
+        with self._focus_mode_lock:
+            state = dict(self._focus_mode) if self._focus_mode else None
+            timer = self._focus_mode_timer
+            self._focus_mode = None
+            self._focus_mode_timer = None
+
+        if timer is not None:
+            try:
+                timer.cancel()
+            except Exception:
+                pass
+
+        if not state:
+            return "Focus mode is already off."
+
+        return "Focus mode is off."
 
     # ─────────────────────────────────────────────────────────────
     # LOGGING

@@ -149,6 +149,9 @@ def main() -> None:
     original_run_command = engine.executor._run_command
     original_execute_background_plan = engine.executor._execute_background_plan
     original_plan_action_json = engine.executor.brain.plan_action_json
+    original_focus_default_minutes = Config.FOCUS_MODE_DEFAULT_MINUTES
+    original_focus_max_minutes = Config.FOCUS_MODE_MAX_MINUTES
+    original_focus_distraction_windows = list(Config.FOCUS_MODE_DISTRACTION_WINDOWS)
 
     def fake_speak(text: str) -> None:
         spoken_messages.append(text)
@@ -312,6 +315,9 @@ def main() -> None:
         engine.executor._desktop = fake_desktop
         engine.voice.speak = fake_speak
         engine.voice.speak_background = fake_speak_background
+        Config.FOCUS_MODE_DEFAULT_MINUTES = 1
+        Config.FOCUS_MODE_MAX_MINUTES = 10
+        Config.FOCUS_MODE_DISTRACTION_WINDOWS = ["Chrome"]
         engine.brain.think = fake_think
         engine.brain.think_with_stream = fake_think_with_stream
         engine.executor._pattern_match = fake_pattern_match
@@ -681,6 +687,57 @@ def main() -> None:
         )
         engine.executor._execute_background_plan = original_execute_background_plan
 
+        focus_mode_start = engine.process_user_input("focus mode for 1 second", speak_response=True)
+        assert_true(
+            "focus mode is on for 1 second." in focus_mode_start.response.lower(),
+            "Focus mode start did not report the requested short session length.",
+        )
+        assert_true(
+            "chrome" in focus_mode_start.response.lower(),
+            "Focus mode start did not report minimized distraction windows.",
+        )
+        assert_true(
+            ("window_state", ("Chrome", "minimize")) in fake_desktop.events,
+            "Focus mode start did not minimize the configured distraction window.",
+        )
+        focus_mode_status = engine.process_user_input("focus mode status", speak_response=True)
+        assert_true(
+            "focus mode has about" in focus_mode_status.response.lower()
+            and "anchor:" in focus_mode_status.response.lower(),
+            "Focus mode status did not report the live session state.",
+        )
+        focus_updates = []
+        focus_deadline = time.time() + 2.0
+        while time.time() < focus_deadline:
+            focus_updates = engine.drain_background_updates()
+            if any("focus mode finished" in update.get("message", "").lower() for update in focus_updates):
+                break
+            time.sleep(0.05)
+        assert_true(
+            any("focus mode finished" in update.get("message", "").lower() for update in focus_updates),
+            "Focus mode completion did not emit a background reminder update.",
+        )
+        assert_true(
+            background_spoken_messages
+            and "focus mode finished" in background_spoken_messages[-1].lower(),
+            "Focus mode completion did not announce itself through background speech.",
+        )
+        focus_mode_stop = engine.process_user_input("stop focus mode", speak_response=True)
+        assert_true(
+            focus_mode_stop.response in {"Focus mode is already off.", "Focus mode is off."},
+            "Stopping an already-finished focus mode should report the inactive state cleanly.",
+        )
+        work_session_start = engine.process_user_input("start my work session", speak_response=True)
+        assert_true(
+            "focus mode is on" in work_session_start.response.lower(),
+            "Work-session alias did not start the focus workflow.",
+        )
+        work_session_stop = engine.process_user_input("end my work session", speak_response=True)
+        assert_true(
+            work_session_stop.response == "Focus mode is off.",
+            "Work-session alias did not stop the focus workflow cleanly.",
+        )
+
         timed_out_prompt = engine.process_user_input("run smoke safe command", speak_response=True)
         assert_true(
             engine.executor.waiting_for_permission(),
@@ -720,6 +777,7 @@ def main() -> None:
             "Desktop typing action did not reach the desktop controller.",
         )
 
+        fake_desktop.current_window_title = "SmokePad"
         desktop_memory_prompt = engine.process_user_input("run smoke type action", speak_response=True)
         assert_true(
             engine.executor.waiting_for_permission(),
@@ -738,9 +796,10 @@ def main() -> None:
         )
         engine.process_user_input("no", speak_response=True)
         fake_desktop.current_window_title = "SmokePad"
+        engine.executor.auto_action_timestamps = []
         desktop_auto = engine.process_user_input("run smoke type action", speak_response=True)
         assert_true(
-            desktop_auto.response == "Done.",
+            fake_desktop.events.count(("type_text", "IRIS desktop smoke")) >= 2,
             "Desktop session approval was not reused for the same focused window.",
         )
         assert_true(
@@ -751,8 +810,9 @@ def main() -> None:
         engine.executor.auto_action_timestamps = []
         focus_result = engine.process_user_input("focus Claude", speak_response=True)
         assert_true(
-            focus_result.response == "Focused 'Claude'.",
-            "Named window focus did not return the expected result.",
+            "i'll focus the 'claude' window." in focus_result.response.lower()
+            and "focused 'claude'." in focus_result.response.lower(),
+            "Named window focus did not execute as an announced Tier 1 action.",
         )
         assert_true(
             ("focus_window", "Claude") in fake_desktop.events,
@@ -804,8 +864,9 @@ def main() -> None:
 
         maximize_window_result = engine.process_user_input("run smoke maximize window", speak_response=True)
         assert_true(
-            maximize_window_result.response == "Maximized 'Claude'.",
-            "Window maximize action did not execute as a safe auto action.",
+            "i'll maximize the claude window." in maximize_window_result.response.lower()
+            and "maximized 'claude'." in maximize_window_result.response.lower(),
+            "Window maximize action did not execute as an announced Tier 1 action.",
         )
         assert_true(
             ("window_state", ("Claude", "maximize")) in fake_desktop.events,
@@ -869,8 +930,9 @@ def main() -> None:
         engine.executor.auto_action_timestamps = []
         package_list_result = engine.process_user_input("run smoke package list", speak_response=True)
         assert_true(
-            "Installed apps:" in package_list_result.response,
-            "Package list action did not return the installed-app summary.",
+            "i'll list installed applications." in package_list_result.response.lower()
+            and "Installed apps:" in package_list_result.response,
+            "Package list action did not execute as an announced Tier 1 action.",
         )
         assert_true(
             ("list", "") in package_events,
@@ -1044,6 +1106,9 @@ def main() -> None:
         engine.executor._manage_package = original_manage_package
         engine.executor._run_command = original_run_command
         engine.executor._execute_background_plan = original_execute_background_plan
+        Config.FOCUS_MODE_DEFAULT_MINUTES = original_focus_default_minutes
+        Config.FOCUS_MODE_MAX_MINUTES = original_focus_max_minutes
+        Config.FOCUS_MODE_DISTRACTION_WINDOWS = original_focus_distraction_windows
         engine.shutdown()
 
 

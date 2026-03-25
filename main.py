@@ -33,6 +33,7 @@ def show_status(engine: IRISEngine, text_mode: bool) -> None:
     mic_status = "Ready" if snapshot.get("mic_ready") else "Unavailable"
     audio_status = "Ready" if snapshot.get("audio_ready") else "Unavailable"
     overdrive = "Active" if snapshot.get("overdrive_active") else "Off"
+    focus_mode = "Active" if snapshot.get("focus_mode_active") else "Off"
 
     console.print(
         Panel(
@@ -45,6 +46,7 @@ def show_status(engine: IRISEngine, text_mode: bool) -> None:
             f"[white]Audio Output   :[/white] [cyan]{audio_status}[/cyan]\n"
             f"[white]Wake Words     :[/white] [cyan]{', '.join(snapshot.get('wake_words', []))}[/cyan]\n"
             f"[white]Overdrive      :[/white] [cyan]{overdrive}[/cyan]\n"
+            f"[white]Focus Mode     :[/white] [cyan]{focus_mode}[/cyan]\n"
             f"[white]Self Model     :[/white] [cyan]{snapshot.get('self_model')}[/cyan]\n"
             f"[white]Memory         :[/white] [cyan]{snapshot.get('memory')}[/cyan]\n",
             title=f"[bold cyan]{snapshot.get('system_name', Config.SYSTEM_NAME)}[/bold cyan]",
