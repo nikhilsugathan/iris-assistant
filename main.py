@@ -59,7 +59,7 @@ def print_response(label: str, text: str) -> None:
     console.print(f"\n[bold cyan]{label}:[/bold cyan] {text}\n")
 
 def speak_voice_result(engine: IRISEngine, result) -> None:
-    if not result.response or getattr(result, "exit_immediately", False):
+    if not result.response or getattr(result, "exit_immediately", False) or getattr(result, "speech_started", False):
         return
     if engine.should_hold_voice_followup_open():
         engine.voice.speak(result.response)

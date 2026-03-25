@@ -162,6 +162,9 @@ class Brain:
         return ""
 
     def think(self, user_input: str, council_packet=None) -> str:
+        return self.think_with_stream(user_input, council_packet=council_packet, stream_callback=None)
+
+    def think_with_stream(self, user_input: str, council_packet=None, stream_callback=None) -> str:
         """
         Smart routing:
         - Simple/short → ollama_fast (phi3.5, instant)
@@ -239,6 +242,7 @@ class Brain:
                 use_memory=True,
                 allow_failover=False,
                 extra_system=extra_system,
+                stream_callback=stream_callback,
             )
             if resp:
                 final = self._postprocess_response(resp, user_input, allow_long_response=allow_long_response)
@@ -656,6 +660,7 @@ Return only the improved response."""
         use_memory: bool,
         extra_system: str = "",
         max_tokens: int | None = None,
+        stream_callback=None,
     ) -> Optional[str]:
         """Call a local Ollama model."""
         base_url = getattr(Config, "OLLAMA_BASE_URL", "http://localhost:11434")
@@ -672,28 +677,100 @@ Return only the improved response."""
                 full_prompt += f"{role}: {item['content']}\n"
         full_prompt += f"User: {prompt}\nIris:"
 
+        payload = {
+            "model": model,
+            "prompt": full_prompt,
+            "stream": False,
+            "options": {
+                "temperature": 0.4,
+                "num_predict": token_limit,
+                "stop": ["\nUser:", "\nHuman:", "\n\n"],
+            }
+        }
+
+        if stream_callback:
+            try:
+                return self._call_ollama_streaming(base_url, payload, stream_callback=stream_callback)
+            except Exception:
+                pass
+
         try:
-            resp = requests.post(
-                f"{base_url}/api/generate",
-                json={
-                    "model": model,
-                    "prompt": full_prompt,
-                    "stream": False,
-                    "options": {
-                        "temperature": 0.4,
-                        "num_predict": token_limit,
-                        "stop": ["\nUser:", "\nHuman:", "\n\n"],
-                    }
-                },
-                timeout=15,
-            )
-            resp.raise_for_status()
-            text = resp.json().get("response", "").strip()
-            # Clean up any leaked prompt artifacts
-            text = re.sub(r"^(Iris:|Assistant:)\s*", "", text).strip()
-            return text if text else None
+            return self._call_ollama_blocking(base_url, payload)
         except Exception:
             return None
+
+    def _call_ollama_blocking(self, base_url: str, payload: dict) -> Optional[str]:
+        resp = requests.post(
+            f"{base_url}/api/generate",
+            json=payload,
+            timeout=15,
+        )
+        resp.raise_for_status()
+        text = resp.json().get("response", "").strip()
+        text = re.sub(r"^(Iris:|Assistant:)\s*", "", text).strip()
+        return text if text else None
+
+    def _call_ollama_streaming(self, base_url: str, payload: dict, stream_callback) -> Optional[str]:
+        payload = dict(payload)
+        payload["stream"] = True
+        resp = requests.post(
+            f"{base_url}/api/generate",
+            json=payload,
+            stream=True,
+            timeout=30,
+        )
+        resp.raise_for_status()
+
+        pieces: list[str] = []
+        sentence_buffer = ""
+
+        for line in resp.iter_lines(decode_unicode=True):
+            if not line:
+                continue
+            chunk = json.loads(line)
+            token = str(chunk.get("response", "") or "")
+            if token:
+                pieces.append(token)
+                sentence_buffer += token
+                sentence_buffer = self._emit_stream_ready_sentences(sentence_buffer, stream_callback)
+            if chunk.get("done"):
+                break
+
+        trailing = self._clean_streaming_chunk(sentence_buffer)
+        if trailing:
+            try:
+                stream_callback(trailing)
+            except Exception:
+                pass
+
+        text = "".join(pieces).strip()
+        text = re.sub(r"^(Iris:|Assistant:)\s*", "", text).strip()
+        return text if text else None
+
+    def _emit_stream_ready_sentences(self, buffer: str, stream_callback) -> str:
+        text = buffer or ""
+        while True:
+            match = re.search(r"(.+?[.!?])(?:\s+|$)", text, flags=re.DOTALL)
+            if not match:
+                return text
+            sentence = self._clean_streaming_chunk(match.group(1))
+            if sentence:
+                try:
+                    stream_callback(sentence)
+                except Exception:
+                    pass
+            text = text[match.end():]
+
+    def _clean_streaming_chunk(self, text: str) -> str:
+        clean = (text or "").strip()
+        if not clean:
+            return ""
+        clean = re.sub(r"^(Iris:|Assistant:)\s*", "", clean, flags=re.IGNORECASE).strip()
+        clean = re.sub(r"^\s*(Sure|Absolutely|Certainly|Of course)[,!]?\s*", "", clean, flags=re.IGNORECASE)
+        clean = re.sub(r"\bAs an AI[^.?!]*[.?!]?\s*", "", clean, flags=re.IGNORECASE)
+        clean = re.sub(r"\bI am an AI[^.?!]*[.?!]?\s*", "", clean, flags=re.IGNORECASE)
+        clean = re.sub(r"\bI(?:'m| am) happy to help[.!]?\s*", "", clean, flags=re.IGNORECASE)
+        return clean.strip()
 
     # ─────────────────────────────────────────────────────────────
     # API ROUTER
@@ -708,22 +785,38 @@ Return only the improved response."""
         allow_failover: bool = True,
         extra_system: str = "",
         max_tokens: int | None = None,
+        stream_callback=None,
     ) -> Optional[str]:
         try:
             if api == "ollama_fast":
                 return self._call_ollama(
                     getattr(Config, "OLLAMA_MODEL_FAST", "phi3.5"),
-                    prompt, use_persona, use_memory, extra_system=extra_system, max_tokens=max_tokens
+                    prompt,
+                    use_persona,
+                    use_memory,
+                    extra_system=extra_system,
+                    max_tokens=max_tokens,
+                    stream_callback=stream_callback,
                 )
             if api == "ollama_smart":
                 return self._call_ollama(
                     getattr(Config, "OLLAMA_MODEL_SMART", "llama3.1:8b"),
-                    prompt, use_persona, use_memory, extra_system=extra_system, max_tokens=max_tokens
+                    prompt,
+                    use_persona,
+                    use_memory,
+                    extra_system=extra_system,
+                    max_tokens=max_tokens,
+                    stream_callback=stream_callback,
                 )
             if api == "ollama_deep":
                 return self._call_ollama(
                     getattr(Config, "OLLAMA_MODEL_DEEP", "deepseek-r1:8b"),
-                    prompt, use_persona, use_memory, extra_system=extra_system, max_tokens=max_tokens
+                    prompt,
+                    use_persona,
+                    use_memory,
+                    extra_system=extra_system,
+                    max_tokens=max_tokens,
+                    stream_callback=stream_callback,
                 )
             if api == "claude":
                 return self._call_claude(prompt, use_persona, use_memory, extra_system=extra_system, max_tokens=max_tokens)
@@ -745,6 +838,7 @@ Return only the improved response."""
                         allow_failover=False,
                         extra_system=extra_system,
                         max_tokens=max_tokens,
+                        stream_callback=None,
                     )
         return None
 

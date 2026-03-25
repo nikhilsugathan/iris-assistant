@@ -32,6 +32,7 @@ class EngineResult:
     should_exit: bool = False
     mode: str = "chat"
     exit_immediately: bool = False
+    speech_started: bool = False
 
 
 class IRISEngine:
@@ -249,10 +250,24 @@ class IRISEngine:
             packet = self.council.deliberate(user_input, decision, self.self_model)
             packet = self._apply_overdrive_to_packet(packet)
             self.self_model.apply_council(packet.roles)
-            response = self.brain.think(user_input, council_packet=packet)
+            stream_state = self._make_voice_stream_state(
+                input_source=inferred_source,
+                speak_response=speak_response,
+                allow_long_response=bool(getattr(packet, "allow_long_response", False)),
+            )
+            response = self.brain.think_with_stream(
+                user_input,
+                council_packet=packet,
+                stream_callback=stream_state["callback"],
+            )
             self._update_self_model_after_response(response, "brain")
             self._speak_if_enabled(response, speak_response)
-            return EngineResult(label=Config.PUBLIC_NAME, response=response, mode=decision.mode)
+            return EngineResult(
+                label=Config.PUBLIC_NAME,
+                response=response,
+                mode=decision.mode,
+                speech_started=bool(stream_state["started"]),
+            )
 
     def activate_overdrive(self) -> None:
         now = datetime.now()
@@ -381,6 +396,56 @@ class IRISEngine:
             return self.process_user_input(command_text, speak_response=False, input_source=input_source)
         finally:
             self.finish_slow_voice_ack(ack_token, stop_audio=True)
+
+    def _make_voice_stream_state(self, input_source: str, speak_response: bool, allow_long_response: bool) -> dict:
+        state = {"started": False, "callback": None}
+        if speak_response:
+            return state
+        if input_source != "voice":
+            return state
+        if not getattr(Config, "OLLAMA_STREAM_VOICE_RESPONSES", True):
+            return state
+        if not getattr(self.voice, "audio_ready", False):
+            return state
+
+        max_sentences = max(
+            1,
+            int(getattr(Config, "VOICE_MAX_SENTENCES", 2)),
+        )
+        if allow_long_response or not bool(getattr(Config, "SHORT_VOICE_RESPONSES", False)):
+            max_sentences = 999
+
+        sequence_id = None
+        spoken_sentences = 0
+
+        def stream_callback(text: str) -> None:
+            nonlocal sequence_id, spoken_sentences
+            chunk = str(text or "").strip()
+            if not chunk:
+                return
+            if spoken_sentences >= max_sentences:
+                return
+
+            if callable(getattr(self.voice, "begin_background_speech_sequence", None)) and callable(
+                getattr(self.voice, "queue_background_speech", None)
+            ):
+                if sequence_id is None:
+                    sequence_id = self.voice.begin_background_speech_sequence(cancel_pending=True)
+                    interrupt_current = True
+                else:
+                    interrupt_current = False
+                self.voice.queue_background_speech(
+                    chunk,
+                    generation_id=sequence_id,
+                    interrupt_current=interrupt_current,
+                )
+            else:
+                self.voice.speak_background(chunk)
+            state["started"] = True
+            spoken_sentences += 1
+
+        state["callback"] = stream_callback
+        return state
 
     def should_hold_voice_followup_open(self) -> bool:
         return any(

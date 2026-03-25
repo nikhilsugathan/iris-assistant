@@ -424,7 +424,7 @@ class VoiceStandbyWorker(QtCore.QThread):
             return False
 
         keep_followup_open = self.engine.should_hold_voice_followup_open()
-        if result.response:
+        if result.response and not getattr(result, "speech_started", False):
             if keep_followup_open:
                 self.engine.voice.speak(result.response)
             else:
@@ -451,7 +451,7 @@ class VoiceStandbyWorker(QtCore.QThread):
                     self.engine.voice.stop_speaking()
                 self.event.emit({"type": "shutdown", "immediate": getattr(result, "exit_immediately", False)})
                 return False
-            if result.response:
+            if result.response and not getattr(result, "speech_started", False):
                 if self.engine.should_hold_voice_followup_open():
                     self.engine.voice.speak(result.response)
                 else:

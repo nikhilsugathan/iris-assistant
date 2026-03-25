@@ -139,6 +139,7 @@ def main() -> None:
 
     original_speak = engine.voice.speak
     original_think = engine.brain.think
+    original_think_with_stream = engine.brain.think_with_stream
     original_pattern_match = engine.executor._pattern_match
     original_manage_package = engine.executor._manage_package
     original_run_command = engine.executor._run_command
@@ -148,6 +149,9 @@ def main() -> None:
         spoken_messages.append(text)
 
     def fake_think(user_input: str, council_packet=None) -> str:
+        return "Smoke response ready."
+
+    def fake_think_with_stream(user_input: str, council_packet=None, stream_callback=None) -> str:
         return "Smoke response ready."
 
     def fake_pattern_match(user_input: str):
@@ -299,6 +303,7 @@ def main() -> None:
         engine.executor._desktop = fake_desktop
         engine.voice.speak = fake_speak
         engine.brain.think = fake_think
+        engine.brain.think_with_stream = fake_think_with_stream
         engine.executor._pattern_match = fake_pattern_match
 
         package_events: list[tuple[str, str]] = []
@@ -794,6 +799,7 @@ def main() -> None:
         engine.executor.brain._call_api = original_call_api
         engine.voice.speak = original_speak
         engine.brain.think = original_think
+        engine.brain.think_with_stream = original_think_with_stream
         engine.executor._pattern_match = original_pattern_match
         engine.executor._manage_package = original_manage_package
         engine.executor._run_command = original_run_command

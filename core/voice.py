@@ -1269,20 +1269,40 @@ if ($best) {{
         self.stop_speaking()
         self._reset_local_tts_engine(already_stopped=True)
 
-    def speak_background(self, text: str, backend_priority: str | None = None):
-        generation_id = self._cancel_pending_speech()
+    def begin_background_speech_sequence(self, cancel_pending: bool = True) -> int:
+        if cancel_pending:
+            return self._cancel_pending_speech()
+        with self._speech_generation_lock:
+            return self._speech_generation
+
+    def queue_background_speech(
+        self,
+        text: str,
+        generation_id: int,
+        backend_priority: str | None = None,
+        interrupt_current: bool = False,
+    ):
         thread = threading.Thread(
             target=self.speak,
             args=(text,),
             kwargs={
                 "backend_priority": backend_priority,
                 "generation_id": generation_id,
-                "interrupt_current": True,
+                "interrupt_current": interrupt_current,
             },
             daemon=True,
         )
         thread.start()
         return thread
+
+    def speak_background(self, text: str, backend_priority: str | None = None):
+        generation_id = self.begin_background_speech_sequence(cancel_pending=True)
+        return self.queue_background_speech(
+            text,
+            generation_id=generation_id,
+            backend_priority=backend_priority,
+            interrupt_current=True,
+        )
 
     def _cancel_pending_speech(self) -> int:
         with self._speech_generation_lock:
