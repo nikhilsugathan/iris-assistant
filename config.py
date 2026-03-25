@@ -81,6 +81,7 @@ class Config:
     MAX_MEMORY_TURNS = 8
     MAX_CONTEXT_TOKENS = 2000
     MEMORY_FILE = "iris_memory.json"
+    MEMORY_SAVE_DEBOUNCE_MS = int(os.getenv("MEMORY_SAVE_DEBOUNCE_MS", "160"))
     PREFER_LOCAL_RESOURCES = os.getenv("PREFER_LOCAL_RESOURCES", "true").lower() == "true"
     LOCAL_RESOURCE_GUARD_ENABLED = os.getenv("LOCAL_RESOURCE_GUARD_ENABLED", "true").lower() == "true"
     LOCAL_RESOURCE_SAMPLE_TTL_SECONDS = int(os.getenv("LOCAL_RESOURCE_SAMPLE_TTL_SECONDS", "20"))

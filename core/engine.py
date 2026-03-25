@@ -411,7 +411,11 @@ class IRISEngine:
         except Exception:
             pass
         try:
-            self.memory._save()
+            close = getattr(self.memory, "close", None)
+            if callable(close):
+                close()
+            else:
+                self.memory._save()
         except Exception:
             pass
 
