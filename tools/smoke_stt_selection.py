@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+import types
 
 WORKSPACE = Path(__file__).resolve().parents[1]
 if str(WORKSPACE) not in sys.path:
@@ -54,6 +55,7 @@ def main() -> None:
     original_model = Config.LOCAL_WHISPER_MODEL
     original_device = Config.LOCAL_WHISPER_DEVICE
     original_compute_type = Config.LOCAL_WHISPER_COMPUTE_TYPE
+    original_faster_whisper_module = sys.modules.get("faster_whisper")
 
     try:
         Config.STT_PRIORITY = "adaptive"
@@ -204,6 +206,35 @@ def main() -> None:
             "Auto Whisper runtime selection should downshift to a lightweight CPU profile on smaller machines.",
         )
 
+        class FakeWhisperModel:
+            calls: list[tuple[str, str, str]] = []
+
+            def __init__(self, model: str, device: str, compute_type: str) -> None:
+                FakeWhisperModel.calls.append((model, device, compute_type))
+                if device == "cuda":
+                    raise RuntimeError("Library cublas64_12.dll is not found or cannot be loaded")
+
+        sys.modules["faster_whisper"] = types.SimpleNamespace(WhisperModel=FakeWhisperModel)
+        fallback_voice = StubVoice(text_mode=True)
+        fallback_voice._local_whisper_runtime_cache = {"has_cuda": True, "total_ram_gb": 24.0}
+        fallback_model = fallback_voice._get_faster_whisper_model()
+        assert_true(fallback_model is not None, "CUDA Whisper load failure should retry on CPU instead of disabling local Whisper.")
+        assert_true(
+            FakeWhisperModel.calls == [
+                ("distil-large-v3", "cuda", "float16"),
+                ("distil-large-v3", "cpu", "int8"),
+            ],
+            "CUDA Whisper fallback should retry the same model on CPU int8 after a missing CUDA runtime.",
+        )
+        assert_true(
+            fallback_voice._resolve_local_whisper_runtime() == {
+                "model": "distil-large-v3",
+                "device": "cpu",
+                "compute_type": "int8",
+            },
+            "After a CUDA load failure, the session should remember the CPU Whisper fallback runtime.",
+        )
+
         wake_faster_calls = {"count": 0}
         google_wake_calls = {"count": 0}
         voice._transcribe_windows_wake_candidate = lambda audio: TranscriptCandidate(backend="system", text="")  # type: ignore[method-assign]
@@ -256,6 +287,10 @@ def main() -> None:
 
         print("PASS: IRIS adaptive STT selection smoke test completed.")
     finally:
+        if original_faster_whisper_module is not None:
+            sys.modules["faster_whisper"] = original_faster_whisper_module
+        else:
+            sys.modules.pop("faster_whisper", None)
         Config.STT_PRIORITY = original_priority
         Config.WAKE_STT_PRIORITY = original_wake_priority
         Config.SYSTEM_STT_MAX_LANGUAGES = original_system_stt_max_languages

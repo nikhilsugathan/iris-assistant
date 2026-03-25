@@ -86,6 +86,7 @@ class Voice:
         self._piper_tts_voice_key = ""
         self._piper_tts_error = ""
         self._local_whisper_runtime_cache = None
+        self._local_whisper_runtime_override = None
 
         self._init_audio()
         self._init_mic()
@@ -917,6 +918,9 @@ if ($best) {{
         return profile
 
     def _resolve_local_whisper_runtime(self) -> dict[str, str]:
+        if self._local_whisper_runtime_override is not None:
+            return dict(self._local_whisper_runtime_override)
+
         profile = self._local_whisper_hardware_profile()
         has_cuda = bool(profile.get("has_cuda"))
         total_ram_gb = float(profile.get("total_ram_gb", 0.0) or 0.0)
@@ -947,6 +951,14 @@ if ($best) {{
             "compute_type": compute_type,
         }
 
+    def _cpu_local_whisper_runtime(self, model: str) -> dict[str, str]:
+        normalized_model = str(model or "").strip() or "base"
+        return {
+            "model": normalized_model,
+            "device": "cpu",
+            "compute_type": "int8",
+        }
+
     def _get_faster_whisper_model(self):
         runtime = self._resolve_local_whisper_runtime()
         runtime_key = "|".join([runtime["model"], runtime["device"], runtime["compute_type"]])
@@ -972,9 +984,46 @@ if ($best) {{
             self._faster_whisper_error = ""
             return self._faster_whisper_model
         except Exception as exc:
+            if runtime["device"] == "cuda":
+                fallback_runtime = self._cpu_local_whisper_runtime(runtime["model"])
+                fallback_key = "|".join(
+                    [fallback_runtime["model"], fallback_runtime["device"], fallback_runtime["compute_type"]]
+                )
+                try:
+                    from faster_whisper import WhisperModel
+
+                    self._faster_whisper_model = WhisperModel(
+                        fallback_runtime["model"],
+                        device=fallback_runtime["device"],
+                        compute_type=fallback_runtime["compute_type"],
+                    )
+                    self._faster_whisper_model_key = fallback_key
+                    self._faster_whisper_error = ""
+                    self._local_whisper_runtime_override = dict(fallback_runtime)
+                    console.print(
+                        "[yellow]Local Whisper CUDA runtime unavailable; falling back to CPU int8.[/yellow]"
+                    )
+                    log_runtime(
+                        "local_whisper_cuda_fallback",
+                        error=str(exc),
+                        model=runtime["model"],
+                        fallback_model=fallback_runtime["model"],
+                        fallback_device="cpu",
+                        fallback_compute_type="int8",
+                    )
+                    return self._faster_whisper_model
+                except Exception as fallback_exc:
+                    exc = fallback_exc
             self._faster_whisper_model_key = runtime_key
             self._faster_whisper_error = str(exc)
             console.print(f"[yellow]Local Whisper unavailable:[/yellow] {exc}")
+            log_runtime(
+                "local_whisper_unavailable",
+                error=str(exc),
+                model=runtime["model"],
+                device=runtime["device"],
+                compute_type=runtime["compute_type"],
+            )
             return None
 
     def _transcribe_faster_whisper_candidate(self, audio) -> TranscriptCandidate:
