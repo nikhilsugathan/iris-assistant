@@ -127,6 +127,7 @@ class ActionExecutor:
         self.is_windows  = platform.system() == "Windows"
         self.pending_action         = None
         self.pending_verdict        = None
+        self.pending_action_started_at = None
         self.pending_action_source  = "unknown"
         self.pending_security_reason = ""
         self.pending_presence_check = False
@@ -446,10 +447,7 @@ class ActionExecutor:
             return "Say the extension you want, or cancel."
 
         if self._matches_any_phrase(text, NO_WORDS):
-            self.pending_action = None
-            self.pending_verdict = None
-            self.pending_security_reason = ""
-            self._clarification_options = []
+            self._clear_pending_action()
             return "Cancelled."
 
         selected_ext = None
@@ -480,6 +478,11 @@ class ActionExecutor:
         plan = self.pending_action
         verdict = self.pending_verdict
 
+        if self._pending_permission_timed_out():
+            self._audit_pending("CONFIRM_ONCE_TIMED_OUT", source=self.current_input_source)
+            self._clear_pending_action()
+            return "That request timed out. Say it again if you still want me to proceed."
+
         # ── Yes — proceed ──
         if self._matches_any_phrase(text, SESSION_APPROVAL_WORDS):
             if plan and verdict and self._remember_session_approval(
@@ -488,20 +491,19 @@ class ActionExecutor:
                 source=self.current_input_source,
             ):
                 self._audit_pending("CONFIRM_ONCE_SESSION_APPROVED", source=self.current_input_source)
-                return self._execute_pending()
+                result = self._execute_pending()
+                return self._prepend_confirmation_echo(plan, verdict, result)
             return "I can only remember exact safe-to-repeat actions for this session. Say go ahead to run it once."
 
         if self._matches_any_phrase(text, YES_WORDS):
             self._audit_pending("CONFIRM_ONCE_APPROVED", source=self.current_input_source)
-            return self._execute_pending()
+            result = self._execute_pending()
+            return self._prepend_confirmation_echo(plan, verdict, result)
 
         # ── No — cancel ──
         if self._matches_any_phrase(text, NO_WORDS):
             self._audit_pending("CONFIRM_ONCE_CANCELLED", source=self.current_input_source)
-            self.pending_action  = None
-            self.pending_verdict = None
-            self.pending_action_source = "unknown"
-            self.pending_security_reason = ""
+            self._clear_pending_action()
             return "Cancelled."
 
         # ── Anything else — ask once more plainly ──
@@ -567,6 +569,58 @@ class ActionExecutor:
             )
 
         return ""
+
+    def _set_pending_action(
+        self,
+        plan: dict | None,
+        verdict: str | None,
+        *,
+        source: str | None = None,
+        security_reason: str | None = None,
+        reset_clarification: bool = True,
+    ) -> None:
+        self.pending_action = plan
+        self.pending_verdict = verdict
+        self.pending_action_started_at = datetime.now() if plan is not None else None
+        self.pending_action_source = source or self.current_input_source or "unknown"
+        self.pending_security_reason = security_reason or ""
+        if reset_clarification:
+            self._clarification_options = []
+
+    def _clear_pending_action(self, *, reset_clarification: bool = True) -> None:
+        self.pending_action = None
+        self.pending_verdict = None
+        self.pending_action_started_at = None
+        self.pending_action_source = "unknown"
+        self.pending_security_reason = ""
+        if reset_clarification:
+            self._clarification_options = []
+
+    def _pending_permission_timed_out(self) -> bool:
+        if not self.waiting_for_permission():
+            return False
+        started_at = self.pending_action_started_at
+        if started_at is None:
+            return False
+        timeout_seconds = max(15, int(getattr(Config, "APPROVAL_TIMEOUT_SECONDS", 60)))
+        return datetime.now() - started_at > timedelta(seconds=timeout_seconds)
+
+    def _prepend_confirmation_echo(self, plan: dict | None, verdict: str | None, result: str) -> str:
+        prefix = self._confirmation_echo(plan or {}, verdict or SAFE)
+        if not prefix:
+            return result
+        return f"{prefix} {result}".strip()
+
+    def _confirmation_echo(self, plan: dict, verdict: str) -> str:
+        if self._approval_level(plan, verdict) < 2:
+            return ""
+
+        command = str(plan.get("command", "") or "").strip()
+        if not command:
+            return ""
+        if len(command) > 220:
+            command = command[:217].rstrip() + "..."
+        return f"Confirmed. Running: {command}."
 
     def _is_simple_task(self, plan: dict, verdict: str) -> bool:
         """
@@ -640,11 +694,7 @@ class ActionExecutor:
         if verdict == BLOCKED:
             self._log(f"BLOCKED: {plan.get('command','?')} — {security_msg}")
             self._audit("BLOCKED", plan, source=self.current_input_source)
-            self.pending_action = None
-            self.pending_verdict = None
-            self.pending_action_source = "unknown"
-            self.pending_security_reason = ""
-            self._clarification_options = []
+            self._clear_pending_action()
             return f"{header}\n{security_msg}"
 
         if verdict in {WARNING, NEED_ADMIN}:
@@ -654,25 +704,27 @@ class ActionExecutor:
                     f"SESSION-AUTO-EXECUTE [{verdict}]: {plan.get('command') or plan.get('description','?')}"
                 )
                 self._audit("SESSION_APPROVAL_REUSED", plan, source=self.current_input_source)
-                self.pending_action = plan
-                self.pending_verdict = verdict
-                self.pending_action_source = self.current_input_source
-                self.pending_security_reason = security_msg
+                self._set_pending_action(
+                    plan,
+                    verdict,
+                    source=self.current_input_source,
+                    security_reason=security_msg,
+                )
                 return self._execute_pending()
 
         # ── Simple safe task — execute with verification ─────
         if self._is_simple_task(plan, verdict):
             self._log(f"AUTO-EXECUTE: {plan.get('action_type')} — {plan.get('description','')}")
-            self.pending_action  = plan
-            self.pending_verdict = verdict
-            self.pending_security_reason = security_msg
+            self._set_pending_action(plan, verdict, security_reason=security_msg)
             return self._execute_pending()
 
         # ── Everything else — ask for permission ─────────────
-        self.pending_action  = plan
-        self.pending_verdict = verdict
-        self.pending_action_source = self.current_input_source
-        self.pending_security_reason = security_msg
+        self._set_pending_action(
+            plan,
+            verdict,
+            source=self.current_input_source,
+            security_reason=security_msg,
+        )
         permission_msg = self._build_permission_request(plan)
 
         if verdict in (WARNING, NEED_ADMIN):
@@ -1294,7 +1346,7 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
         if approval_level == 1:
             msg += " This is a voice-confirmed file change."
         elif approval_level >= 2:
-            msg += " This needs explicit approval."
+            msg += " This needs explicit approval, and I'll run only this exact command if you confirm."
         if is_dangerous:
             msg += " ⚠ This is destructive and can't be undone."
         if self._can_remember_approval(plan, self.pending_verdict or WARNING, self.pending_security_reason):
@@ -1330,9 +1382,12 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
 
         # Plan C needs explicit permission
         if selected.get("requires_permission"):
-            self.pending_action  = selected
-            self.pending_verdict = WARNING
-            self.pending_action_source = self.current_input_source
+            self._set_pending_action(
+                selected,
+                WARNING,
+                source=self.current_input_source,
+                security_reason="Plan C requires explicit approval.",
+            )
             self.pending_plans   = None
             desc = selected.get("description", "this action")
             cmd  = selected.get("command", "")
@@ -1344,9 +1399,7 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
 
         # Plans A and B — just execute
         self.pending_plans   = None
-        self.pending_action  = selected
-        self.pending_verdict = SAFE
-        self.pending_action_source = self.current_input_source
+        self._set_pending_action(selected, SAFE, source=self.current_input_source)
         return self._execute_pending()
 
     def _execute_pending(self) -> str:
@@ -1361,11 +1414,7 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
         """
         plan    = self.pending_action
         verdict = self.pending_verdict
-        self.pending_action  = None
-        self.pending_verdict = None
-        self.pending_action_source = "unknown"
-        self.pending_security_reason = ""
-        self._clarification_options = []
+        self._clear_pending_action()
 
         if not plan:
             return "There isn't anything pending right now."
@@ -1755,9 +1804,13 @@ Be specific and practical. No preamble."""
 
         if needs_clarification:
             # Store plan so we can resume after user answers
-            self.pending_action = plan
+            self._set_pending_action(
+                plan,
+                SAFE,
+                source=self.current_input_source,
+                reset_clarification=False,
+            )
             self.pending_action["filename"] = filename
-            self.pending_verdict = SAFE
             self._clarification_options = options
             opts_str = " or ".join(options)
             return (

@@ -12,6 +12,7 @@ speaker, or live browser interaction:
 
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 import sys
 
@@ -468,8 +469,32 @@ def main() -> None:
         engine.autocorrect.correct_input = original_correct_input
         safe_command_result = engine.process_user_input("yes", speak_response=True)
         assert_true(
-            safe_command_result.response == "Done. smoke command complete.",
-            "Shell command did not execute after confirmation.",
+            "confirmed. running: echo smoke." in safe_command_result.response.lower()
+            and "smoke command complete" in safe_command_result.response.lower(),
+            "Shell command did not echo the exact command before execution.",
+        )
+
+        timed_out_prompt = engine.process_user_input("run smoke safe command", speak_response=True)
+        assert_true(
+            engine.executor.waiting_for_permission(),
+            "Timed-out shell command setup should still start with a live pending approval.",
+        )
+        engine.executor.pending_action_started_at = (
+            engine.executor.pending_action_started_at - timedelta(seconds=Config.APPROVAL_TIMEOUT_SECONDS + 5)
+        )
+        timed_out_result = engine.process_user_input("yes", speak_response=True)
+        assert_true(
+            "timed out" in timed_out_result.response.lower(),
+            "Expired pending approval did not return the timeout message.",
+        )
+        assert_true(
+            not engine.executor.waiting_for_permission(),
+            "Expired pending approval should clear instead of remaining live.",
+        )
+        post_timeout_chat = engine.process_user_input("give me a smoke response", speak_response=True)
+        assert_true(
+            post_timeout_chat.response == "Smoke response ready.",
+            "Executor did not return to normal routing after a timed-out approval.",
         )
 
         desktop_warning = engine.process_user_input("run smoke type action", speak_response=True)
@@ -651,8 +676,9 @@ def main() -> None:
         )
         package_install_result = engine.process_user_input("yes", speak_response=True)
         assert_true(
-            package_install_result.response == "Installed 'Git'.",
-            "Package install action did not execute after confirmation.",
+            "confirmed. running:" in package_install_result.response.lower()
+            and "installed 'git'." in package_install_result.response.lower(),
+            "Package install action did not echo the exact command before execution.",
         )
         assert_true(
             ("install", "Git") in package_events,
@@ -666,8 +692,9 @@ def main() -> None:
         )
         package_uninstall_result = engine.process_user_input("yes", speak_response=True)
         assert_true(
-            package_uninstall_result.response == "Uninstalled 'Git'.",
-            "Package uninstall action did not execute after confirmation.",
+            "confirmed. running:" in package_uninstall_result.response.lower()
+            and "uninstalled 'git'." in package_uninstall_result.response.lower(),
+            "Package uninstall action did not echo the exact command before execution.",
         )
         assert_true(
             ("uninstall", "Git") in package_events,
@@ -779,6 +806,10 @@ def main() -> None:
         assert_true(
             "CONFIRM_ONCE_CANCELLED" in audit_text,
             "Audit log did not capture the cancelled warning event.",
+        )
+        assert_true(
+            "CONFIRM_ONCE_TIMED_OUT" in audit_text,
+            "Audit log did not capture the timed-out approval event.",
         )
         assert_true(
             "CONFIRM_ONCE_SESSION_APPROVED" in audit_text and "SESSION_APPROVAL_REUSED" in audit_text,
