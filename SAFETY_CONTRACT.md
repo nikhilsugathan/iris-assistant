@@ -38,7 +38,9 @@ These actions require explicit user approval before execution. Long-term, IRIS m
 - external downloads from unverified or indirect sources
 - browser actions that could submit data, authenticate, or operate on user accounts
 - desktop automation actions such as typing, hotkeys, and coordinate-based clicks
+- window-targeted typing and hotkeys that act inside a named live application
 - named-window clicks and other live UI interactions with side effects
+- closing a live window where unsaved work could be lost
 - destructive actions against user files, folders, or applications
 - any future Overdrive path that changes safety posture, execution speed, or approval behavior
 
@@ -51,6 +53,7 @@ These actions are acceptable for silent or near-silent execution when they stay 
 - safe file creation in user space
 - safe folder creation in user space
 - inspecting open windows and reporting the active window
+- arranging windows with low-risk layout changes such as focus, minimize, maximize, or restore
 - opening local applications
 - focusing an existing local window
 - opening trusted URLs

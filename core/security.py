@@ -125,6 +125,9 @@ DESKTOP_AUTOMATION_ACTIONS = {
     "press_hotkey",
     "click_at",
     "click_window",
+    "type_in_window",
+    "press_hotkey_in_window",
+    "window_state",
 }
 
 
@@ -349,6 +352,38 @@ class SecurityGuard:
                 f"This clicks inside the '{window_title}' window {detail}. "
                 f"Confirm before IRIS proceeds."
             )
+
+        if action == "type_in_window":
+            window_title = str(plan.get("window_title", "") or "that window")
+            text_to_type = str(plan.get("text_to_type", "") or "")
+            if self._contains_sensitive_text(text_to_type):
+                return WARNING, (
+                    f"This types potentially sensitive text into the '{window_title}' window. "
+                    "Confirm before IRIS proceeds."
+                )
+            return WARNING, (
+                f"This focuses the '{window_title}' window and types into it. "
+                "Confirm before IRIS proceeds."
+            )
+
+        if action == "press_hotkey_in_window":
+            window_title = str(plan.get("window_title", "") or "that window")
+            keys = ", ".join(plan.get("keys", []) or [])
+            return WARNING, (
+                f"This focuses the '{window_title}' window and sends the keyboard shortcut "
+                f"({keys or 'shortcut'}). Confirm before IRIS proceeds."
+            )
+
+        if action == "window_state":
+            window_title = str(plan.get("window_title", "") or "that window")
+            state = str(plan.get("window_state", "") or "").strip().lower()
+            if state == "close":
+                return WARNING, (
+                    f"This closes the '{window_title}' window and could discard unsaved work. "
+                    "Confirm before IRIS proceeds."
+                )
+            if state in {"minimize", "maximize", "restore"}:
+                return SAFE, ""
 
         return SAFE, ""
 

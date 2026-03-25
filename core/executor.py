@@ -20,6 +20,14 @@ SUPPORTED ACTION TYPES:
   - open_app         : launch an application
   - search_web       : open browser search
   - write_to_file    : append/write content to existing file
+  - type_text        : type into the currently focused window
+  - type_in_window   : focus a named window, then type into it
+  - press_hotkey     : send a shortcut to the currently focused window
+  - press_hotkey_in_window : focus a named window, then send a shortcut
+  - click_at         : click absolute screen coordinates
+  - click_window     : click inside a named window
+  - focus_window     : bring a named window to the front
+  - window_state     : minimize / maximize / restore / close a named window
 
 SAFETY:
   - IRIS always announces what it will do before doing it when confirmation is required
@@ -165,6 +173,7 @@ class ActionExecutor:
             "button": plan.get("button", ""),
             "clicks": plan.get("clicks", 0),
             "window_title": plan.get("window_title", ""),
+            "window_state": plan.get("window_state", ""),
             "verdict": verdict,
         }
         return json.dumps(relevant, sort_keys=True)
@@ -191,6 +200,16 @@ class ActionExecutor:
         if action_type in {"click_at", "type_text", "press_hotkey"}:
             return True
 
+        if action_type in {"click_window", "type_in_window", "press_hotkey_in_window"}:
+            return bool(str(plan.get("window_title", "") or "").strip())
+
+        if action_type == "window_state" and str(plan.get("window_state", "") or "").strip().lower() in {
+            "minimize",
+            "maximize",
+            "restore",
+        }:
+            return True
+
         return True
 
     def _remember_session_approval(self, plan: dict, verdict: str, source: str | None = None) -> bool:
@@ -215,6 +234,18 @@ class ActionExecutor:
             if not active_window_title:
                 return False
             entry["active_window_title"] = active_window_title
+        elif action_type in {"click_window", "type_in_window", "press_hotkey_in_window"}:
+            target_window_title = str(plan.get("window_title", "") or "").strip()
+            if not target_window_title:
+                return False
+            entry["target_window_title"] = target_window_title
+        elif action_type == "window_state":
+            target_window_title = str(plan.get("window_title", "") or "").strip()
+            window_state = str(plan.get("window_state", "") or "").strip().lower()
+            if not target_window_title or window_state not in {"minimize", "maximize", "restore"}:
+                return False
+            entry["target_window_title"] = target_window_title
+            entry["window_state"] = window_state
 
         self.session_approvals[self._approval_fingerprint(plan, verdict)] = entry
         return True
@@ -267,10 +298,13 @@ class ActionExecutor:
 
     DESKTOP_ACTION_PATTERNS = [
         r"^(?:type|enter)\s+.+",
+        r"^(?:type|enter)\s+.+\s+(?:in|into)\s+.+",
+        r"^(?:press|hit|use|send)\s+.+\s+(?:in|into)\s+.+",
         r"^(?:press|hit|use)\s+(?:the\s+)?(?:hotkey|shortcut|key(?: combo)?)\s+.+",
         r"^(?:press|hit)\s+(?:ctrl|control|alt|shift|win|windows|enter|tab|escape|esc|space|backspace|delete|left|right|up|down|f\d+)\b.*",
         r"^(?:click|double click|right click)\s+(?:at\s+)?\d+\s*(?:,|\s)\s*\d+",
         r"^(?:click|double click|right click)\s+(?:the\s+)?(?:center\s+of|inside|in)\s+.+",
+        r"^(?:minimize|maximize|restore|close)\s+.+",
         r"^(?:focus|activate|switch to|bring(?:\s+the)?(?:\s+window)?(?:\s+for)?|bring .+ to front)\s+.+",
         r"^(?:what(?:'s| is)|which)\s+(?:window|app)\s+is\s+active\??$",
         r"^active window\??$",
@@ -576,6 +610,27 @@ class ActionExecutor:
                 "is_dangerous": False,
             }
 
+        window_type_match = re.search(
+            r"^(?:type|enter)\s+(.+?)\s+(?:in|into)\s+(?:the\s+)?(.+?)(?:\s+window)?$",
+            raw,
+            re.IGNORECASE,
+        )
+        if window_type_match:
+            text_to_type = window_type_match.group(1).strip()
+            window_title = window_type_match.group(2).strip(" \"'")
+            if (text_to_type.startswith('"') and text_to_type.endswith('"')) or (
+                text_to_type.startswith("'") and text_to_type.endswith("'")
+            ):
+                text_to_type = text_to_type[1:-1]
+            if text_to_type and window_title:
+                return {
+                    "action_type": "type_in_window",
+                    "description": f"type text into '{window_title}': {text_to_type[:60]}",
+                    "text_to_type": text_to_type,
+                    "window_title": window_title,
+                    "is_dangerous": False,
+                }
+
         type_match = re.search(r"^(?:type|enter)\s+(.+)$", raw, re.IGNORECASE)
         if type_match:
             text_to_type = type_match.group(1).strip()
@@ -633,6 +688,24 @@ class ActionExecutor:
                 "is_dangerous": False,
             }
 
+        hotkey_window_match = re.search(
+            r"^(?:press|hit|use|send)\s+(?:the\s+)?(?:(?:hotkey|shortcut|key(?: combo)?)\s+)?(.+?)\s+(?:in|into)\s+(?:the\s+)?(.+?)(?:\s+window)?$",
+            raw,
+            re.IGNORECASE,
+        )
+        if hotkey_window_match:
+            keys = self._parse_key_sequence(hotkey_window_match.group(1))
+            window_title = hotkey_window_match.group(2).strip(" \"'")
+            if keys and window_title:
+                rendered = " + ".join(keys)
+                return {
+                    "action_type": "press_hotkey_in_window",
+                    "description": f"send keyboard shortcut {rendered} to '{window_title}'",
+                    "keys": keys,
+                    "window_title": window_title,
+                    "is_dangerous": False,
+                }
+
         hotkey_match = re.search(
             r"^(?:press|hit|use)\s+(?:the\s+)?(?:(?:hotkey|shortcut|key(?: combo)?)\s+)?(.+)$",
             raw,
@@ -647,6 +720,23 @@ class ActionExecutor:
                     "description": f"send keyboard shortcut {rendered}",
                     "keys": keys,
                     "is_dangerous": False,
+                }
+
+        window_state_match = re.search(
+            r"^(minimize|maximize|restore|close)\s+(?:the\s+)?(?:window\s+)?(?:for\s+)?(.+?)(?:\s+window)?$",
+            raw,
+            re.IGNORECASE,
+        )
+        if window_state_match:
+            action = window_state_match.group(1).lower()
+            window_title = window_state_match.group(2).strip(" \"'")
+            if window_title and window_title.lower() not in {"overdrive", "iris", "the app"}:
+                return {
+                    "action_type": "window_state",
+                    "description": f"{action} the '{window_title}' window",
+                    "window_title": window_title,
+                    "window_state": action,
+                    "is_dangerous": action == "close",
                 }
 
         focus_match = re.search(
@@ -874,7 +964,7 @@ User request: "{user_input}"
 
 Respond ONLY with valid JSON in this exact format:
 {{
-  "action_type": "install_package | run_command | create_file | create_folder | open_app | search_web | write_to_file | type_text | press_hotkey | click_at | click_window | focus_window | active_window | list_windows | unsupported",
+  "action_type": "install_package | run_command | create_file | create_folder | open_app | search_web | write_to_file | type_text | type_in_window | press_hotkey | press_hotkey_in_window | click_at | click_window | focus_window | window_state | active_window | list_windows | unsupported",
   "description": "what will happen in plain English",
   "command": "exact shell command if needed",
   "filename": "full file path if creating a file",
@@ -889,6 +979,7 @@ Respond ONLY with valid JSON in this exact format:
   "button": "left",
   "clicks": 1,
   "window_title": "",
+  "window_state": "",
   "is_dangerous": false
 }}
 
@@ -897,10 +988,13 @@ Rules:
 - For installs use winget (apps) or pip (python packages)
 - is_dangerous only true for delete/format/uninstall
 - Use type_text for typing into the currently focused app
+- Use type_in_window for typing into a specific named window
 - Use press_hotkey for keyboard shortcuts and single key presses
+- Use press_hotkey_in_window for keyboard shortcuts targeted at a specific named window
 - Use click_at only when the request explicitly provides coordinates
 - Use click_window when the user wants to click inside a named window
 - Use focus_window when the user wants a specific window brought to the front
+- Use window_state when the user wants to minimize, maximize, restore, or close a named window
 - Use active_window to report the currently focused desktop window
 - Use list_windows to report visible titled windows
 - For rename: use command like: ren "full\\path\\oldname" "newname"
@@ -1079,8 +1173,16 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
                 result = self._type_text(plan)
                 success = result == "Done."
 
+            elif action_type == "type_in_window":
+                result = self._type_in_window(plan)
+                success = result == "Done."
+
             elif action_type == "press_hotkey":
                 result = self._press_hotkey(plan)
+                success = result == "Done."
+
+            elif action_type == "press_hotkey_in_window":
+                result = self._press_hotkey_in_window(plan)
                 success = result == "Done."
 
             elif action_type == "click_at":
@@ -1094,6 +1196,13 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
             elif action_type == "focus_window":
                 result = self._focus_window(plan)
                 success = result.startswith("Focused ")
+
+            elif action_type == "window_state":
+                result = self._window_state(plan)
+                success = any(
+                    result.startswith(prefix)
+                    for prefix in ("Minimized ", "Maximized ", "Restored ", "Closed ")
+                )
 
             elif action_type == "active_window":
                 result = self._active_window(plan)
@@ -1127,7 +1236,7 @@ if start command failed, try webbrowser; if one path failed, try a different pat
 
 Respond ONLY with valid JSON in this exact format:
 {{
-  "action_type": "install_package | run_command | create_file | create_folder | open_app | search_web | write_to_file | type_text | press_hotkey | click_at | click_window | focus_window | active_window | list_windows",
+  "action_type": "install_package | run_command | create_file | create_folder | open_app | search_web | write_to_file | type_text | type_in_window | press_hotkey | press_hotkey_in_window | click_at | click_window | focus_window | window_state | active_window | list_windows",
   "description": "alternative approach in plain English",
   "command": "alternative shell command if needed",
   "filename": "full file path if needed",
@@ -1142,6 +1251,7 @@ Respond ONLY with valid JSON in this exact format:
   "button": "left",
   "clicks": 1,
   "window_title": "",
+  "window_state": "",
   "is_dangerous": false
 }}
 
@@ -1415,6 +1525,16 @@ Be specific and practical. No preamble."""
         self._log(f"TYPED TEXT: {text_to_type[:120]}")
         return "Done."
 
+    def _type_in_window(self, plan: dict) -> str:
+        text_to_type = str(plan.get("text_to_type", "") or "")
+        window_title = str(plan.get("window_title", "") or "")
+        try:
+            self.desktop.type_in_window(window_title, text_to_type)
+        except DesktopControlError as exc:
+            return f"Window typing didn't work: {exc}"
+        self._log(f"TYPED IN WINDOW: {window_title} :: {text_to_type[:120]}")
+        return "Done."
+
     def _press_hotkey(self, plan: dict) -> str:
         keys = plan.get("keys", []) or []
         try:
@@ -1422,6 +1542,16 @@ Be specific and practical. No preamble."""
         except DesktopControlError as exc:
             return f"Keyboard shortcut didn't work: {exc}"
         self._log(f"PRESSED HOTKEY: {' + '.join(keys)}")
+        return "Done."
+
+    def _press_hotkey_in_window(self, plan: dict) -> str:
+        keys = plan.get("keys", []) or []
+        window_title = str(plan.get("window_title", "") or "")
+        try:
+            self.desktop.press_hotkey_in_window(window_title, keys)
+        except DesktopControlError as exc:
+            return f"Window shortcut didn't work: {exc}"
+        self._log(f"PRESSED HOTKEY IN WINDOW: {window_title} :: {' + '.join(keys)}")
         return "Done."
 
     def _click_at(self, plan: dict) -> str:
@@ -1458,6 +1588,16 @@ Be specific and practical. No preamble."""
         except DesktopControlError as exc:
             return f"Window focus didn't work: {exc}"
         self._log(f"FOCUSED WINDOW: {window_title}")
+        return result.message
+
+    def _window_state(self, plan: dict) -> str:
+        window_title = str(plan.get("window_title", "") or "")
+        window_state = str(plan.get("window_state", "") or "")
+        try:
+            result = self.desktop.set_window_state(window_title, window_state)
+        except DesktopControlError as exc:
+            return f"Window control didn't work: {exc}"
+        self._log(f"WINDOW STATE: {window_state} :: {window_title}")
         return result.message
 
     def _active_window(self, plan: dict) -> str:

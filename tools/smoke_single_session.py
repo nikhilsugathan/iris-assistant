@@ -40,8 +40,16 @@ class FakeDesktop:
     def type_text(self, text: str, interval: float = 0.02):
         self.events.append(("type_text", text))
 
+    def type_in_window(self, title_query: str, text: str, interval: float = 0.02):
+        self.current_window_title = title_query
+        self.events.append(("type_in_window", (title_query, text)))
+
     def press_hotkey(self, keys: list[str]):
         self.events.append(("press_hotkey", tuple(keys)))
+
+    def press_hotkey_in_window(self, title_query: str, keys: list[str]):
+        self.current_window_title = title_query
+        self.events.append(("press_hotkey_in_window", (title_query, tuple(keys))))
 
     def click_at(self, x: int, y: int, button: str = "left", clicks: int = 1):
         self.events.append(("click_at", (x, y, button, clicks)))
@@ -98,6 +106,14 @@ class FakeDesktop:
         class Result:
             message = "Done."
         return Result()
+
+    def set_window_state(self, title_query: str, state: str):
+        self.current_window_title = title_query
+        self.events.append(("window_state", (title_query, state)))
+        class Result:
+            def __init__(self, title: str, desired_state: str):
+                self.message = f"{desired_state.capitalize()}d '{title}'."
+        return Result(title_query, state)
 
 
 def main() -> None:
@@ -169,6 +185,14 @@ def main() -> None:
                 "text_to_type": "IRIS desktop smoke",
                 "is_dangerous": False,
             }
+        if user_input == "run smoke type in window":
+            return {
+                "action_type": "type_in_window",
+                "description": "type smoke text into the Claude window",
+                "text_to_type": "IRIS targeted smoke",
+                "window_title": "Claude",
+                "is_dangerous": False,
+            }
         if user_input == "run smoke list windows":
             return {
                 "action_type": "list_windows",
@@ -189,6 +213,30 @@ def main() -> None:
                 "button": "left",
                 "clicks": 1,
                 "is_dangerous": False,
+            }
+        if user_input == "run smoke hotkey window":
+            return {
+                "action_type": "press_hotkey_in_window",
+                "description": "send ctrl+l to the Chrome window",
+                "window_title": "Chrome",
+                "keys": ["ctrl", "l"],
+                "is_dangerous": False,
+            }
+        if user_input == "run smoke maximize window":
+            return {
+                "action_type": "window_state",
+                "description": "maximize the Claude window",
+                "window_title": "Claude",
+                "window_state": "maximize",
+                "is_dangerous": False,
+            }
+        if user_input == "run smoke close window":
+            return {
+                "action_type": "window_state",
+                "description": "close the Claude window",
+                "window_title": "Claude",
+                "window_state": "close",
+                "is_dangerous": True,
             }
         if user_input == "run smoke chain step 1":
             return {
@@ -313,6 +361,59 @@ def main() -> None:
             "Named window focus did not reach the desktop controller.",
         )
 
+        type_window_warning = engine.process_user_input("run smoke type in window", speak_response=True)
+        assert_true(
+            engine.executor.waiting_for_permission(),
+            "Window-targeted typing should wait for confirmation.",
+        )
+        assert_true(
+            "claude" in type_window_warning.response.lower(),
+            "Window-targeted typing warning did not mention the target window.",
+        )
+        type_window_result = engine.process_user_input("always for this session", speak_response=True)
+        assert_true(
+            type_window_result.response == "Done.",
+            "Window-targeted typing did not execute after approval.",
+        )
+        assert_true(
+            ("type_in_window", ("Claude", "IRIS targeted smoke")) in fake_desktop.events,
+            "Window-targeted typing did not reach the desktop controller.",
+        )
+        type_window_auto = engine.process_user_input("run smoke type in window", speak_response=True)
+        assert_true(
+            type_window_auto.response == "Done.",
+            "Window-targeted typing session approval was not reused.",
+        )
+        assert_true(
+            not engine.executor.waiting_for_permission(),
+            "Remembered targeted typing approval should execute immediately.",
+        )
+
+        hotkey_window_warning = engine.process_user_input("run smoke hotkey window", speak_response=True)
+        assert_true(
+            engine.executor.waiting_for_permission(),
+            "Window-targeted shortcut should wait for confirmation.",
+        )
+        hotkey_window_result = engine.process_user_input("yes", speak_response=True)
+        assert_true(
+            hotkey_window_result.response == "Done.",
+            "Window-targeted shortcut did not execute after confirmation.",
+        )
+        assert_true(
+            ("press_hotkey_in_window", ("Chrome", ("ctrl", "l"))) in fake_desktop.events,
+            "Window-targeted shortcut did not reach the desktop controller.",
+        )
+
+        maximize_window_result = engine.process_user_input("run smoke maximize window", speak_response=True)
+        assert_true(
+            maximize_window_result.response == "Maximized 'Claude'.",
+            "Window maximize action did not execute as a safe auto action.",
+        )
+        assert_true(
+            ("window_state", ("Claude", "maximize")) in fake_desktop.events,
+            "Window maximize action did not reach the desktop controller.",
+        )
+
         list_windows_result = engine.process_user_input("run smoke list windows", speak_response=True)
         assert_true(
             "Visible windows:" in list_windows_result.response,
@@ -346,6 +447,25 @@ def main() -> None:
         assert_true(
             ("click_window", ("Claude", None, None, "left", 1)) in fake_desktop.events,
             "Window click action did not reach the desktop controller.",
+        )
+
+        close_window_warning = engine.process_user_input("run smoke close window", speak_response=True)
+        assert_true(
+            engine.executor.waiting_for_permission(),
+            "Window close action should wait for confirmation.",
+        )
+        assert_true(
+            "discard unsaved work" in close_window_warning.response.lower(),
+            "Window close warning did not surface the unsaved-work risk.",
+        )
+        close_window_result = engine.process_user_input("yes", speak_response=True)
+        assert_true(
+            close_window_result.response == "Closed 'Claude'.",
+            "Window close action did not execute cleanly after confirmation.",
+        )
+        assert_true(
+            ("window_state", ("Claude", "close")) in fake_desktop.events,
+            "Window close action did not reach the desktop controller.",
         )
 
         chain_step_one = engine.process_user_input("run smoke chain step 1", speak_response=True)

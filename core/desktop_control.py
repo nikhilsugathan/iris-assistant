@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import difflib
+import time
 
 
 class DesktopControlError(RuntimeError):
@@ -151,23 +152,9 @@ class DesktopController:
         )
 
     def focus_window(self, title_query: str) -> DesktopActionResult:
-        query = (title_query or "").strip()
-        if not query:
-            raise DesktopControlError("There is no window title to focus.")
-
-        self._ensure_interactive_session()
-        window = self._find_best_window(query)
-        if window is None:
-            known = self.list_window_titles(limit=8)
-            sample = ", ".join(known) if known else "no visible titled windows"
-            raise DesktopControlError(
-                f"I couldn't find a window matching '{query}'. Available examples: {sample}."
-            )
-
+        window = self._require_window(title_query, "focus")
         try:
-            if getattr(window, "isMinimized", False):
-                window.restore()
-            window.activate()
+            self._bring_window_to_front(window)
         except Exception as exc:
             raise DesktopControlError(f"Couldn't focus the '{window.title}' window: {exc}") from exc
 
@@ -181,23 +168,9 @@ class DesktopController:
         button: str = "left",
         clicks: int = 1,
     ) -> DesktopActionResult:
-        query = (title_query or "").strip()
-        if not query:
-            raise DesktopControlError("There is no window title to click.")
-
-        self._ensure_interactive_session()
-        window = self._find_best_window(query)
-        if window is None:
-            known = self.list_window_titles(limit=8)
-            sample = ", ".join(known) if known else "no visible titled windows"
-            raise DesktopControlError(
-                f"I couldn't find a window matching '{query}'. Available examples: {sample}."
-            )
-
+        window = self._require_window(title_query, "click")
         try:
-            if getattr(window, "isMinimized", False):
-                window.restore()
-            window.activate()
+            self._bring_window_to_front(window)
         except Exception as exc:
             raise DesktopControlError(f"Couldn't bring '{window.title}' to the front before clicking: {exc}") from exc
 
@@ -219,6 +192,76 @@ class DesktopController:
             target_y = snapshot.top + rel_y
 
         return self.click_at(target_x, target_y, button=button, clicks=clicks)
+
+    def type_in_window(self, title_query: str, text: str, interval: float = 0.02) -> DesktopActionResult:
+        if not text:
+            raise DesktopControlError("There is no text to type.")
+
+        window = self._require_window(title_query, "type in")
+        try:
+            self._bring_window_to_front(window)
+        except Exception as exc:
+            raise DesktopControlError(f"Couldn't focus the '{window.title}' window before typing: {exc}") from exc
+
+        backend = self._pyautogui()
+        backend.write(text, interval=max(0.0, float(interval)))
+        return DesktopActionResult(True, "Done.")
+
+    def press_hotkey_in_window(self, title_query: str, keys: list[str]) -> DesktopActionResult:
+        normalized = [normalize_key_token(key) for key in (keys or []) if str(key).strip()]
+        if not normalized:
+            raise DesktopControlError("There is no key or shortcut to press.")
+
+        window = self._require_window(title_query, "send a shortcut to")
+        try:
+            self._bring_window_to_front(window)
+        except Exception as exc:
+            raise DesktopControlError(
+                f"Couldn't focus the '{window.title}' window before sending a shortcut: {exc}"
+            ) from exc
+
+        backend = self._pyautogui()
+        if len(normalized) == 1:
+            backend.press(normalized[0])
+        else:
+            backend.hotkey(*normalized)
+        return DesktopActionResult(True, "Done.")
+
+    def set_window_state(self, title_query: str, state: str) -> DesktopActionResult:
+        desired = (state or "").strip().lower()
+        if desired not in {"minimize", "maximize", "restore", "close"}:
+            raise DesktopControlError(f"'{state}' is not a supported window action.")
+
+        window = self._require_window(title_query, desired)
+        title = str(window.title)
+
+        try:
+            if desired == "minimize":
+                window.minimize()
+                return DesktopActionResult(True, f"Minimized '{title}'.")
+
+            if desired == "maximize":
+                if getattr(window, "isMinimized", False):
+                    window.restore()
+                window.maximize()
+                try:
+                    window.activate()
+                except Exception:
+                    pass
+                return DesktopActionResult(True, f"Maximized '{title}'.")
+
+            if desired == "restore":
+                window.restore()
+                try:
+                    window.activate()
+                except Exception:
+                    pass
+                return DesktopActionResult(True, f"Restored '{title}'.")
+
+            window.close()
+            return DesktopActionResult(True, f"Closed '{title}'.")
+        except Exception as exc:
+            raise DesktopControlError(f"Couldn't {desired} the '{title}' window: {exc}") from exc
 
     def type_text(self, text: str, interval: float = 0.02) -> DesktopActionResult:
         if not text:
@@ -274,6 +317,27 @@ class DesktopController:
             raise DesktopControlError(
                 "The Windows session appears to be locked. Unlock the desktop before IRIS can control windows, clicks, or typing."
             )
+
+    def _require_window(self, title_query: str, verb: str):
+        query = (title_query or "").strip()
+        if not query:
+            raise DesktopControlError(f"There is no window title to {verb}.")
+
+        self._ensure_interactive_session()
+        window = self._find_best_window(query)
+        if window is None:
+            known = self.list_window_titles(limit=8)
+            sample = ", ".join(known) if known else "no visible titled windows"
+            raise DesktopControlError(
+                f"I couldn't find a window matching '{query}'. Available examples: {sample}."
+            )
+        return window
+
+    def _bring_window_to_front(self, window) -> None:
+        if getattr(window, "isMinimized", False):
+            window.restore()
+        window.activate()
+        time.sleep(0.12)
 
     def _snapshot_from_window(self, window, active: bool = False) -> WindowSnapshot:
         return WindowSnapshot(
