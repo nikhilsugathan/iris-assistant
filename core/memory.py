@@ -8,6 +8,7 @@ Stores everything locally in a JSON file on your PC.
 import json
 import os
 import threading
+import tempfile
 import time
 from datetime import datetime
 from typing import List, Dict
@@ -45,11 +46,19 @@ class Memory:
     def _save_now(self):
         """Persist memory to disk."""
         with self._save_lock:
+            temp_path = None
             try:
                 memory_dir = os.path.dirname(self.memory_file)
                 if memory_dir:
                     os.makedirs(memory_dir, exist_ok=True)
-                with open(self.memory_file, "w", encoding="utf-8") as f:
+                target_dir = memory_dir or os.getcwd()
+                fd, temp_path = tempfile.mkstemp(
+                    prefix="iris-memory-",
+                    suffix=".tmp",
+                    dir=target_dir,
+                    text=True,
+                )
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
                     json.dump(
                         {
                             "last_updated": datetime.now().isoformat(),
@@ -59,10 +68,18 @@ class Memory:
                         indent=2,
                         ensure_ascii=True,
                     )
+                os.replace(temp_path, self.memory_file)
+                temp_path = None
                 self._dirty = False
             except OSError:
                 # Memory persistence should never crash the runtime loop.
                 pass
+            finally:
+                if temp_path:
+                    try:
+                        os.unlink(temp_path)
+                    except OSError:
+                        pass
 
     def _save_loop(self) -> None:
         debounce_seconds = max(0.05, int(getattr(Config, "MEMORY_SAVE_DEBOUNCE_MS", 160)) / 1000.0)

@@ -68,6 +68,8 @@ class Config:
     ]
     PRIMARY_BRAIN = "ollama_fast"
     FALLBACK_BRAIN = "ollama_smart"
+    ACTION_PLAN_MAX_TOKENS = int(os.getenv("ACTION_PLAN_MAX_TOKENS", "480"))
+    COMMAND_FIX_MAX_TOKENS = int(os.getenv("COMMAND_FIX_MAX_TOKENS", "160"))
 
     GEMINI_MODEL = "gemini-2.0-flash"
     GROQ_MODEL = "llama-3.3-70b-versatile"

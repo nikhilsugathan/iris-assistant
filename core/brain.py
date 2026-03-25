@@ -655,9 +655,11 @@ Return only the improved response."""
         use_persona: bool,
         use_memory: bool,
         extra_system: str = "",
+        max_tokens: int | None = None,
     ) -> Optional[str]:
         """Call a local Ollama model."""
         base_url = getattr(Config, "OLLAMA_BASE_URL", "http://localhost:11434")
+        token_limit = max(32, int(max_tokens if max_tokens is not None else 150))
 
         # Build full prompt with persona and memory
         full_prompt = ""
@@ -679,7 +681,7 @@ Return only the improved response."""
                     "stream": False,
                     "options": {
                         "temperature": 0.4,
-                        "num_predict": 150,   # Keep responses short for voice
+                        "num_predict": token_limit,
                         "stop": ["\nUser:", "\nHuman:", "\n\n"],
                     }
                 },
@@ -705,29 +707,30 @@ Return only the improved response."""
         use_memory: bool = False,
         allow_failover: bool = True,
         extra_system: str = "",
+        max_tokens: int | None = None,
     ) -> Optional[str]:
         try:
             if api == "ollama_fast":
                 return self._call_ollama(
                     getattr(Config, "OLLAMA_MODEL_FAST", "phi3.5"),
-                    prompt, use_persona, use_memory, extra_system=extra_system
+                    prompt, use_persona, use_memory, extra_system=extra_system, max_tokens=max_tokens
                 )
             if api == "ollama_smart":
                 return self._call_ollama(
                     getattr(Config, "OLLAMA_MODEL_SMART", "llama3.1:8b"),
-                    prompt, use_persona, use_memory, extra_system=extra_system
+                    prompt, use_persona, use_memory, extra_system=extra_system, max_tokens=max_tokens
                 )
             if api == "ollama_deep":
                 return self._call_ollama(
                     getattr(Config, "OLLAMA_MODEL_DEEP", "deepseek-r1:8b"),
-                    prompt, use_persona, use_memory, extra_system=extra_system
+                    prompt, use_persona, use_memory, extra_system=extra_system, max_tokens=max_tokens
                 )
             if api == "claude":
-                return self._call_claude(prompt, use_persona, use_memory, extra_system=extra_system)
+                return self._call_claude(prompt, use_persona, use_memory, extra_system=extra_system, max_tokens=max_tokens)
             if api == "gemini":
-                return self._call_gemini(prompt, use_persona, use_memory, extra_system=extra_system)
+                return self._call_gemini(prompt, use_persona, use_memory, extra_system=extra_system, max_tokens=max_tokens)
             if api == "groq":
-                return self._call_groq(prompt, use_persona, use_memory, extra_system=extra_system)
+                return self._call_groq(prompt, use_persona, use_memory, extra_system=extra_system, max_tokens=max_tokens)
             if api == "perplexity":
                 return self._call_perplexity(prompt)
         except Exception:
@@ -741,10 +744,18 @@ Return only the improved response."""
                         use_memory=use_memory,
                         allow_failover=False,
                         extra_system=extra_system,
+                        max_tokens=max_tokens,
                     )
         return None
 
-    def _call_groq(self, prompt: str, use_persona: bool, use_memory: bool, extra_system: str = "") -> Optional[str]:
+    def _call_groq(
+        self,
+        prompt: str,
+        use_persona: bool,
+        use_memory: bool,
+        extra_system: str = "",
+        max_tokens: int | None = None,
+    ) -> Optional[str]:
         headers = {
             "Authorization": f"Bearer {Config.GROQ_API_KEY}",
             "Content-Type": "application/json",
@@ -761,7 +772,7 @@ Return only the improved response."""
             "model": Config.GROQ_MODEL,
             "messages": messages,
             "temperature": 0.4,
-            "max_tokens": 150,   # Voice responses stay short and fast
+            "max_tokens": max(32, int(max_tokens if max_tokens is not None else 150)),
         }
 
         response = requests.post(
@@ -774,7 +785,14 @@ Return only the improved response."""
         data = response.json()
         return data["choices"][0]["message"]["content"].strip()
 
-    def _call_gemini(self, prompt: str, use_persona: bool, use_memory: bool, extra_system: str = "") -> Optional[str]:
+    def _call_gemini(
+        self,
+        prompt: str,
+        use_persona: bool,
+        use_memory: bool,
+        extra_system: str = "",
+        max_tokens: int | None = None,
+    ) -> Optional[str]:
         from google import genai
         from google.genai import types
 
@@ -792,13 +810,20 @@ Return only the improved response."""
             contents=messages,
             config=types.GenerateContentConfig(
                 system_instruction=self._persona_text(extra_system) if use_persona else None,
-                max_output_tokens=500,
+                max_output_tokens=max(64, int(max_tokens if max_tokens is not None else 500)),
                 temperature=0.4,
             ),
         )
         return getattr(response, "text", None)
 
-    def _call_claude(self, prompt: str, use_persona: bool, use_memory: bool, extra_system: str = "") -> Optional[str]:
+    def _call_claude(
+        self,
+        prompt: str,
+        use_persona: bool,
+        use_memory: bool,
+        extra_system: str = "",
+        max_tokens: int | None = None,
+    ) -> Optional[str]:
         headers = {
             "x-api-key": Config.CLAUDE_API_KEY,
             "anthropic-version": "2023-06-01",
@@ -818,7 +843,7 @@ Return only the improved response."""
 
         payload = {
             "model": Config.CLAUDE_MODEL,
-            "max_tokens": 700,
+            "max_tokens": max(64, int(max_tokens if max_tokens is not None else 700)),
             "temperature": 0.4,
             "system": system_text,
             "messages": [{"role": "user", "content": final_prompt}],

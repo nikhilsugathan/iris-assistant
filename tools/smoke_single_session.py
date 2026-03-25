@@ -19,6 +19,7 @@ WORKSPACE = Path(__file__).resolve().parents[1]
 if str(WORKSPACE) not in sys.path:
     sys.path.insert(0, str(WORKSPACE))
 
+from config import Config
 from core.engine import IRISEngine
 
 
@@ -141,6 +142,7 @@ def main() -> None:
     original_pattern_match = engine.executor._pattern_match
     original_manage_package = engine.executor._manage_package
     original_run_command = engine.executor._run_command
+    original_call_api = engine.executor.brain._call_api
 
     def fake_speak(text: str) -> None:
         spoken_messages.append(text)
@@ -401,6 +403,46 @@ def main() -> None:
         )
         cancel_result = engine.process_user_input("no", speak_response=True)
         assert_true(cancel_result.response == "Cancelled.", "Warning action did not cancel cleanly.")
+
+        unsafe_write_path = Path.home() / ".ssh" / "authorized_keys"
+        unsafe_write_result = engine.executor._write_to_file(
+            {
+                "filename": str(unsafe_write_path),
+                "content": "smoke key",
+            }
+        )
+        assert_true(
+            "restricted system or credential area" in unsafe_write_result.lower(),
+            "Unsafe write target was not rejected.",
+        )
+
+        safe_append_file = smoke_dir / "safe_append.txt"
+        if safe_append_file.exists():
+            safe_append_file.unlink()
+        safe_write_result = engine.executor._write_to_file(
+            {
+                "filename": str(safe_append_file),
+                "content": "safe smoke append",
+            }
+        )
+        assert_true(safe_write_result == "Done.", "Safe write target did not append successfully.")
+        assert_true(
+            "safe smoke append" in safe_append_file.read_text(encoding="utf-8"),
+            "Safe write target did not receive the appended content.",
+        )
+
+        planner_calls: list[dict] = []
+        engine.executor.brain._call_api = lambda api, prompt, **kwargs: planner_calls.append({"api": api, **kwargs}) or '{"action_type":"unsupported"}'  # type: ignore[method-assign]
+        plan = engine.executor._ai_plan("perform a novel smoke action")
+        assert_true(
+            plan is not None and plan.get("action_type") == "unsupported",
+            "AI planner smoke did not parse the mocked JSON response.",
+        )
+        assert_true(
+            planner_calls and planner_calls[-1].get("max_tokens") == Config.ACTION_PLAN_MAX_TOKENS,
+            "AI planner did not request the dedicated action-planning token budget.",
+        )
+        engine.executor.brain._call_api = original_call_api
 
         safe_command_prompt = engine.process_user_input("run smoke safe command", speak_response=True)
         assert_true(
@@ -749,6 +791,7 @@ def main() -> None:
         print("PASS: IRIS single-session smoke test completed.")
         print(f"Artifact: {smoke_file}")
     finally:
+        engine.executor.brain._call_api = original_call_api
         engine.voice.speak = original_speak
         engine.brain.think = original_think
         engine.executor._pattern_match = original_pattern_match

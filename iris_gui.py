@@ -421,13 +421,19 @@ class VoiceStandbyWorker(QtCore.QThread):
 
         if result.should_exit:
             if result.response and not getattr(result, "exit_immediately", False):
-                self.engine.voice.speak(result.response)
+                self.engine.voice.speak_background(result.response)
             else:
                 self.engine.voice.stop_speaking()
             self.event.emit({"type": "shutdown", "immediate": getattr(result, "exit_immediately", False)})
             return False
+
+        keep_followup_open = self._should_hold_followup_open()
         if result.response:
-            self.engine.voice.speak(result.response)
+            if keep_followup_open:
+                self.engine.voice.speak(result.response)
+            else:
+                self.engine.voice.speak_background(result.response)
+                return True
 
         for _ in range(follow_up_turns):
             if self.isInterruptionRequested() or self.should_pause():
@@ -448,15 +454,34 @@ class VoiceStandbyWorker(QtCore.QThread):
             self.event.emit({"type": "result", "result": result})
             if result.should_exit:
                 if result.response and not getattr(result, "exit_immediately", False):
-                    self.engine.voice.speak(result.response)
+                    self.engine.voice.speak_background(result.response)
                 else:
                     self.engine.voice.stop_speaking()
                 self.event.emit({"type": "shutdown", "immediate": getattr(result, "exit_immediately", False)})
                 return False
             if result.response:
-                self.engine.voice.speak(result.response)
+                if self._should_hold_followup_open():
+                    self.engine.voice.speak(result.response)
+                else:
+                    self.engine.voice.speak_background(result.response)
+                    return True
 
         return True
+
+    def _should_hold_followup_open(self) -> bool:
+        executor = getattr(self.engine, "executor", None)
+        if executor is None:
+            return False
+        return any(
+            (
+                executor.waiting_for_followup(),
+                executor.waiting_for_clarification(),
+                executor.waiting_for_plan_choice(),
+                executor.waiting_for_presence_check(),
+                executor.waiting_for_permission(),
+                bool(getattr(self.engine.copilot, "active", False)),
+            )
+        )
 
 
 class IrisWindow(QtWidgets.QMainWindow):

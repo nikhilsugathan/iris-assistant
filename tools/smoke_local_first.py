@@ -35,7 +35,7 @@ class FakeSystemIntel:
         if "battery" in lowered:
             return "Battery is at 82% and currently charging."
         if "computer name" in lowered:
-            return "This machine is named NIKHI-DESKTOP."
+            return "This machine is named IRIS-TEST-PC."
         return None
 
 
@@ -77,7 +77,7 @@ def test_system_routing() -> None:
 
         host_result = engine.process_user_input("what is my computer name", speak_response=False)
         assert_true(
-            "NIKHI-DESKTOP" in host_result.response,
+            "IRIS-TEST-PC" in host_result.response,
             "Hostname query did not route through the local system-intel handler.",
         )
 

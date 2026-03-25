@@ -21,7 +21,7 @@ if str(WORKSPACE) not in sys.path:
 from PySide6 import QtWidgets
 
 from config import Config
-from core.engine import IRISEngine
+from core.engine import EngineResult, IRISEngine
 from iris_gui import VoiceStandbyWorker
 
 
@@ -41,6 +41,8 @@ class FakeVoice:
         self._wake_inputs = ["iris"]
         self._command_inputs = ["please terminate the app"]
         self.spoken: list[str] = []
+        self.sync_spoken: list[str] = []
+        self.background_spoken: list[str] = []
         self.command_interrupt_flags: list[bool] = []
 
     def set_state_callback(self, callback) -> None:
@@ -71,11 +73,13 @@ class FakeVoice:
 
     def speak(self, text: str) -> None:
         self.spoken.append(text)
+        self.sync_spoken.append(text)
         self._emit_state("speaking")
         self._emit_state("idle")
 
     def speak_background(self, text: str):
         self.spoken.append(text)
+        self.background_spoken.append(text)
         self._emit_state("speaking")
         self._emit_state("idle")
         return None
@@ -103,6 +107,7 @@ def main() -> None:
         app = QtWidgets.QApplication([])
 
     engine = IRISEngine(text_mode=True)
+    normal_engine = None
     fake_voice = FakeVoice()
     engine.voice = fake_voice
 
@@ -139,9 +144,51 @@ def main() -> None:
             "Wake acknowledgement handoff should start command listening without interrupting the quick acknowledgement.",
         )
 
+        normal_engine = IRISEngine(text_mode=True)
+        normal_voice = FakeVoice()
+        normal_engine.voice = normal_voice
+        normal_engine.begin_slow_voice_ack = lambda user_input, enabled=True: None  # type: ignore[method-assign]
+        normal_engine.finish_slow_voice_ack = lambda token, stop_audio=True: None  # type: ignore[method-assign]
+        normal_engine.process_user_input = lambda command_text, speak_response=False, input_source="voice": EngineResult(  # type: ignore[method-assign]
+            label=Config.PUBLIC_NAME,
+            response="Queued response.",
+            should_exit=False,
+            mode="action",
+        )
+        follow_up_calls: list[bool] = []
+        normal_engine.listen_for_voice_command = lambda interrupt_speech=True: follow_up_calls.append(bool(interrupt_speech)) or ""  # type: ignore[method-assign]
+        normal_engine.should_end_followup = lambda text: False  # type: ignore[method-assign]
+        normal_engine.executor.waiting_for_followup = lambda: False  # type: ignore[method-assign]
+        normal_engine.executor.waiting_for_clarification = lambda: False  # type: ignore[method-assign]
+        normal_engine.executor.waiting_for_plan_choice = lambda: False  # type: ignore[method-assign]
+        normal_engine.executor.waiting_for_presence_check = lambda: False  # type: ignore[method-assign]
+        normal_engine.executor.waiting_for_permission = lambda: False  # type: ignore[method-assign]
+        normal_engine.copilot.active = False
+
+        normal_worker = VoiceStandbyWorker(normal_engine, should_pause=lambda: False)
+        handled = normal_worker._handle_command("queued response", "queued response", follow_up_turns=4)
+        assert_true(handled, "Normal standby handling should keep the voice worker alive.")
+        assert_true(
+            normal_voice.sync_spoken == [],
+            "Non-interactive voice results should not block the standby worker with synchronous speech.",
+        )
+        assert_true(
+            normal_voice.background_spoken == ["Queued response."],
+            "Non-interactive voice results should be queued in background speech.",
+        )
+        assert_true(
+            follow_up_calls == [],
+            "Normal voice results should return to wake standby instead of forcing an empty follow-up listen loop.",
+        )
+
         print("PASS: IRIS voice standby smoke test completed.")
     finally:
         engine.shutdown()
+        try:
+            if normal_engine is not None:
+                normal_engine.shutdown()
+        except Exception:
+            pass
         if owns_app:
             app.quit()
 

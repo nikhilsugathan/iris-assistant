@@ -684,6 +684,81 @@ class ActionExecutor:
         text = str(value or "")
         return '"' + text.replace('"', '\\"') + '"'
 
+    def _normalize_path_target(self, path_value: str) -> str:
+        raw = str(path_value or "").strip().strip('"')
+        if not raw:
+            return ""
+        expanded = os.path.expandvars(os.path.expanduser(raw))
+        return os.path.abspath(os.path.normpath(expanded))
+
+    def _is_within_path(self, candidate: str, root: str) -> bool:
+        if not candidate or not root:
+            return False
+        try:
+            return os.path.commonpath([candidate, root]) == root
+        except ValueError:
+            return False
+
+    def _allowed_write_roots(self) -> list[str]:
+        home = self._normalize_path_target(os.path.expanduser("~"))
+        roots = [
+            self._normalize_path_target(os.getcwd()),
+            self._normalize_path_target(self._get_desktop_path()),
+            self._normalize_path_target(os.path.join(home, "Documents")),
+            self._normalize_path_target(os.path.join(home, "Downloads")),
+            self._normalize_path_target(os.path.join(home, "Pictures")),
+            self._normalize_path_target(os.path.join(home, "Music")),
+            self._normalize_path_target(os.path.join(home, "Videos")),
+            self._normalize_path_target(os.path.join(home, "OneDrive")),
+        ]
+
+        deduped: list[str] = []
+        for root in roots:
+            if root and root not in deduped:
+                deduped.append(root)
+        return deduped
+
+    def _restricted_write_roots(self) -> list[str]:
+        home = self._normalize_path_target(os.path.expanduser("~"))
+        roots = [
+            self._normalize_path_target(os.environ.get("WINDIR", "")),
+            self._normalize_path_target(os.environ.get("ProgramFiles", "")),
+            self._normalize_path_target(os.environ.get("ProgramFiles(x86)", "")),
+            self._normalize_path_target(os.environ.get("ProgramData", "")),
+            self._normalize_path_target(os.path.join(home, "AppData")),
+            self._normalize_path_target(os.path.join(home, ".ssh")),
+            self._normalize_path_target(os.path.join(home, ".aws")),
+            self._normalize_path_target(os.path.join(home, ".config")),
+        ]
+
+        deduped: list[str] = []
+        for root in roots:
+            if root and root not in deduped:
+                deduped.append(root)
+        return deduped
+
+    def _validate_write_path(self, target_path: str, directory_target: bool = False) -> tuple[str | None, str]:
+        normalized = self._normalize_path_target(target_path)
+        if not normalized:
+            return None, "I couldn't determine a file path for that change."
+
+        scope_target = normalized if directory_target else self._normalize_path_target(os.path.dirname(normalized) or normalized)
+
+        for blocked_root in self._restricted_write_roots():
+            if self._is_within_path(normalized, blocked_root) or self._is_within_path(scope_target, blocked_root):
+                return None, (
+                    "That path points into a restricted system or credential area. "
+                    "Use Desktop, Documents, Downloads, OneDrive, or the current workspace instead."
+                )
+
+        if any(self._is_within_path(scope_target, root) for root in self._allowed_write_roots()):
+            return normalized, ""
+
+        return None, (
+            "That path is outside IRIS's allowed write areas. "
+            "Use Desktop, Documents, Downloads, OneDrive, or the current workspace."
+        )
+
     def _build_package_command(self, operation: str, package_name: str = "") -> str:
         op = (operation or "").strip().lower()
         pkg = str(package_name or "").strip()
@@ -1190,7 +1265,9 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
 
         response = self.brain._call_api(
             getattr(Config, "PRIMARY_BRAIN", "groq"), plan_prompt,
-            use_persona=False, use_memory=False
+            use_persona=False,
+            use_memory=False,
+            max_tokens=getattr(Config, "ACTION_PLAN_MAX_TOKENS", 480),
         )
 
         if not response:
@@ -1514,7 +1591,9 @@ Respond with ONLY the JSON. No explanation."""
 
         response = self.brain._call_api(
             getattr(Config, "PRIMARY_BRAIN", "groq"), prompt,
-            use_persona=False, use_memory=False
+            use_persona=False,
+            use_memory=False,
+            max_tokens=getattr(Config, "ACTION_PLAN_MAX_TOKENS", 480),
         )
 
         if not response:
@@ -1637,8 +1716,11 @@ In one sentence, what's the most likely cause and fix?
 Be specific and practical. No preamble."""
 
         response = self.brain._call_api(
-            "groq", prompt,
-            use_persona=False, use_memory=False
+            getattr(Config, "PRIMARY_BRAIN", "groq"),
+            prompt,
+            use_persona=False,
+            use_memory=False,
+            max_tokens=getattr(Config, "COMMAND_FIX_MAX_TOKENS", 160),
         )
         return response or f"Error: {error[:150]}"
 
@@ -1692,6 +1774,10 @@ Be specific and practical. No preamble."""
         else:
             filepath  = filename
 
+        filepath, path_guard_msg = self._validate_write_path(filepath)
+        if not filepath:
+            return path_guard_msg
+
         # ── Step 4: Cognitive rename if file already exists ───
         filepath, rename_msg = self._resolve_filename(filepath)
 
@@ -1734,6 +1820,10 @@ Be specific and practical. No preamble."""
         # Fix desktop path — handle OneDrive
         if "desktop" in folder.lower():
             folder = os.path.join(self._get_desktop_path(), os.path.basename(folder))
+
+        folder, path_guard_msg = self._validate_write_path(folder, directory_target=True)
+        if not folder:
+            return path_guard_msg
 
         try:
             os.makedirs(folder, exist_ok=True)
@@ -1838,6 +1928,9 @@ Be specific and practical. No preamble."""
         content  = plan.get("content", "")
         if not filename:
             return "No filename specified."
+        filename, path_guard_msg = self._validate_write_path(filename)
+        if not filename:
+            return path_guard_msg
         with open(filename, "a", encoding="utf-8") as f:
             f.write(content + "\n")
         self._log(f"WROTE TO: {filename}")
