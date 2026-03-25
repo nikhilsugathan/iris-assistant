@@ -1099,6 +1099,34 @@ def main() -> None:
             "Audit log did not capture the Overdrive activation lifecycle.",
         )
 
+        sensitive_plan = {
+            "action_type": "write_to_file",
+            "filename": str(smoke_file),
+            "content": "SUPER-SECRET-FILE-CONTENT",
+            "text_to_type": "TOP-SECRET-TYPED-TEXT",
+        }
+        approval_fingerprint = engine.executor._approval_fingerprint(sensitive_plan, "WARNING")
+        assert_true(
+            "SUPER-SECRET-FILE-CONTENT" not in approval_fingerprint
+            and "TOP-SECRET-TYPED-TEXT" not in approval_fingerprint,
+            "Session approval fingerprints should not retain raw sensitive payload text.",
+        )
+
+        for idx in range(Config.BACKGROUND_UPDATE_HISTORY_LIMIT + 5):
+            engine.executor._push_background_update(
+                f"background update {idx}",
+                success=True,
+            )
+        capped_updates = engine.drain_background_updates()
+        assert_true(
+            len(capped_updates) == Config.BACKGROUND_UPDATE_HISTORY_LIMIT,
+            "Background update history should stay capped instead of growing without bound.",
+        )
+        assert_true(
+            capped_updates[-1].get("message") == f"background update {Config.BACKGROUND_UPDATE_HISTORY_LIMIT + 4}",
+            "Background update cap should preserve the newest completion messages.",
+        )
+
         print("PASS: IRIS single-session smoke test completed.")
         print(f"Artifact: {smoke_file}")
     finally:

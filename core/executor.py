@@ -42,6 +42,7 @@ import platform
 import re
 import json
 import difflib
+import hashlib
 import logging
 import shlex
 import threading
@@ -175,7 +176,8 @@ class ActionExecutor:
         self._desktop = None   # lazy — created only when needed
         self._background_lock       = threading.Lock()
         self._background_task       = None
-        self._background_updates    = deque()
+        background_limit = max(4, int(getattr(Config, "BACKGROUND_UPDATE_HISTORY_LIMIT", 32) or 32))
+        self._background_updates    = deque(maxlen=background_limit)
         self._background_last_update = None
         self._background_cancel_event = None
         self._background_process = None
@@ -498,13 +500,13 @@ class ActionExecutor:
             "action_type": plan.get("action_type", ""),
             "command": plan.get("command", ""),
             "filename": plan.get("filename", ""),
-            "content": plan.get("content", ""),
+            "content": self._fingerprint_payload_value(plan.get("content", "")),
             "app_name": plan.get("app_name", ""),
             "package_operation": plan.get("package_operation", ""),
             "package_name": plan.get("package_name", ""),
             "search_query": plan.get("search_query", ""),
             "url": plan.get("url", ""),
-            "text_to_type": plan.get("text_to_type", ""),
+            "text_to_type": self._fingerprint_payload_value(plan.get("text_to_type", "")),
             "keys": plan.get("keys", []),
             "x": plan.get("x", 0),
             "y": plan.get("y", 0),
@@ -515,6 +517,16 @@ class ActionExecutor:
             "verdict": verdict,
         }
         return json.dumps(relevant, sort_keys=True)
+
+    def _fingerprint_payload_value(self, value: str) -> dict:
+        text = str(value or "")
+        if not text:
+            return {"len": 0, "sha256": ""}
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        return {
+            "len": len(text),
+            "sha256": digest,
+        }
 
     def _desktop_context_title(self) -> str:
         try:
