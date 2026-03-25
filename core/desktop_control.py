@@ -44,6 +44,20 @@ class DesktopActionResult:
     message: str
 
 
+@dataclass
+class WindowSnapshot:
+    title: str
+    left: int
+    top: int
+    width: int
+    height: int
+    active: bool = False
+
+    @property
+    def center(self) -> tuple[int, int]:
+        return (self.left + self.width // 2, self.top + self.height // 2)
+
+
 class DesktopController:
     LOCKED_WINDOW_TOKENS = (
         "windows default lock screen",
@@ -105,21 +119,36 @@ class DesktopController:
             raise DesktopControlError(f"Couldn't determine the active window: {exc}") from exc
 
     def list_window_titles(self, limit: int = 24) -> list[str]:
-        backend = self._pygetwindow()
-        try:
-            titles = [str(title).strip() for title in backend.getAllTitles() if str(title).strip()]
-        except Exception as exc:
-            raise DesktopControlError(f"Couldn't read the current window titles: {exc}") from exc
+        snapshots = self.list_windows(limit=limit)
+        return [item.title for item in snapshots]
 
-        seen: set[str] = set()
-        unique_titles: list[str] = []
-        for title in titles:
-            lowered = title.lower()
-            if lowered in seen:
+    def list_windows(self, limit: int = 24) -> list[WindowSnapshot]:
+        windows = self._all_windows()
+        active_title = self.get_active_window_title().strip().lower()
+        snapshots: list[WindowSnapshot] = []
+        for window in windows:
+            snapshot = self._snapshot_from_window(window, active=window.title.strip().lower() == active_title)
+            if not self._is_displayable_window(snapshot):
                 continue
-            seen.add(lowered)
-            unique_titles.append(title)
-        return unique_titles[: max(1, int(limit))]
+            snapshots.append(
+                snapshot
+            )
+        return snapshots[: max(1, int(limit))]
+
+    def describe_active_window(self) -> str:
+        title = self.get_active_window_title()
+        if not title:
+            return "I couldn't determine the active window."
+
+        window = self._find_best_window(title)
+        if window is None:
+            return f"The active window is '{title}'."
+
+        snapshot = self._snapshot_from_window(window, active=True)
+        return (
+            f"Active window: {snapshot.title} "
+            f"at {snapshot.left},{snapshot.top} sized {snapshot.width}x{snapshot.height}."
+        )
 
     def focus_window(self, title_query: str) -> DesktopActionResult:
         query = (title_query or "").strip()
@@ -143,6 +172,53 @@ class DesktopController:
             raise DesktopControlError(f"Couldn't focus the '{window.title}' window: {exc}") from exc
 
         return DesktopActionResult(True, f"Focused '{window.title}'.")
+
+    def click_window(
+        self,
+        title_query: str,
+        x: int | None = None,
+        y: int | None = None,
+        button: str = "left",
+        clicks: int = 1,
+    ) -> DesktopActionResult:
+        query = (title_query or "").strip()
+        if not query:
+            raise DesktopControlError("There is no window title to click.")
+
+        self._ensure_interactive_session()
+        window = self._find_best_window(query)
+        if window is None:
+            known = self.list_window_titles(limit=8)
+            sample = ", ".join(known) if known else "no visible titled windows"
+            raise DesktopControlError(
+                f"I couldn't find a window matching '{query}'. Available examples: {sample}."
+            )
+
+        try:
+            if getattr(window, "isMinimized", False):
+                window.restore()
+            window.activate()
+        except Exception as exc:
+            raise DesktopControlError(f"Couldn't bring '{window.title}' to the front before clicking: {exc}") from exc
+
+        snapshot = self._snapshot_from_window(window, active=True)
+        button = (button or "left").strip().lower()
+        clicks = max(1, int(clicks or 1))
+
+        if x is None or y is None:
+            target_x, target_y = snapshot.center
+        else:
+            rel_x = int(x)
+            rel_y = int(y)
+            if rel_x < 0 or rel_y < 0 or rel_x > snapshot.width or rel_y > snapshot.height:
+                raise DesktopControlError(
+                    f"Relative window coordinates {rel_x},{rel_y} fall outside '{snapshot.title}' sized "
+                    f"{snapshot.width}x{snapshot.height}."
+                )
+            target_x = snapshot.left + rel_x
+            target_y = snapshot.top + rel_y
+
+        return self.click_at(target_x, target_y, button=button, clicks=clicks)
 
     def type_text(self, text: str, interval: float = 0.02) -> DesktopActionResult:
         if not text:
@@ -199,16 +275,48 @@ class DesktopController:
                 "The Windows session appears to be locked. Unlock the desktop before IRIS can control windows, clicks, or typing."
             )
 
-    def _find_best_window(self, title_query: str):
-        backend = self._pygetwindow()
-        query = title_query.strip().lower()
-        if not query:
-            return None
+    def _snapshot_from_window(self, window, active: bool = False) -> WindowSnapshot:
+        return WindowSnapshot(
+            title=str(window.title),
+            left=int(window.left),
+            top=int(window.top),
+            width=int(window.width),
+            height=int(window.height),
+            active=active,
+        )
 
+    def _is_displayable_window(self, snapshot: WindowSnapshot) -> bool:
+        if not snapshot.title.strip():
+            return False
+        if snapshot.width <= 1 or snapshot.height <= 1:
+            return False
+        if snapshot.left <= -10000 and snapshot.top <= -10000:
+            return False
+        return True
+
+    def _all_windows(self):
+        backend = self._pygetwindow()
         try:
             windows = [window for window in backend.getAllWindows() if str(getattr(window, "title", "")).strip()]
         except Exception as exc:
             raise DesktopControlError(f"Couldn't inspect the current windows: {exc}") from exc
+
+        seen: set[str] = set()
+        unique_windows = []
+        for window in windows:
+            key = window.title.strip().lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            unique_windows.append(window)
+        return unique_windows
+
+    def _find_best_window(self, title_query: str):
+        query = title_query.strip().lower()
+        if not query:
+            return None
+
+        windows = self._all_windows()
 
         exact = [window for window in windows if window.title.strip().lower() == query]
         if exact:

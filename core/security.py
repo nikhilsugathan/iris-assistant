@@ -124,6 +124,7 @@ DESKTOP_AUTOMATION_ACTIONS = {
     "type_text",
     "press_hotkey",
     "click_at",
+    "click_window",
 }
 
 
@@ -333,6 +334,19 @@ class SecurityGuard:
             y = plan.get("y", "?")
             return WARNING, (
                 f"This clicks the desktop at screen coordinates {x},{y}. "
+                f"Confirm before IRIS proceeds."
+            )
+
+        if action == "click_window":
+            window_title = str(plan.get("window_title", "") or "that window")
+            x = plan.get("x")
+            y = plan.get("y")
+            if x is None or y is None:
+                detail = "at its center point"
+            else:
+                detail = f"at relative coordinates {x},{y}"
+            return WARNING, (
+                f"This clicks inside the '{window_title}' window {detail}. "
                 f"Confirm before IRIS proceeds."
             )
 

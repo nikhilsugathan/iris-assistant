@@ -9,6 +9,7 @@ __pycache__/
 # Memory and logs — personal data
 iris_memory.json
 iris_actions.log
+iris_audit.log
 
 # VS Code
 .vscode/

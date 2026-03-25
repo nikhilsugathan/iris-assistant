@@ -31,6 +31,11 @@ class FakeDesktop:
     def __init__(self) -> None:
         self.events: list[tuple[str, object]] = []
         self.current_window_title = "SmokePad"
+        self.windows = [
+            {"title": "SmokePad", "left": 10, "top": 20, "width": 900, "height": 700, "active": True},
+            {"title": "Claude", "left": 100, "top": 120, "width": 1200, "height": 800, "active": False},
+            {"title": "Chrome", "left": 250, "top": 160, "width": 1400, "height": 900, "active": False},
+        ]
 
     def type_text(self, text: str, interval: float = 0.02):
         self.events.append(("type_text", text))
@@ -49,6 +54,49 @@ class FakeDesktop:
         self.events.append(("focus_window", title_query))
         class Result:
             message = f"Focused '{title_query}'."
+        return Result()
+
+    def describe_active_window(self) -> str:
+        for item in self.windows:
+            if item["title"] == self.current_window_title:
+                return (
+                    f"Active window: {item['title']} at {item['left']},{item['top']} "
+                    f"sized {item['width']}x{item['height']}."
+                )
+        return f"Active window: {self.current_window_title}."
+
+    def list_windows(self, limit: int = 8):
+        class Snapshot:
+            def __init__(self, title, left, top, width, height, active):
+                self.title = title
+                self.left = left
+                self.top = top
+                self.width = width
+                self.height = height
+                self.active = active
+
+        snapshots = []
+        for item in self.windows[:limit]:
+            snapshots.append(
+                Snapshot(
+                    item["title"],
+                    item["left"],
+                    item["top"],
+                    item["width"],
+                    item["height"],
+                    item["title"] == self.current_window_title,
+                )
+            )
+        return snapshots
+
+    def list_window_titles(self, limit: int = 8):
+        return [item["title"] for item in self.windows[:limit]]
+
+    def click_window(self, title_query: str, x=None, y=None, button="left", clicks=1):
+        self.current_window_title = title_query
+        self.events.append(("click_window", (title_query, x, y, button, clicks)))
+        class Result:
+            message = "Done."
         return Result()
 
 
@@ -119,6 +167,27 @@ def main() -> None:
                 "action_type": "type_text",
                 "description": "type smoke text into the focused app",
                 "text_to_type": "IRIS desktop smoke",
+                "is_dangerous": False,
+            }
+        if user_input == "run smoke list windows":
+            return {
+                "action_type": "list_windows",
+                "description": "list visible windows",
+                "is_dangerous": False,
+            }
+        if user_input == "run smoke active window":
+            return {
+                "action_type": "active_window",
+                "description": "describe the active window",
+                "is_dangerous": False,
+            }
+        if user_input == "run smoke click window":
+            return {
+                "action_type": "click_window",
+                "description": "click in the Claude window",
+                "window_title": "Claude",
+                "button": "left",
+                "clicks": 1,
                 "is_dangerous": False,
             }
         if user_input == "run smoke chain step 1":
@@ -242,6 +311,41 @@ def main() -> None:
         assert_true(
             ("focus_window", "Claude") in fake_desktop.events,
             "Named window focus did not reach the desktop controller.",
+        )
+
+        list_windows_result = engine.process_user_input("run smoke list windows", speak_response=True)
+        assert_true(
+            "Visible windows:" in list_windows_result.response,
+            "List windows action did not return the expected inspection output.",
+        )
+        assert_true(
+            "Claude" in list_windows_result.response and "Chrome" in list_windows_result.response,
+            "List windows action did not include the expected window titles.",
+        )
+
+        active_window_result = engine.process_user_input("run smoke active window", speak_response=True)
+        assert_true(
+            "Active window:" in active_window_result.response,
+            "Active window action did not report the focused window.",
+        )
+
+        click_window_warning = engine.process_user_input("run smoke click window", speak_response=True)
+        assert_true(
+            engine.executor.waiting_for_permission(),
+            "Window click action should wait for confirmation.",
+        )
+        assert_true(
+            "claude" in click_window_warning.response.lower(),
+            "Window click action did not mention the target window in its warning.",
+        )
+        click_window_result = engine.process_user_input("yes", speak_response=True)
+        assert_true(
+            click_window_result.response == "Done.",
+            "Window click action did not execute cleanly after confirmation.",
+        )
+        assert_true(
+            ("click_window", ("Claude", None, None, "left", 1)) in fake_desktop.events,
+            "Window click action did not reach the desktop controller.",
         )
 
         chain_step_one = engine.process_user_input("run smoke chain step 1", speak_response=True)

@@ -270,7 +270,11 @@ class ActionExecutor:
         r"^(?:press|hit|use)\s+(?:the\s+)?(?:hotkey|shortcut|key(?: combo)?)\s+.+",
         r"^(?:press|hit)\s+(?:ctrl|control|alt|shift|win|windows|enter|tab|escape|esc|space|backspace|delete|left|right|up|down|f\d+)\b.*",
         r"^(?:click|double click|right click)\s+(?:at\s+)?\d+\s*(?:,|\s)\s*\d+",
+        r"^(?:click|double click|right click)\s+(?:the\s+)?(?:center\s+of|inside|in)\s+.+",
         r"^(?:focus|activate|switch to|bring(?:\s+the)?(?:\s+window)?(?:\s+for)?|bring .+ to front)\s+.+",
+        r"^(?:what(?:'s| is)|which)\s+(?:window|app)\s+is\s+active\??$",
+        r"^active window\??$",
+        r"^(?:list|show|what(?:'s| is))\s+(?:open\s+)?windows?\??$",
     ]
 
     def should_handle(self, user_input: str) -> bool:
@@ -587,6 +591,48 @@ class ActionExecutor:
                     "is_dangerous": False,
                 }
 
+        window_click_match = re.search(
+            r"^(right click|double click|click)\s+(?:the\s+)?(?:center\s+of|inside|in)\s+(.+?)(?:\s+at\s+(\d+)\s*(?:,|\s)\s*(\d+))?$",
+            raw,
+            re.IGNORECASE,
+        )
+        if window_click_match:
+            click_kind = window_click_match.group(1)
+            button = "right" if click_kind == "right click" else "left"
+            clicks = 2 if click_kind == "double click" else 1
+            window_title = window_click_match.group(2).strip(" \"'")
+            rel_x = window_click_match.group(3)
+            rel_y = window_click_match.group(4)
+            if window_title:
+                return {
+                    "action_type": "click_window",
+                    "description": (
+                        f"{click_kind} in '{window_title}'"
+                        if rel_x is None or rel_y is None
+                        else f"{click_kind} in '{window_title}' at relative {rel_x},{rel_y}"
+                    ),
+                    "window_title": window_title,
+                    "x": int(rel_x) if rel_x is not None else None,
+                    "y": int(rel_y) if rel_y is not None else None,
+                    "button": button,
+                    "clicks": clicks,
+                    "is_dangerous": False,
+                }
+
+        if re.search(r"^(?:what(?:'s| is)|which)\s+(?:window|app)\s+is\s+active\??$|^active window\??$", text):
+            return {
+                "action_type": "active_window",
+                "description": "report the active desktop window",
+                "is_dangerous": False,
+            }
+
+        if re.search(r"^(?:list|show|what(?:'s| is))\s+(?:open\s+)?windows?\??$|^what apps are open\??$", text):
+            return {
+                "action_type": "list_windows",
+                "description": "list the currently open desktop windows",
+                "is_dangerous": False,
+            }
+
         hotkey_match = re.search(
             r"^(?:press|hit|use)\s+(?:the\s+)?(?:(?:hotkey|shortcut|key(?: combo)?)\s+)?(.+)$",
             raw,
@@ -828,7 +874,7 @@ User request: "{user_input}"
 
 Respond ONLY with valid JSON in this exact format:
 {{
-  "action_type": "install_package | run_command | create_file | create_folder | open_app | search_web | write_to_file | type_text | press_hotkey | click_at | focus_window | unsupported",
+  "action_type": "install_package | run_command | create_file | create_folder | open_app | search_web | write_to_file | type_text | press_hotkey | click_at | click_window | focus_window | active_window | list_windows | unsupported",
   "description": "what will happen in plain English",
   "command": "exact shell command if needed",
   "filename": "full file path if creating a file",
@@ -853,7 +899,10 @@ Rules:
 - Use type_text for typing into the currently focused app
 - Use press_hotkey for keyboard shortcuts and single key presses
 - Use click_at only when the request explicitly provides coordinates
+- Use click_window when the user wants to click inside a named window
 - Use focus_window when the user wants a specific window brought to the front
+- Use active_window to report the currently focused desktop window
+- Use list_windows to report visible titled windows
 - For rename: use command like: ren "full\\path\\oldname" "newname"
 - Return unsupported only if truly impossible to determine
 
@@ -970,7 +1019,7 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
 
         if success:
             self._record_executed_action(plan, verdict)
-            if verdict == SAFE:
+            if self._should_count_for_presence_check(plan, verdict):
                 presence_prompt = self._note_auto_action()
                 if presence_prompt:
                     return f"{result} {presence_prompt}"
@@ -1038,9 +1087,21 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
                 result = self._click_at(plan)
                 success = result == "Done."
 
+            elif action_type == "click_window":
+                result = self._click_window(plan)
+                success = result == "Done."
+
             elif action_type == "focus_window":
                 result = self._focus_window(plan)
                 success = result.startswith("Focused ")
+
+            elif action_type == "active_window":
+                result = self._active_window(plan)
+                success = bool(result)
+
+            elif action_type == "list_windows":
+                result = self._list_windows(plan)
+                success = bool(result)
 
             else:
                 return "I don't know how to execute that type of action.", False
@@ -1066,7 +1127,7 @@ if start command failed, try webbrowser; if one path failed, try a different pat
 
 Respond ONLY with valid JSON in this exact format:
 {{
-  "action_type": "install_package | run_command | create_file | create_folder | open_app | search_web | write_to_file | type_text | press_hotkey | click_at | focus_window",
+  "action_type": "install_package | run_command | create_file | create_folder | open_app | search_web | write_to_file | type_text | press_hotkey | click_at | click_window | focus_window | active_window | list_windows",
   "description": "alternative approach in plain English",
   "command": "alternative shell command if needed",
   "filename": "full file path if needed",
@@ -1375,6 +1436,21 @@ Be specific and practical. No preamble."""
         self._log(f"CLICKED: {button} at {x},{y} ({clicks}x)")
         return "Done."
 
+    def _click_window(self, plan: dict) -> str:
+        window_title = str(plan.get("window_title", "") or "")
+        x = plan.get("x")
+        y = plan.get("y")
+        button = plan.get("button", "left")
+        clicks = plan.get("clicks", 1)
+        try:
+            self.desktop.click_window(window_title, x=x, y=y, button=button, clicks=clicks)
+        except DesktopControlError as exc:
+            return f"Window click didn't work: {exc}"
+        self._log(
+            f"CLICKED WINDOW: {window_title} ({button}, {clicks}x, {x if x is not None else 'center'},{y if y is not None else 'center'})"
+        )
+        return "Done."
+
     def _focus_window(self, plan: dict) -> str:
         window_title = str(plan.get("window_title", "") or "")
         try:
@@ -1383,6 +1459,27 @@ Be specific and practical. No preamble."""
             return f"Window focus didn't work: {exc}"
         self._log(f"FOCUSED WINDOW: {window_title}")
         return result.message
+
+    def _active_window(self, plan: dict) -> str:
+        try:
+            return self.desktop.describe_active_window()
+        except DesktopControlError as exc:
+            return f"Desktop inspection didn't work: {exc}"
+
+    def _list_windows(self, plan: dict) -> str:
+        try:
+            windows = self.desktop.list_windows(limit=8)
+        except DesktopControlError as exc:
+            return f"Desktop inspection didn't work: {exc}"
+
+        if not windows:
+            return "I couldn't find any visible titled windows."
+
+        entries = []
+        for item in windows:
+            prefix = "* " if item.active else "- "
+            entries.append(f"{prefix}{item.title} ({item.width}x{item.height} at {item.left},{item.top})")
+        return "Visible windows:\n" + "\n".join(entries)
 
     # ─────────────────────────────────────────────────────────────
     # LOGGING
@@ -1452,6 +1549,12 @@ Be specific and practical. No preamble."""
             return "Still with you? Say go ahead or cancel."
 
         return None
+
+    def _should_count_for_presence_check(self, plan: dict, verdict: str) -> bool:
+        if verdict != SAFE:
+            return False
+        action_type = plan.get("action_type", "")
+        return action_type not in {"active_window", "list_windows"}
 
     def _record_executed_action(self, plan: dict, verdict: str) -> None:
         record = {
