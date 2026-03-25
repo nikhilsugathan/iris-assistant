@@ -53,7 +53,7 @@ class Brain:
 
                 # Check which models are actually downloaded
                 for model, key in [(fast_model, "ollama_fast"), (smart_model, "ollama_smart"), (deep_model, "ollama_deep")]:
-                    if any(model.split(":")[0] in m for m in models):
+                    if any(self._ollama_model_matches(model, available_name) for available_name in models):
                         available.append(key)
                         print(f"  [✓] Ollama {key} ({model}) detected")
 
@@ -82,6 +82,17 @@ class Brain:
             print("  [!] No APIs found")
 
         return available
+
+    def _ollama_model_matches(self, configured_model: str, available_name: str) -> bool:
+        configured = str(configured_model or "").strip().lower()
+        available = str(available_name or "").strip().lower()
+        if not configured or not available:
+            return False
+        if available == configured:
+            return True
+        if ":" not in configured:
+            return available.split(":", 1)[0] == configured
+        return available.startswith(f"{configured}:")
 
     def _update_priority(self) -> None:
         priority = list(getattr(Config, "BRAIN_PRIORITY", ["groq", "gemini", "claude"]))

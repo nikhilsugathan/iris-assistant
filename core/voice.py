@@ -460,6 +460,11 @@ class Voice:
             if has_local_whisper:
                 order = ["faster_whisper", "system", "groq", "google"]
 
+        elif priority == "system_first":
+            order = ["system", "groq", "google"]
+            if has_local_whisper:
+                order = ["system", "faster_whisper", "groq", "google"]
+
         if priority == "groq_first":
             order = ["groq", "faster_whisper", "system", "google"] if has_local_whisper else ["groq", "system", "google"]
         elif priority == "google_first":

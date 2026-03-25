@@ -47,6 +47,7 @@ import shlex
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from typing import Optional, Tuple
+from urllib.parse import quote_plus
 
 from config import Config
 from core.security import SecurityGuard, SAFE, WARNING, BLOCKED, NEED_ADMIN
@@ -1070,10 +1071,12 @@ class ActionExecutor:
         search_match = re.search(r"(?:search for|search|look up|google)\s+(.+)", text)
         if search_match:
             query = search_match.group(1).strip()
+            search_url = f"https://www.google.com/search?q={quote_plus(query)}"
             return {
                 "action_type": "search_web",
                 "description": f"search for '{query}'",
                 "search_query": query,
+                "url": search_url,
                 "is_dangerous": False
             }
 
@@ -1200,9 +1203,6 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
             return json.loads(clean)
         except Exception:
             return None
-
-        # SAFE — just ask
-        return permission_msg
 
     def _build_permission_request(self, plan: dict) -> str:
         """Direct, no-nonsense permission request."""
@@ -1827,7 +1827,7 @@ Be specific and practical. No preamble."""
         query = plan.get("search_query", "")
         if not query:
             return "No search query provided."
-        url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
+        url = str(plan.get("url", "") or "").strip() or f"https://www.google.com/search?q={quote_plus(query)}"
         webbrowser.open(url)
         self._log(f"SEARCHED: {query}")
         return "Done."

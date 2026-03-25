@@ -16,7 +16,7 @@ if str(WORKSPACE) not in sys.path:
 
 from config import Config
 from core.engine import IRISEngine
-from core.voice import Voice
+from core.voice import TranscriptCandidate, Voice
 
 
 def assert_true(condition: bool, message: str) -> None:
@@ -78,6 +78,18 @@ def test_system_routing() -> None:
             engine.brain._classify_query("latest bitcoin price") == "web_search",
             "Time-sensitive market query should still escalate to live web search.",
         )
+        assert_true(
+            engine.brain._ollama_model_matches("phi3.5", "phi3.5:latest"),
+            "Ollama model matching should still accept the configured base model with a tagged variant.",
+        )
+        assert_true(
+            not engine.brain._ollama_model_matches("phi3.5", "phi3.5-mini:latest"),
+            "Ollama model matching should not treat phi3.5-mini as phi3.5.",
+        )
+        assert_true(
+            engine.brain._ollama_model_matches("llama3.1:8b", "llama3.1:8b"),
+            "Tagged Ollama model matching should accept exact configured names.",
+        )
     finally:
         engine.shutdown()
 
@@ -103,9 +115,15 @@ def test_voice_preferences() -> None:
         assert_true(tts_calls == ["system"], "TTS did not prefer the local backend first.")
 
         stt_calls: list[str] = []
-        voice._transcribe_windows = lambda audio: stt_calls.append("system") or "terminate now"
-        voice._transcribe_groq = lambda audio: stt_calls.append("groq") or ""
-        voice._transcribe_google = lambda audio: stt_calls.append("google") or ""
+        voice._supports_faster_whisper = lambda: False  # type: ignore[method-assign]
+        voice._transcribe_windows_candidate = lambda audio: stt_calls.append("system") or TranscriptCandidate(  # type: ignore[method-assign]
+            backend="system",
+            text="terminate now",
+            confidence=0.95,
+            language="en-US",
+        )
+        voice._transcribe_groq_candidate = lambda audio: stt_calls.append("groq") or TranscriptCandidate(backend="groq")  # type: ignore[method-assign]
+        voice._transcribe_google_candidate = lambda audio: stt_calls.append("google") or TranscriptCandidate(backend="google")  # type: ignore[method-assign]
 
         Config.STT_PRIORITY = "system_first"
         result = voice._transcribe_command(object())
@@ -113,8 +131,13 @@ def test_voice_preferences() -> None:
         assert_true(stt_calls == ["system"], "System-first STT did not consult the local recognizer first.")
 
         wake_calls: list[str] = []
-        voice._transcribe_windows = lambda audio: wake_calls.append("system") or "iris"
-        voice._transcribe_google = lambda audio: wake_calls.append("google") or ""
+        voice._transcribe_windows_wake_candidate = lambda audio: wake_calls.append("system") or TranscriptCandidate(  # type: ignore[method-assign]
+            backend="system",
+            text="iris",
+            confidence=0.91,
+            language="en-US",
+        )
+        voice._transcribe_google_candidate = lambda audio: wake_calls.append("google") or TranscriptCandidate(backend="google")  # type: ignore[method-assign]
 
         Config.WAKE_STT_PRIORITY = "system_first"
         wake_result = voice._transcribe_wake(object())
@@ -132,9 +155,19 @@ def test_voice_preferences() -> None:
         )
 
         guarded_stt_calls: list[str] = []
-        voice._transcribe_windows = lambda audio: guarded_stt_calls.append("system") or "local result"
-        voice._transcribe_groq = lambda audio: guarded_stt_calls.append("groq") or "cloud result"
-        voice._transcribe_google = lambda audio: guarded_stt_calls.append("google") or ""
+        voice._transcribe_windows_candidate = lambda audio: guarded_stt_calls.append("system") or TranscriptCandidate(  # type: ignore[method-assign]
+            backend="system",
+            text="local result",
+            confidence=0.95,
+            language="en-US",
+        )
+        voice._transcribe_groq_candidate = lambda audio: guarded_stt_calls.append("groq") or TranscriptCandidate(  # type: ignore[method-assign]
+            backend="groq",
+            text="cloud result",
+            confidence=1.0,
+            language="en",
+        )
+        voice._transcribe_google_candidate = lambda audio: guarded_stt_calls.append("google") or TranscriptCandidate(backend="google")  # type: ignore[method-assign]
         guarded_result = voice._transcribe_command(object())
         assert_true(
             guarded_result == "cloud result",

@@ -153,23 +153,6 @@ class IRISEngine:
                 self._speak_if_enabled(msg, speak_response)
                 return EngineResult(label=Config.PUBLIC_NAME, response=msg, should_exit=True, mode="shutdown")
 
-            corrected, _ = self.autocorrect.correct_input(user_input)
-            user_input = corrected
-
-            overdrive_result = self._maybe_handle_overdrive_command(
-                user_input,
-                speak_response=speak_response,
-                input_source=inferred_source,
-            )
-            if overdrive_result is not None:
-                self._update_self_model_after_response(overdrive_result.response, "overdrive")
-                return overdrive_result
-
-            try:
-                self.voice.stop_speaking()
-            except Exception:
-                pass
-
             if self.executor.waiting_for_followup():
                 response = self.executor.handle_followup_response(user_input)
                 if response is not None:
@@ -203,6 +186,23 @@ class IRISEngine:
                 self._update_self_model_after_response(response, "permission")
                 self._speak_if_enabled(response, speak_response)
                 return EngineResult(label=Config.PUBLIC_NAME, response=response, mode="permission")
+
+            corrected, _ = self.autocorrect.correct_input(user_input)
+            user_input = corrected
+
+            overdrive_result = self._maybe_handle_overdrive_command(
+                user_input,
+                speak_response=speak_response,
+                input_source=inferred_source,
+            )
+            if overdrive_result is not None:
+                self._update_self_model_after_response(overdrive_result.response, "overdrive")
+                return overdrive_result
+
+            try:
+                self.voice.stop_speaking()
+            except Exception:
+                pass
 
             decision = self.dialog_manager.analyze(
                 user_input,

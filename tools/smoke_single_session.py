@@ -411,6 +411,14 @@ def main() -> None:
             "shell command" in safe_command_prompt.response.lower(),
             "Shell-command approval prompt did not surface the explicit approval reason.",
         )
+        original_correct_input = engine.autocorrect.correct_input
+        engine.autocorrect.correct_input = lambda text: ("yes", 1.0)  # type: ignore[method-assign]
+        unrelated_permission_input = engine.process_user_input("what's the weather?", speak_response=True)
+        assert_true(
+            unrelated_permission_input.response == "Go ahead, or cancel?",
+            "Pending permissions should not autocorrect unrelated input into an approval.",
+        )
+        engine.autocorrect.correct_input = original_correct_input
         safe_command_result = engine.process_user_input("yes", speak_response=True)
         assert_true(
             safe_command_result.response == "Done. smoke command complete.",
