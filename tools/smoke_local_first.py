@@ -428,6 +428,43 @@ def test_inactive_mic_source_guard() -> None:
             pass
 
 
+def test_microphone_energy_threshold_clamp() -> None:
+    voice = Voice(text_mode=True)
+    voice.text_mode = False
+
+    class FakeRecognizer:
+        def __init__(self) -> None:
+            self.energy_threshold = 25000
+            self.adjust_calls = 0
+
+        def adjust_for_ambient_noise(self, source, duration=1.0) -> None:
+            self.adjust_calls += 1
+            self.energy_threshold = 25000
+
+    class FakeSource:
+        stream = object()
+
+    original_threshold = Config.MIC_ENERGY_THRESHOLD
+    original_max_threshold = Config.MIC_MAX_ENERGY_THRESHOLD
+    voice.recognizer = FakeRecognizer()
+
+    try:
+        Config.MIC_ENERGY_THRESHOLD = 60
+        Config.MIC_MAX_ENERGY_THRESHOLD = 4000
+        voice._recalibrate_with_source(FakeSource(), duration=0.1)
+        assert_true(
+            voice.recognizer.energy_threshold == 4000,
+            "Microphone calibration should clamp runaway energy thresholds to the configured maximum.",
+        )
+    finally:
+        Config.MIC_ENERGY_THRESHOLD = original_threshold
+        Config.MIC_MAX_ENERGY_THRESHOLD = original_max_threshold
+        try:
+            voice.stop()
+        except Exception:
+            pass
+
+
 def test_piper_tts_backend() -> None:
     voice = Voice(text_mode=True)
     voice.text_mode = False

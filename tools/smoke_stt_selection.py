@@ -238,6 +238,22 @@ def main() -> None:
             "Adaptive wake STT should satisfy a strong local Whisper wake transcript without a cloud fallback.",
         )
 
+        assert_true(
+            voice._wake_phrase_score("hey iris") >= 0.99,
+            "Wake phrase scoring should treat an exact wake phrase as a strong match.",
+        )
+        assert_true(
+            voice._accept_wake_candidate(
+                TranscriptCandidate(
+                    backend="system",
+                    text="hey iris",
+                    confidence=0.34,
+                    language="en-US",
+                )
+            ),
+            "System wake acceptance should allow a strong exact wake match at a lower confidence floor.",
+        )
+
         print("PASS: IRIS adaptive STT selection smoke test completed.")
     finally:
         Config.STT_PRIORITY = original_priority

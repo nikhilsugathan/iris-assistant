@@ -81,14 +81,28 @@ def main() -> None:
             "LISTEN " in window.diagnostics_label.text() and "PATH " in window.diagnostics_label.text(),
             "Runtime diagnostics did not render the voice timing path.",
         )
+        assert_true(
+            "STATE " in window.diagnostics_label.text() and "WAKE " in window.diagnostics_label.text(),
+            "Runtime diagnostics did not render the live wake-state summary.",
+        )
         engine.voice.last_transcript_uncertain = True
         engine.voice.last_transcript_backend = "faster_whisper"
         engine.voice.last_transcript_confidence = 0.61
+        engine.voice.last_listen_status = "wake_not_understood"
+        engine.voice.last_listen_detail = "Wake audio was captured, but no wake phrase was recognized."
+        engine.voice.last_rejected_wake_text = "hey artists"
+        engine.voice.last_rejected_wake_backend = "system"
+        engine.voice.last_rejected_wake_confidence = 0.44
+        engine.voice.last_rejected_wake_score = 0.82
         window.refresh_status()
         app.processEvents()
         assert_true(
             "UNCERTAIN" in window.diagnostics_label.text(),
             "Runtime diagnostics did not surface uncertain transcript state.",
+        )
+        assert_true(
+            "HEY ARTISTS" in window.diagnostics_label.text().upper(),
+            "Runtime diagnostics did not surface the strongest rejected wake phrase.",
         )
         engine.voice.last_transcript_uncertain = False
         transcript_text = window.transcript.toPlainText()

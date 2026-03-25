@@ -72,6 +72,10 @@ class Voice:
         self.last_uncertain_transcript = ""
         self.last_uncertain_transcript_backend = ""
         self.last_uncertain_transcript_confidence = 0.0
+        self.last_rejected_wake_text = ""
+        self.last_rejected_wake_backend = ""
+        self.last_rejected_wake_confidence = 0.0
+        self.last_rejected_wake_score = 0.0
         self._recent_command_language = ""
         self._recent_wake_language = ""
         self._faster_whisper_model = None
@@ -301,9 +305,25 @@ class Voice:
         if not self._source_stream_ready(source):
             raise RuntimeError("Microphone stream is not active for recalibration.")
         self.recognizer.adjust_for_ambient_noise(source, duration=max(0.1, float(duration)))
+        self._clamp_energy_threshold()
         self.last_calibrated_at = time.time()
         self.listen_failures = 0
         self.calibrated = True
+
+    def _clamp_energy_threshold(self) -> None:
+        recognizer = getattr(self, "recognizer", None)
+        if recognizer is None or not hasattr(recognizer, "energy_threshold"):
+            return
+
+        minimum = max(1, int(getattr(Config, "MIC_ENERGY_THRESHOLD", 60) or 60))
+        maximum = max(minimum, int(getattr(Config, "MIC_MAX_ENERGY_THRESHOLD", 4000) or 4000))
+        try:
+            recognizer.energy_threshold = max(
+                minimum,
+                min(maximum, int(getattr(recognizer, "energy_threshold", minimum) or minimum)),
+            )
+        except Exception:
+            pass
 
     def _maybe_recalibrate(self, source, wake_mode: bool) -> None:
         now = time.time()
@@ -369,7 +389,7 @@ class Voice:
             time.sleep(1)
             return ""
 
-        active_state = "standby" if wake_mode else "listening"
+        active_state = "listening"
         settle_state = "standby" if wake_mode else "idle"
         self.last_listen_status = "listening"
         self.last_listen_detail = ""
@@ -390,6 +410,7 @@ class Voice:
                             "Microphone stream failed to open. Another app may be using the selected input device."
                         )
                     self._maybe_recalibrate(source, wake_mode=wake_mode)
+                    self._clamp_energy_threshold()
                     if not wake_mode:
                         console.print("[dim]Listening...[/dim]")
                     audio = self.recognizer.listen(
@@ -960,6 +981,10 @@ if ($best) {{
         self.last_uncertain_transcript = ""
         self.last_uncertain_transcript_backend = ""
         self.last_uncertain_transcript_confidence = 0.0
+        self.last_rejected_wake_text = ""
+        self.last_rejected_wake_backend = ""
+        self.last_rejected_wake_confidence = 0.0
+        self.last_rejected_wake_score = 0.0
 
         for backend in order:
             attempted.append(backend)
@@ -972,6 +997,7 @@ if ($best) {{
                     self.last_transcript_attempts = " > ".join(attempted)
                     self._remember_transcript_candidate(candidate, wake_mode=True)
                     return candidate.text
+                self._remember_rejected_wake_candidate(candidate)
                 continue
 
             if backend == "system":
@@ -1037,6 +1063,23 @@ if ($best) {{
         self.last_uncertain_transcript_backend = str(candidate.backend or "")
         self.last_uncertain_transcript_confidence = float(candidate.confidence or 0.0)
 
+    def _remember_rejected_wake_candidate(self, candidate: TranscriptCandidate) -> None:
+        text = str(candidate.text or "").strip()
+        if not text:
+            return
+        score = self._wake_phrase_score(text)
+        current_score = float(getattr(self, "last_rejected_wake_score", 0.0) or 0.0)
+        current_confidence = float(getattr(self, "last_rejected_wake_confidence", 0.0) or 0.0)
+        candidate_confidence = float(candidate.confidence or 0.0)
+        if score < current_score:
+            return
+        if score == current_score and candidate_confidence <= current_confidence:
+            return
+        self.last_rejected_wake_text = text
+        self.last_rejected_wake_backend = str(candidate.backend or "")
+        self.last_rejected_wake_confidence = candidate_confidence
+        self.last_rejected_wake_score = score
+
     def _transcribe_candidate(self, backend: str, audio, wake_mode: bool = False) -> TranscriptCandidate:
         if backend == "system":
             if wake_mode:
@@ -1056,14 +1099,23 @@ if ($best) {{
             return False
         if self._looks_like_noise_transcript(text):
             return False
-        if not self._looks_like_wake_phrase(text):
+        phrase_score = self._wake_phrase_score(text)
+        if phrase_score < 0.75:
             return False
 
         threshold = float(getattr(Config, "WAKE_SYSTEM_ACCEPT_CONFIDENCE", 0.58))
         if candidate.backend == "system":
+            if phrase_score >= 0.94:
+                return candidate.confidence >= max(0.3, threshold - 0.2)
+            if phrase_score >= 0.88:
+                return candidate.confidence >= max(0.4, threshold - 0.1)
             return candidate.confidence >= threshold
         if candidate.backend == "faster_whisper":
             local_threshold = float(getattr(Config, "WAKE_LOCAL_WHISPER_ACCEPT_CONFIDENCE", 0.62))
+            if phrase_score >= 0.94:
+                return candidate.confidence >= max(0.4, local_threshold - 0.15)
+            if phrase_score >= 0.88:
+                return candidate.confidence >= max(0.48, local_threshold - 0.08)
             return candidate.confidence >= local_threshold
         return True
 
@@ -1151,26 +1203,28 @@ if ($best) {{
         return variants
 
     def _looks_like_wake_phrase(self, text: str) -> bool:
+        return self._wake_phrase_score(text) >= float(getattr(Config, "WAKE_FUZZY_THRESHOLD", 0.75))
+
+    def _wake_phrase_score(self, text: str) -> float:
         normalized = re.sub(r"[^a-z0-9'\s]+", " ", (text or "").lower()).strip()
         if not normalized:
-            return False
+            return 0.0
 
         tokens = [token for token in normalized.split() if token]
         if not tokens:
-            return False
+            return 0.0
 
         chunks = [tokens[0]]
         if len(tokens) >= 2:
             chunks.append(f"{tokens[0]} {tokens[1]}")
 
-        threshold = float(getattr(Config, "WAKE_FUZZY_THRESHOLD", 0.75))
+        best = 0.0
         for variant in self._wake_phrase_variants():
             for chunk in chunks:
                 if chunk == variant:
-                    return True
-                if difflib.SequenceMatcher(None, chunk, variant).ratio() >= threshold:
-                    return True
-        return False
+                    return 1.0
+                best = max(best, difflib.SequenceMatcher(None, chunk, variant).ratio())
+        return best
 
     # ─────────────────────────────────────────────────────────────
     # SPEAK — Edge TTS, immediate playback, no chunking lag

@@ -503,6 +503,9 @@ class IrisWindow(QtWidgets.QMainWindow):
         self._background_update_timer = QtCore.QTimer(self)
         self._background_update_timer.timeout.connect(self._poll_background_updates)
         self._background_update_timer.start(max(250, int(getattr(Config, "BACKGROUND_ACTION_POLL_MS", 700))))
+        self._runtime_diag_timer = QtCore.QTimer(self)
+        self._runtime_diag_timer.timeout.connect(self._refresh_runtime_diagnostics)
+        self._runtime_diag_timer.start(350)
         self._queue_startup_sequence()
 
         if self.settings.value("floating_mode", False, type=bool):
@@ -1017,6 +1020,7 @@ class IrisWindow(QtWidgets.QMainWindow):
         snapshot = self.engine.status_snapshot()
 
         brain = str(snapshot.get("primary_brain") or "unknown").replace("_", " ").upper()
+        voice_state = str(snapshot.get("voice_state") or "idle").replace("_", " ").upper()
         mic_ready = bool(snapshot.get("mic_ready"))
         mic_name = str(snapshot.get("selected_mic_name") or "").strip()
         if not mic_ready:
@@ -1044,6 +1048,19 @@ class IrisWindow(QtWidgets.QMainWindow):
 
         tts_display = str(snapshot.get("last_tts_backend") or "--").upper()
         audio_display = "READY" if snapshot.get("audio_ready") else "OFF"
+        listen_status = str(snapshot.get("last_listen_status") or "idle").replace("_", " ").upper()
+        listen_detail = str(snapshot.get("last_listen_detail") or "").strip()
+        if len(listen_detail) > 56:
+            listen_detail = listen_detail[:53] + "..."
+        rejected_text = str(snapshot.get("last_rejected_wake_text") or "").strip()
+        rejected_backend = str(snapshot.get("last_rejected_wake_backend") or "").replace("_", " ").upper()
+        rejected_confidence = float(snapshot.get("last_rejected_wake_confidence") or 0.0)
+        rejected_score = float(snapshot.get("last_rejected_wake_score") or 0.0)
+        if len(rejected_text) > 28:
+            rejected_text = rejected_text[:25] + "..."
+        wake_debug = "--"
+        if rejected_text:
+            wake_debug = f"{rejected_text} / {rejected_backend or '--'} {rejected_confidence:.2f} / {rejected_score:.2f}"
         background_running = bool(snapshot.get("background_action_running"))
         background_desc = str(snapshot.get("background_action_description") or "").strip()
         if len(background_desc) > 42:
@@ -1055,9 +1072,11 @@ class IrisWindow(QtWidgets.QMainWindow):
         )
 
         self.diagnostics_label.setText(
-            f"BRAIN {brain}  //  MIC {mic_display}\n"
+            f"BRAIN {brain}  //  MIC {mic_display}  //  STATE {voice_state}\n"
             f"STT {stt_display}  //  TTS {tts_display}  //  AUDIO {audio_display}\n"
             f"LISTEN {capture_ms}ms + {transcribe_ms}ms = {total_ms}ms  //  PATH {attempts or '--'}\n"
+            f"WAKE {listen_status}{f' // {listen_detail}' if listen_detail else ''}\n"
+            f"WAKE DEBUG {wake_debug}\n"
             f"JOB {background_display}"
         )
 
