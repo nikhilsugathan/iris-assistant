@@ -425,10 +425,17 @@ class VoiceStandbyWorker(QtCore.QThread):
 
 
 class IrisWindow(QtWidgets.QMainWindow):
-    def __init__(self):
+    def __init__(
+        self,
+        engine: IRISEngine | None = None,
+        start_voice_standby: bool = True,
+        enable_tray: bool = True,
+    ):
         super().__init__()
         self.settings = QtCore.QSettings("Aletheia", "IrisDesktop")
-        self.engine = IRISEngine(text_mode=False)
+        self.engine = engine or IRISEngine(text_mode=False)
+        self._start_voice_standby_enabled = bool(start_voice_standby)
+        self._tray_enabled = bool(enable_tray)
         self.signals = AppSignals()
         self.engine.voice.set_state_callback(self.signals.voice_state.emit)
         self.signals.voice_state.connect(self.on_voice_state)
@@ -448,10 +455,14 @@ class IrisWindow(QtWidgets.QMainWindow):
         self.setMinimumSize(560, 760)
 
         self._build_ui()
-        self._setup_tray()
+        if self._tray_enabled:
+            self._setup_tray()
+        else:
+            self.tray = None
         self._setup_floating_orb()
         self.refresh_status()
-        self._start_voice_standby()
+        if self._start_voice_standby_enabled:
+            self._start_voice_standby()
 
         if self.settings.value("floating_mode", False, type=bool):
             self.set_floating_mode(True, announce=False)
