@@ -73,6 +73,10 @@ def main() -> None:
         app.processEvents()
 
         assert_true(window.mode_label.text() == "SAY IRIS ANY TIME", "Dashboard mode banner did not initialize correctly.")
+        assert_true(
+            "BRAIN " in window.diagnostics_label.text() and "MIC " in window.diagnostics_label.text(),
+            "Runtime diagnostics did not render in the dashboard.",
+        )
         transcript_text = window.transcript.toPlainText()
         if getattr(Config, "STARTUP_GREETING_ENABLED", True):
             assert_true(

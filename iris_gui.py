@@ -679,6 +679,14 @@ class IrisWindow(QtWidgets.QMainWindow):
                 font-size: 11px;
                 letter-spacing: 2px;
             }
+            QLabel#DiagnosticsChip {
+                border-radius: 18px;
+                padding: 10px 14px;
+                background: rgba(255, 255, 255, 0.07);
+                color: rgba(231, 251, 255, 0.84);
+                font-size: 11px;
+                line-height: 1.4;
+            }
             """
         )
 
@@ -729,6 +737,12 @@ class IrisWindow(QtWidgets.QMainWindow):
         orbit_hint.setAlignment(QtCore.Qt.AlignCenter)
         orbit_hint.setStyleSheet("color: rgba(247, 243, 234, 0.58); font-size: 12px;")
         layout.addWidget(orbit_hint)
+
+        self.diagnostics_label = QtWidgets.QLabel("")
+        self.diagnostics_label.setObjectName("DiagnosticsChip")
+        self.diagnostics_label.setWordWrap(True)
+        self.diagnostics_label.setAlignment(QtCore.Qt.AlignCenter)
+        layout.addWidget(self.diagnostics_label)
 
         self.transcript = QtWidgets.QTextBrowser()
         self.transcript.setOpenExternalLinks(False)
@@ -956,6 +970,36 @@ class IrisWindow(QtWidgets.QMainWindow):
             self._set_mode_banner("FLOATING ORB")
         self._apply_engine_visuals()
 
+    def _refresh_runtime_diagnostics(self):
+        snapshot = self.engine.status_snapshot()
+
+        brain = str(snapshot.get("primary_brain") or "unknown").replace("_", " ").upper()
+        mic_ready = bool(snapshot.get("mic_ready"))
+        mic_name = str(snapshot.get("selected_mic_name") or "").strip()
+        if not mic_ready:
+            mic_display = "UNAVAILABLE"
+        elif not mic_name or mic_name == "Default":
+            mic_display = "DEFAULT"
+        else:
+            mic_display = mic_name
+        if len(mic_display) > 34:
+            mic_display = mic_display[:31] + "..."
+
+        stt_backend = str(snapshot.get("last_transcript_backend") or "--").upper()
+        confidence = float(snapshot.get("last_transcript_confidence") or 0.0)
+        if stt_backend != "--" and confidence > 0:
+            stt_display = f"{stt_backend} {confidence:.2f}"
+        else:
+            stt_display = stt_backend
+
+        tts_display = str(snapshot.get("last_tts_backend") or "--").upper()
+        audio_display = "READY" if snapshot.get("audio_ready") else "OFF"
+
+        self.diagnostics_label.setText(
+            f"BRAIN {brain}  //  MIC {mic_display}\n"
+            f"STT {stt_display}  //  TTS {tts_display}  //  AUDIO {audio_display}"
+        )
+
     def _set_mode_banner(self, text: str):
         self._mode_banner_base = text
         if self.engine.overdrive_active:
@@ -968,6 +1012,8 @@ class IrisWindow(QtWidgets.QMainWindow):
         self.orb.set_overdrive(overdrive)
         self.floating_window.set_overdrive(overdrive)
         self._set_mode_banner(getattr(self, "_mode_banner_base", "SAY IRIS ANY TIME"))
+        if hasattr(self, "diagnostics_label"):
+            self._refresh_runtime_diagnostics()
         if hasattr(self, "overdrive_button"):
             self.overdrive_button.setText("Disable Overdrive" if overdrive else "Enable Overdrive")
         if overdrive:

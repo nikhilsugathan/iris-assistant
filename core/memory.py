@@ -10,6 +10,8 @@ import os
 from datetime import datetime
 from typing import List, Dict
 
+from config import Config
+
 
 class Memory:
 
@@ -31,11 +33,23 @@ class Memory:
 
     def _save(self):
         """Persist memory to disk."""
-        with open(self.memory_file, "w") as f:
-            json.dump({
-                "last_updated": datetime.now().isoformat(),
-                "conversation": self.conversation
-            }, f, indent=2)
+        try:
+            memory_dir = os.path.dirname(self.memory_file)
+            if memory_dir:
+                os.makedirs(memory_dir, exist_ok=True)
+            with open(self.memory_file, "w", encoding="utf-8") as f:
+                json.dump(
+                    {
+                        "last_updated": datetime.now().isoformat(),
+                        "conversation": self.conversation,
+                    },
+                    f,
+                    indent=2,
+                    ensure_ascii=True,
+                )
+        except OSError:
+            # Memory persistence should never crash the runtime loop.
+            pass
 
     def add(self, role: str, content: str, source: str = None):
         """
@@ -52,6 +66,9 @@ class Memory:
             entry["source"] = source
 
         self.conversation.append(entry)
+        max_entries = max(20, int(getattr(Config, "MAX_MEMORY_TURNS", 8)) * 6)
+        if len(self.conversation) > max_entries:
+            self.conversation = self.conversation[-max_entries:]
         self._save()
 
     def get_context(self, max_turns: int = 20) -> List[Dict]:
@@ -79,4 +96,4 @@ class Memory:
     def summary(self) -> str:
         """Return a quick stats summary."""
         turns = len([e for e in self.conversation if e["role"] == "user"])
-        return f"{turns} exchanges since session started at {self.session_start}"
+        return f"{turns} stored exchanges. Current session started at {self.session_start}"

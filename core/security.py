@@ -35,6 +35,7 @@ BEYOND BASELINE (requires YOUR explicit permission):
 import re
 import json
 from typing import Tuple
+from urllib.parse import urlparse
 from config import Config
 
 
@@ -163,7 +164,10 @@ class SecurityGuard:
         # ── Layer 2: Admin rights check ────────────────────────
         needs_admin, admin_reason = self._check_admin_required(command)
         if needs_admin:
-            return NEED_ADMIN, f"Needs admin rights. Run as Administrator or say 'go ahead' for UAC prompt."
+            return NEED_ADMIN, (
+                "Needs admin rights. Say 'go ahead' if you want me to try it, "
+                "but Windows may still block it unless the tool can elevate itself."
+            )
 
         # ── Layer 2.5: Focused desktop automation ─────────────
         if action in DESKTOP_AUTOMATION_ACTIONS:
@@ -231,13 +235,14 @@ class SecurityGuard:
 
     def _check_url(self, url: str) -> Tuple[str, str]:
         url_lower = url.lower()
+        hostname = self._normalized_hostname(url)
 
         # Check against known safe domains
-        is_trusted = any(domain in url_lower for domain in SAFE_DOWNLOAD_DOMAINS)
+        is_trusted = self._hostname_matches_any(hostname, SAFE_DOWNLOAD_DOMAINS)
 
         # Check against warning domains first
         for domain in WARNING_DOMAINS:
-            if domain in url_lower:
+            if self._hostname_matches(hostname, domain):
                 if domain in ["bit.ly", "tinyurl.com"]:
                     return WARNING, (
                         f"The URL uses a shortener ({domain}) which hides the real "
@@ -254,7 +259,7 @@ class SecurityGuard:
 
         # Check against known blocked domains
         for domain in BLOCKED_DOMAINS:
-            if domain in url_lower:
+            if self._hostname_matches(hostname, domain):
                 return BLOCKED, (
                     f"The domain '{domain}' is flagged as potentially unsafe. "
                     f"I'm blocking this to protect you."
@@ -290,7 +295,8 @@ class SecurityGuard:
         # Executable downloaded from unverified source
         for ext in DOWNLOAD_SUSPICIOUS_EXTENSIONS:
             if ext in cmd_lower:
-                if not any(domain in (url or "").lower() for domain in SAFE_DOWNLOAD_DOMAINS):
+                hostname = self._normalized_hostname(url)
+                if not self._hostname_matches_any(hostname, SAFE_DOWNLOAD_DOMAINS):
                     return WARNING, (
                         f"This downloads a '{ext}' file from an unverified source. "
                         f"Executable files from unknown sources can contain malware. "
@@ -299,6 +305,20 @@ class SecurityGuard:
                     )
 
         return SAFE, ""
+
+    def _normalized_hostname(self, url: str) -> str:
+        parsed = urlparse(str(url or "").strip())
+        hostname = (parsed.hostname or "").strip().lower().rstrip(".")
+        return hostname
+
+    def _hostname_matches_any(self, hostname: str, domains: list[str]) -> bool:
+        return any(self._hostname_matches(hostname, domain) for domain in domains)
+
+    def _hostname_matches(self, hostname: str, domain: str) -> bool:
+        domain = str(domain or "").strip().lower().rstrip(".")
+        if not hostname or not domain:
+            return False
+        return hostname == domain or hostname.endswith("." + domain)
 
     # ─────────────────────────────────────────────────────────────
     # LAYER 5: Sensitive operations

