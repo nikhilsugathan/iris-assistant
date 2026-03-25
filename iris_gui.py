@@ -499,6 +499,10 @@ class IrisWindow(QtWidgets.QMainWindow):
             self.tray = None
         self._setup_floating_orb()
         self.refresh_status()
+        self._background_running = False
+        self._background_update_timer = QtCore.QTimer(self)
+        self._background_update_timer.timeout.connect(self._poll_background_updates)
+        self._background_update_timer.start(max(250, int(getattr(Config, "BACKGROUND_ACTION_POLL_MS", 700))))
         self._queue_startup_sequence()
 
         if self.settings.value("floating_mode", False, type=bool):
@@ -972,6 +976,36 @@ class IrisWindow(QtWidgets.QMainWindow):
             self._set_mode_banner("FLOATING ORB")
         self._apply_engine_visuals()
 
+    def _poll_background_updates(self):
+        snapshot = self.engine.status_snapshot()
+        running = bool(snapshot.get("background_action_running"))
+        description = str(snapshot.get("background_action_description") or "").strip()
+
+        if running and (not self._sticky_footer or not self.busy):
+            footer_text = (
+                f"Working in background: {description}"
+                if description
+                else "Working in the background."
+            )
+            self.footer.setText(footer_text)
+
+        updates = self.engine.drain_background_updates()
+        for update in updates:
+            label = str(update.get("label") or f"{Config.PUBLIC_NAME} (Action)")
+            message = str(update.get("message") or "").strip()
+            if not message:
+                continue
+            kind = "assistant" if update.get("success", False) else "system"
+            self.append_message(label, message, kind)
+            self.footer.setText(message)
+            if self.tray and not self.isVisible():
+                snippet = message if len(message) < 180 else message[:177] + "..."
+                self.tray.showMessage(label, snippet, self.app_icon, 7000)
+
+        if updates or running != self._background_running:
+            self._background_running = running
+            self.refresh_status()
+
     def _refresh_runtime_diagnostics(self):
         snapshot = self.engine.status_snapshot()
 
@@ -1003,11 +1037,21 @@ class IrisWindow(QtWidgets.QMainWindow):
 
         tts_display = str(snapshot.get("last_tts_backend") or "--").upper()
         audio_display = "READY" if snapshot.get("audio_ready") else "OFF"
+        background_running = bool(snapshot.get("background_action_running"))
+        background_desc = str(snapshot.get("background_action_description") or "").strip()
+        if len(background_desc) > 42:
+            background_desc = background_desc[:39] + "..."
+        background_display = (
+            f"RUNNING {background_desc}" if background_running and background_desc else "RUNNING"
+            if background_running
+            else "IDLE"
+        )
 
         self.diagnostics_label.setText(
             f"BRAIN {brain}  //  MIC {mic_display}\n"
             f"STT {stt_display}  //  TTS {tts_display}  //  AUDIO {audio_display}\n"
-            f"LISTEN {capture_ms}ms + {transcribe_ms}ms = {total_ms}ms  //  PATH {attempts or '--'}"
+            f"LISTEN {capture_ms}ms + {transcribe_ms}ms = {total_ms}ms  //  PATH {attempts or '--'}\n"
+            f"JOB {background_display}"
         )
 
     def _set_mode_banner(self, text: str):

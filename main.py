@@ -58,6 +58,16 @@ def print_response(label: str, text: str) -> None:
         return
     console.print(f"\n[bold cyan]{label}:[/bold cyan] {text}\n")
 
+
+def drain_background_updates(engine: IRISEngine) -> None:
+    for update in engine.drain_background_updates():
+        message = str(update.get("message") or "").strip()
+        if not message:
+            continue
+        label = str(update.get("label") or f"{Config.PUBLIC_NAME} (Action)")
+        print_response(label, message)
+
+
 def speak_voice_result(engine: IRISEngine, result) -> None:
     if not result.response or getattr(result, "exit_immediately", False) or getattr(result, "speech_started", False):
         return
@@ -88,10 +98,12 @@ def main() -> None:
 
     try:
         while True:
+            drain_background_updates(engine)
             if args.text:
                 user_input = voice.listen_text()
                 result = engine.process_user_input(user_input, speak_response=True, input_source="text")
                 print_response(result.label, result.response)
+                drain_background_updates(engine)
                 if result.should_exit:
                     break
                 continue
@@ -110,6 +122,7 @@ def main() -> None:
                 result = engine.process_voice_turn(stripped, input_source="voice", enable_slow_ack=True)
                 speak_voice_result(engine, result)
                 print_response(result.label, result.response)
+                drain_background_updates(engine)
                 if result.should_exit:
                     break
                 if not engine.should_hold_voice_followup_open():
@@ -129,6 +142,7 @@ def main() -> None:
                 result = engine.process_voice_turn(command, input_source="voice", enable_slow_ack=True)
                 speak_voice_result(engine, result)
                 print_response(result.label, result.response)
+                drain_background_updates(engine)
                 if result.should_exit:
                     break
                 if not engine.should_hold_voice_followup_open():
@@ -150,6 +164,7 @@ def main() -> None:
                 result = engine.process_voice_turn(follow_up, input_source="voice", enable_slow_ack=True)
                 speak_voice_result(engine, result)
                 print_response(result.label, result.response)
+                drain_background_updates(engine)
                 if result.should_exit:
                     return
                 if not engine.should_hold_voice_followup_open():

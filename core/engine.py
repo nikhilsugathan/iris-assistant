@@ -86,7 +86,7 @@ class IRISEngine:
         self.diagnostics = SelfDiagnostics()
 
     def status_snapshot(self) -> dict:
-        return {
+        snapshot = {
             "public_name": Config.PUBLIC_NAME,
             "system_name": Config.SYSTEM_NAME,
             "inner_codename": Config.INNER_CODENAME,
@@ -112,6 +112,11 @@ class IRISEngine:
             if self.overdrive_activated_at
             else None,
         }
+        snapshot.update(self.executor.background_task_snapshot())
+        return snapshot
+
+    def drain_background_updates(self) -> list[dict]:
+        return self.executor.drain_background_updates()
 
     def process_user_input(
         self,

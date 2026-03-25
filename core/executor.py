@@ -44,6 +44,8 @@ import json
 import difflib
 import logging
 import shlex
+import threading
+from collections import deque
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from typing import Optional, Tuple
@@ -117,6 +119,15 @@ class ActionExecutor:
     ALWAYS_CONFIRM_ACTIONS = {
         "run_command",
     }
+    BACKGROUND_ACTION_TYPES = {
+        "install_package",
+        "run_command",
+    }
+    BACKGROUND_PACKAGE_OPERATIONS = {
+        "install",
+        "uninstall",
+        "upgrade",
+    }
 
     def __init__(self, voice, brain):
         self.voice   = voice
@@ -145,6 +156,10 @@ class ActionExecutor:
         self._clarification_options = []
         self._browser = None   # lazy — created only when needed
         self._desktop = None   # lazy — created only when needed
+        self._background_lock       = threading.Lock()
+        self._background_task       = None
+        self._background_updates    = deque()
+        self._background_last_update = None
 
     @property
     def browser(self):
@@ -175,6 +190,153 @@ class ActionExecutor:
             if re.search(pattern, lowered):
                 return True
         return False
+
+    def background_task_snapshot(self) -> dict:
+        with self._background_lock:
+            task = dict(self._background_task) if self._background_task else {}
+            last_update = dict(self._background_last_update) if self._background_last_update else {}
+
+        return {
+            "background_action_running": bool(task),
+            "background_action_description": task.get("description", ""),
+            "background_action_started_at": task.get("started_at"),
+            "background_action_source": task.get("source", ""),
+            "background_last_update": last_update.get("message", ""),
+            "background_last_update_at": last_update.get("created_at"),
+        }
+
+    def drain_background_updates(self) -> list[dict]:
+        with self._background_lock:
+            updates = list(self._background_updates)
+            self._background_updates.clear()
+        return updates
+
+    def _background_task_active(self) -> bool:
+        with self._background_lock:
+            return self._background_task is not None
+
+    def _is_background_candidate(self, plan: dict, source: str | None) -> bool:
+        if not bool(getattr(Config, "BACKGROUND_ACTIONS_ENABLED", True)):
+            return False
+        normalized_source = str(source or "").strip().lower()
+        if bool(getattr(Config, "BACKGROUND_ACTIONS_VOICE_ONLY", True)) and normalized_source != "voice":
+            return False
+
+        action_type = str(plan.get("action_type", "") or "").strip()
+        if action_type in self.BACKGROUND_ACTION_TYPES:
+            return True
+
+        if action_type == "manage_package":
+            operation = str(plan.get("package_operation", "") or "").strip().lower()
+            return operation in self.BACKGROUND_PACKAGE_OPERATIONS
+
+        return False
+
+    def _background_action_description(self, plan: dict) -> str:
+        action_type = str(plan.get("action_type", "") or "").strip()
+        description = str(plan.get("description", "") or "").strip()
+        command = str(plan.get("command", "") or "").strip()
+
+        if description:
+            return description
+        if command:
+            return command
+        if action_type == "manage_package":
+            operation = str(plan.get("package_operation", "") or "").strip().lower()
+            package_name = str(plan.get("package_name", "") or "").strip()
+            if package_name:
+                return f"{operation} '{package_name}'".strip()
+        return action_type or "that action"
+
+    def _background_start_message(self, plan: dict) -> str:
+        command = str(plan.get("command", "") or "").strip()
+        if command:
+            return f"Starting in the background: {command}. I'll let you know when it's done."
+        return f"Starting {self._background_action_description(plan)} in the background. I'll let you know when it's done."
+
+    def _background_completion_message(self, plan: dict, result: str, success: bool) -> str:
+        cleaned = str(result or "").strip()
+        prefix = "Background action finished." if success else "Background action failed."
+        if not cleaned:
+            return prefix
+        return f"{prefix} {cleaned}"
+
+    def _push_background_update(self, message: str, *, success: bool, label: str | None = None) -> None:
+        update = {
+            "label": label or f"{Config.PUBLIC_NAME} (Action)",
+            "message": str(message or "").strip(),
+            "success": bool(success),
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        with self._background_lock:
+            self._background_last_update = update
+            self._background_updates.append(update)
+
+    def _background_worker(self, plan: dict, verdict: str, source: str | None) -> None:
+        success = False
+        result = ""
+        try:
+            result, success = self._execute_with_verify(plan)
+            if success:
+                self._record_executed_action(plan, verdict)
+                self._log(
+                    f"BACKGROUND SUCCESS [{verdict}]: {plan.get('command') or plan.get('description','?')}"
+                )
+                self._audit("BACKGROUND_COMPLETED", plan, source=source or "background")
+            else:
+                self._log(
+                    f"BACKGROUND FAILED [{verdict}]: {plan.get('command') or plan.get('description','?')} :: {result}"
+                )
+                self._audit("BACKGROUND_FAILED", plan, source=source or "background")
+        except Exception as exc:
+            result = f"That didn't work: {exc}"
+            success = False
+            self._log(
+                f"BACKGROUND EXCEPTION [{verdict}]: {plan.get('command') or plan.get('description','?')} :: {exc}"
+            )
+            self._audit("BACKGROUND_FAILED", plan, source=source or "background")
+        finally:
+            with self._background_lock:
+                self._background_task = None
+
+        message = self._background_completion_message(plan, result, success)
+        self._push_background_update(message, success=success)
+
+        if source == "voice" and message and bool(getattr(self.voice, "audio_ready", False)):
+            try:
+                self.voice.speak_background(message)
+            except Exception:
+                pass
+
+    def _start_background_action(self, plan: dict, verdict: str, source: str | None) -> str:
+        description = self._background_action_description(plan)
+        normalized_source = str(source or "").strip().lower() or "unknown"
+
+        with self._background_lock:
+            if self._background_task is not None:
+                running_description = self._background_task.get("description", "another action")
+                return (
+                    f"I'm already running {running_description} in the background. "
+                    "Let that finish before I start another heavy task."
+                )
+
+            self._background_task = {
+                "description": description,
+                "started_at": datetime.now().isoformat(timespec="seconds"),
+                "source": normalized_source,
+                "action_type": str(plan.get("action_type", "") or "").strip(),
+            }
+
+        self._log(f"BACKGROUND START [{verdict}]: {plan.get('command') or description}")
+        self._audit("BACKGROUND_STARTED", plan, source=normalized_source)
+        worker = threading.Thread(
+            target=self._background_worker,
+            args=(dict(plan), verdict, normalized_source),
+            daemon=True,
+            name="iris-background-action",
+        )
+        worker.start()
+        return self._background_start_message(plan)
 
     def _approval_fingerprint(self, plan: dict, verdict: str) -> str:
         relevant = {
@@ -1541,6 +1703,7 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
         """
         plan    = self.pending_action
         verdict = self.pending_verdict
+        source  = self.pending_action_source
         self._clear_pending_action()
 
         if not plan:
@@ -1548,6 +1711,9 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
 
         action_type = plan.get("action_type")
         self._log(f"EXECUTE [{verdict}]: {plan.get('command') or plan.get('description','?')}")
+
+        if self._is_background_candidate(plan, source):
+            return self._start_background_action(plan, verdict, source)
 
         # ── Execute and verify ────────────────────────────────
         result, success = self._execute_with_verify(plan)

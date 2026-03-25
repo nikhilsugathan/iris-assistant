@@ -15,6 +15,7 @@ from __future__ import annotations
 from datetime import timedelta
 from pathlib import Path
 import sys
+import time
 
 WORKSPACE = Path(__file__).resolve().parents[1]
 if str(WORKSPACE) not in sys.path:
@@ -136,9 +137,11 @@ def main() -> None:
 
     engine = IRISEngine(text_mode=True)
     spoken_messages: list[str] = []
+    background_spoken_messages: list[str] = []
     fake_desktop = FakeDesktop()
 
     original_speak = engine.voice.speak
+    original_speak_background = engine.voice.speak_background
     original_think = engine.brain.think
     original_think_with_stream = engine.brain.think_with_stream
     original_pattern_match = engine.executor._pattern_match
@@ -148,6 +151,10 @@ def main() -> None:
 
     def fake_speak(text: str) -> None:
         spoken_messages.append(text)
+
+    def fake_speak_background(text: str, *args, **kwargs):
+        background_spoken_messages.append(text)
+        return None
 
     def fake_think(user_input: str, council_packet=None) -> str:
         return "Smoke response ready."
@@ -303,6 +310,7 @@ def main() -> None:
         engine.executor.audit_file = str(audit_log)
         engine.executor._desktop = fake_desktop
         engine.voice.speak = fake_speak
+        engine.voice.speak_background = fake_speak_background
         engine.brain.think = fake_think
         engine.brain.think_with_stream = fake_think_with_stream
         engine.executor._pattern_match = fake_pattern_match
@@ -511,6 +519,64 @@ def main() -> None:
             and "smoke command complete" in safe_command_result.response.lower(),
             "Shell command did not echo the exact command before execution.",
         )
+
+        voice_background_calls: list[str] = []
+
+        def fake_slow_run_command(plan: dict):
+            voice_background_calls.append(str(plan.get("command", "")))
+            time.sleep(0.15)
+            return "Done. voice background smoke complete."
+
+        engine.executor._run_command = fake_slow_run_command  # type: ignore[method-assign]
+        engine.process_user_input(
+            "run smoke safe command",
+            speak_response=True,
+            input_source="voice",
+        )
+        assert_true(
+            engine.executor.waiting_for_permission(),
+            "Voice shell command should still require confirmation before background execution.",
+        )
+        voice_background_result = engine.process_user_input(
+            "yes",
+            speak_response=True,
+            input_source="voice",
+        )
+        assert_true(
+            "starting in the background: echo smoke." in voice_background_result.response.lower(),
+            "Voice long-running command did not start in the background.",
+        )
+        assert_true(
+            engine.status_snapshot().get("background_action_running"),
+            "Background action status was not exposed while the voice command was running.",
+        )
+
+        background_updates = []
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            background_updates = engine.drain_background_updates()
+            if background_updates:
+                break
+            time.sleep(0.05)
+        assert_true(background_updates, "Background command did not emit a completion update.")
+        assert_true(
+            any("background action finished." in update.get("message", "").lower() for update in background_updates),
+            "Background command completion update did not contain the expected completion message.",
+        )
+        assert_true(
+            background_spoken_messages
+            and "background action finished." in background_spoken_messages[-1].lower(),
+            "Background voice command did not announce completion through background speech.",
+        )
+        assert_true(
+            voice_background_calls == ["echo smoke"],
+            "Background command path did not execute the expected shell command.",
+        )
+        assert_true(
+            not engine.status_snapshot().get("background_action_running"),
+            "Background action status did not clear after completion.",
+        )
+        engine.executor._run_command = lambda plan: "Done. smoke command complete."  # type: ignore[method-assign]
 
         timed_out_prompt = engine.process_user_input("run smoke safe command", speak_response=True)
         assert_true(
@@ -867,6 +933,7 @@ def main() -> None:
     finally:
         engine.executor.brain.plan_action_json = original_plan_action_json
         engine.voice.speak = original_speak
+        engine.voice.speak_background = original_speak_background
         engine.brain.think = original_think
         engine.brain.think_with_stream = original_think_with_stream
         engine.executor._pattern_match = original_pattern_match
