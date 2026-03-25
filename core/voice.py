@@ -1467,22 +1467,36 @@ if ($best) {{
     def _speak_with_backends(self, text: str, backend_priority: str | None = None):
         last_error = None
         self.last_tts_backend = ""
-        for backend in self._tts_backend_order(backend_priority=backend_priority):
+        backend_order = self._tts_backend_order(backend_priority=backend_priority)
+        log_runtime(
+            "tts_attempt",
+            backend_priority=str(backend_priority or ""),
+            order=backend_order,
+            text_preview=text[:120],
+        )
+        for backend in backend_order:
             try:
                 if backend == "piper" and self._speak_piper_blocking(text):
                     self.last_tts_backend = "piper"
+                    log_runtime("tts_success", backend="piper", text_preview=text[:120])
                     return
                 if backend == "system" and self._speak_local_blocking(text):
                     self.last_tts_backend = "system"
+                    log_runtime("tts_success", backend="system", text_preview=text[:120])
                     return
                 if backend == "edge" and self._speak_edge_blocking(text):
                     self.last_tts_backend = "edge"
+                    log_runtime("tts_success", backend="edge", text_preview=text[:120])
                     return
             except Exception as exc:
                 last_error = exc
+                log_runtime("tts_backend_failed", backend=backend, error=str(exc), text_preview=text[:120])
 
         if last_error is not None:
             console.print(f"[red]TTS error:[/red] {last_error}")
+            log_runtime("tts_failed", error=str(last_error), text_preview=text[:120])
+        else:
+            log_runtime("tts_failed", error="no_backend_succeeded", text_preview=text[:120])
 
     def _tts_backend_order(self, backend_priority: str | None = None) -> list[str]:
         priority = str(
