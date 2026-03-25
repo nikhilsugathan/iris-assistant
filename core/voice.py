@@ -1104,26 +1104,51 @@ if ($best) {{
 
     def _speak_local_blocking(self, text: str) -> bool:
         try:
-            import pyttsx3
+            engine = self._get_local_tts_engine()
         except Exception:
             return False
 
-        engine = pyttsx3.init()
-        self._local_tts_engine = engine
-        try:
-            self._configure_local_tts_engine(engine)
-            for chunk in self._chunk_text(text):
-                if self._stop_flag.is_set():
-                    break
-                engine.say(chunk)
-                engine.runAndWait()
-            return True
-        finally:
+        for attempt in range(2):
+            if engine is None:
+                return False
             try:
-                engine.stop()
+                self._configure_local_tts_engine(engine)
+                for chunk in self._chunk_text(text):
+                    if self._stop_flag.is_set():
+                        break
+                    engine.say(chunk)
+                    engine.runAndWait()
+                return True
             except Exception:
-                pass
-            self._local_tts_engine = None
+                self._reset_local_tts_engine()
+                if attempt == 0:
+                    try:
+                        engine = self._get_local_tts_engine(force_reinit=True)
+                        continue
+                    except Exception:
+                        return False
+                return False
+        return False
+
+    def _get_local_tts_engine(self, force_reinit: bool = False):
+        if force_reinit:
+            self._reset_local_tts_engine()
+        if self._local_tts_engine is not None:
+            return self._local_tts_engine
+        import pyttsx3
+
+        self._local_tts_engine = pyttsx3.init()
+        return self._local_tts_engine
+
+    def _reset_local_tts_engine(self, already_stopped: bool = False) -> None:
+        engine = self._local_tts_engine
+        self._local_tts_engine = None
+        if engine is None or already_stopped:
+            return
+        try:
+            engine.stop()
+        except Exception:
+            pass
 
     def _configure_local_tts_engine(self, engine) -> None:
         hint = str(getattr(Config, "LOCAL_TTS_VOICE_HINT", "") or "").lower().strip()
@@ -1242,6 +1267,7 @@ if ($best) {{
 
     def stop(self):
         self.stop_speaking()
+        self._reset_local_tts_engine(already_stopped=True)
 
     def speak_background(self, text: str, backend_priority: str | None = None):
         generation_id = self._cancel_pending_speech()

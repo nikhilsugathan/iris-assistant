@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 import time
+import types
 
 WORKSPACE = Path(__file__).resolve().parents[1]
 if str(WORKSPACE) not in sys.path:
@@ -232,10 +233,70 @@ def test_background_speech_cancellation() -> None:
         voice.stop()
 
 
+def test_local_tts_engine_reuse() -> None:
+    voice = Voice(text_mode=True)
+    voice.text_mode = False
+    voice.audio_ready = True
+
+    class FakeEngine:
+        def __init__(self) -> None:
+            self.say_calls: list[str] = []
+            self.run_count = 0
+            self.stop_count = 0
+
+        def say(self, text: str) -> None:
+            self.say_calls.append(text)
+
+        def runAndWait(self) -> None:
+            self.run_count += 1
+
+        def stop(self) -> None:
+            self.stop_count += 1
+
+        def getProperty(self, name: str):
+            return []
+
+        def setProperty(self, name: str, value) -> None:
+            return None
+
+    init_calls: list[FakeEngine] = []
+
+    def fake_init():
+        engine = FakeEngine()
+        init_calls.append(engine)
+        return engine
+
+    original_pyttsx3 = sys.modules.get("pyttsx3")
+    sys.modules["pyttsx3"] = types.SimpleNamespace(init=fake_init)
+    voice._chunk_text = lambda text: [text]  # type: ignore[method-assign]
+
+    try:
+        assert_true(voice._speak_local_blocking("first line"), "First local TTS call should succeed with the fake engine.")
+        assert_true(voice._speak_local_blocking("second line"), "Second local TTS call should reuse the fake engine successfully.")
+        assert_true(len(init_calls) == 1, "Local TTS engine should be initialized once and reused across utterances.")
+        assert_true(
+            init_calls[0].say_calls == ["first line", "second line"],
+            "Local TTS engine reuse should send both utterances through the same engine instance.",
+        )
+        assert_true(init_calls[0].stop_count == 0, "Reused local TTS engine should not be torn down between utterances.")
+        voice.stop()
+        assert_true(init_calls[0].stop_count == 1, "Stopping voice should release the cached local TTS engine once.")
+    finally:
+        if original_pyttsx3 is None:
+            sys.modules.pop("pyttsx3", None)
+        else:
+            sys.modules["pyttsx3"] = original_pyttsx3
+        try:
+            voice.stop()
+        except Exception:
+            pass
+
+
 def main() -> None:
     test_system_routing()
     test_voice_preferences()
     test_background_speech_cancellation()
+    test_local_tts_engine_reuse()
     print("PASS: IRIS local-first smoke test completed.")
 
 
