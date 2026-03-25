@@ -43,6 +43,7 @@ import re
 import json
 import difflib
 import logging
+import shlex
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from typing import Optional, Tuple
@@ -100,6 +101,21 @@ DANGEROUS_PATTERNS = [
 
 
 class ActionExecutor:
+    WINDOWS_SHELL_BUILTINS = {
+        "assoc", "break", "call", "cd", "chcp", "cls", "copy", "date", "del",
+        "dir", "echo", "erase", "exit", "for", "ftype", "md", "mkdir", "move",
+        "path", "pause", "popd", "prompt", "pushd", "rd", "ren", "rename",
+        "rmdir", "set", "shift", "start", "time", "title", "type", "ver",
+        "verify", "vol",
+    }
+    VOICE_CONFIRM_ACTIONS = {
+        "create_file",
+        "create_folder",
+        "write_to_file",
+    }
+    ALWAYS_CONFIRM_ACTIONS = {
+        "run_command",
+    }
 
     def __init__(self, voice, brain):
         self.voice   = voice
@@ -357,7 +373,7 @@ class ActionExecutor:
             elif action == "open_app":
                 app = followup.get("app", "")
                 try:
-                    subprocess.Popen(f'start "" "{app}"', shell=True)
+                    subprocess.Popen([app], shell=False)
                     return f"Opening {app}."
                 except Exception as e:
                     return f"Couldn't open it: {e}"
@@ -477,6 +493,54 @@ class ActionExecutor:
         "search_web", "write_to_file"
     ]
 
+    def _approval_level(self, plan: dict, verdict: str) -> int:
+        if verdict == BLOCKED:
+            return 3
+        if verdict in {WARNING, NEED_ADMIN}:
+            return 2
+
+        action_type = str(plan.get("action_type", "") or "").strip()
+        if action_type in self.ALWAYS_CONFIRM_ACTIONS:
+            return 2
+
+        if action_type == "manage_package":
+            operation = str(plan.get("package_operation", "") or "").strip().lower()
+            return 0 if operation == "list" else 2
+
+        if (
+            self.current_input_source == "voice"
+            and action_type in self.VOICE_CONFIRM_ACTIONS
+        ):
+            return 1
+
+        return 0
+
+    def _approval_guard_message(self, plan: dict, verdict: str) -> str:
+        level = self._approval_level(plan, verdict)
+        if level == 0 or verdict == BLOCKED:
+            return ""
+
+        action_type = str(plan.get("action_type", "") or "").strip()
+        if action_type == "run_command":
+            return "This runs a shell command directly. I need explicit confirmation before I execute it."
+
+        if action_type == "manage_package":
+            operation = str(plan.get("package_operation", "") or "").strip().lower()
+            if operation == "install":
+                return "This installs a package on the machine. I need explicit confirmation before I continue."
+            if operation == "uninstall":
+                return "This removes a package from the machine. I need explicit confirmation before I continue."
+            if operation == "upgrade":
+                return "This updates a package on the machine. I need explicit confirmation before I continue."
+
+        if level == 1 and self.current_input_source == "voice":
+            return (
+                "This changes local files, and the request came from voice input. "
+                "I want explicit confirmation before I make that change."
+            )
+
+        return ""
+
     def _is_simple_task(self, plan: dict, verdict: str) -> bool:
         """
         Everything that isn't a security/ethical issue executes automatically.
@@ -485,7 +549,7 @@ class ActionExecutor:
         """
         if verdict in (BLOCKED, WARNING, NEED_ADMIN):
             return False
-        return True  # SAFE verdict = just do it
+        return self._approval_level(plan, verdict) == 0
 
     # ─────────────────────────────────────────────────────────────
     # COGNITIVE FILE NAMING: auto-rename if file already exists
@@ -536,6 +600,10 @@ class ActionExecutor:
 
         # ── Run security assessment ──────────────────────────
         verdict, security_msg = self.security.assess(plan)
+        approval_guard = self._approval_guard_message(plan, verdict)
+        if approval_guard and verdict == SAFE:
+            verdict = WARNING
+            security_msg = approval_guard
         chain_warning = self._check_action_chain(plan)
         if chain_warning and verdict == SAFE:
             verdict = WARNING
@@ -1115,10 +1183,15 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
         description = plan.get("description", "perform this action")
         command     = plan.get("command", "")
         is_dangerous = plan.get("is_dangerous", False)
+        approval_level = self._approval_level(plan, self.pending_verdict or WARNING)
 
         msg = f"I'll {description}."
         if command:
             msg += f" Command: {command}."
+        if approval_level == 1:
+            msg += " This is a voice-confirmed file change."
+        elif approval_level >= 2:
+            msg += " This needs explicit approval."
         if is_dangerous:
             msg += " ⚠ This is destructive and can't be undone."
         if self._can_remember_approval(plan, self.pending_verdict or WARNING, self.pending_security_reason):
@@ -1220,6 +1293,64 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
         self.pending_plans = plans
         spoken = self.improv.format_spoken_options(plans)
         return spoken
+
+    def _command_requires_shell(self, command: str) -> bool:
+        text = str(command or "").strip()
+        if not text:
+            return False
+
+        if any(token in text for token in ["&&", "||", "|", ">", "<", "%", "^"]):
+            return True
+
+        try:
+            first = shlex.split(text, posix=False)[0].strip().lower()
+        except Exception:
+            first = text.split()[0].strip().lower()
+
+        return first in self.WINDOWS_SHELL_BUILTINS
+
+    def _split_command_args(self, command: str) -> list[str]:
+        text = str(command or "").strip()
+        if not text:
+            return []
+        try:
+            return [arg for arg in shlex.split(text, posix=False) if arg]
+        except ValueError:
+            return [text]
+
+    def _run_subprocess_command(
+        self,
+        command: str,
+        timeout: int = 120,
+        force_shell: bool | None = None,
+    ):
+        use_shell = self._command_requires_shell(command) if force_shell is None else bool(force_shell)
+        args = command if use_shell else self._split_command_args(command)
+        return subprocess.run(
+            args,
+            shell=use_shell,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+
+    def _spawn_subprocess_command(self, command: str, force_shell: bool | None = None):
+        use_shell = self._command_requires_shell(command) if force_shell is None else bool(force_shell)
+        args = command if use_shell else self._split_command_args(command)
+        return subprocess.Popen(args, shell=use_shell)
+
+    def _build_package_args(self, operation: str, package_name: str = "") -> list[str]:
+        op = (operation or "").strip().lower()
+        pkg = str(package_name or "").strip()
+        if op == "list":
+            return ["winget", "list"]
+        if op == "install" and pkg:
+            return ["winget", "install", "--name", pkg, "--accept-package-agreements", "--accept-source-agreements"]
+        if op == "uninstall" and pkg:
+            return ["winget", "uninstall", "--name", pkg]
+        if op == "upgrade" and pkg:
+            return ["winget", "upgrade", "--name", pkg, "--accept-package-agreements", "--accept-source-agreements"]
+        return []
 
     def _execute_with_verify(self, plan: dict) -> tuple:
         """
@@ -1376,14 +1507,14 @@ Respond with ONLY the JSON. No explanation."""
             return "No command to run."
 
         self._log(f"RUN: {command}")
-
-        result = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=120
-        )
+        try:
+            result = self._run_subprocess_command(str(command), timeout=120)
+        except subprocess.TimeoutExpired:
+            self._log(f"FAILED: {command} — timed out")
+            return "That command timed out."
+        except Exception as exc:
+            self._log(f"FAILED: {command} — {exc}")
+            return f"That didn't work. {exc}"
 
         if result.returncode == 0:
             output = result.stdout.strip()
@@ -1403,17 +1534,21 @@ Respond with ONLY the JSON. No explanation."""
         operation = str(plan.get("package_operation", "") or "").strip().lower()
         package_name = str(plan.get("package_name", "") or "").strip()
         command = str(plan.get("command", "") or "").strip() or self._build_package_command(operation, package_name)
-        if not command:
+        args = self._build_package_args(operation, package_name)
+        if not command and not args:
             return "I couldn't determine the package command to run.", False
 
         try:
-            result = subprocess.run(
-                command,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=240,
-            )
+            if args:
+                result = subprocess.run(
+                    args,
+                    shell=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=240,
+                )
+            else:
+                result = self._run_subprocess_command(command, timeout=240)
         except Exception as exc:
             return f"Package management didn't work: {exc}", False
 
@@ -1594,7 +1729,7 @@ Be specific and practical. No preamble."""
         return self.browser.play_music(query)
 
     def _open_app(self, plan: dict) -> str:
-        """Open an application or URL using Windows start command."""
+        """Open an application or URL with minimal shell usage."""
         app     = (plan.get("app_name") or "").strip()
         command = (plan.get("command") or "").strip()
         url     = (plan.get("url") or "").strip()
@@ -1640,16 +1775,19 @@ Be specific and practical. No preamble."""
         # Shell command provided directly
         if command:
             try:
-                subprocess.Popen(command, shell=True)
+                self._spawn_subprocess_command(command)
                 self._log(f"OPENED: {command}")
                 return "Done."
             except Exception as e:
                 return f"Couldn't open that: {e}"
 
-        # Use Windows start command
+        # Launch known executable or file target directly when possible
         if target:
             try:
-                subprocess.Popen(f'start "" "{target}"', shell=True)
+                if self.is_windows and os.path.exists(target):
+                    os.startfile(target)  # type: ignore[attr-defined]
+                else:
+                    subprocess.Popen([target], shell=False)
                 self._log(f"OPENED: {target}")
                 return "Done."
             except Exception as e:

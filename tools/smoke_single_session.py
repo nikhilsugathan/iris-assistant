@@ -140,6 +140,7 @@ def main() -> None:
     original_think = engine.brain.think
     original_pattern_match = engine.executor._pattern_match
     original_manage_package = engine.executor._manage_package
+    original_run_command = engine.executor._run_command
 
     def fake_speak(text: str) -> None:
         spoken_messages.append(text)
@@ -162,6 +163,13 @@ def main() -> None:
                 "description": "launch a blocked command",
                 "command": "msfconsole",
                 "is_dangerous": True,
+            }
+        if user_input == "run smoke safe command":
+            return {
+                "action_type": "run_command",
+                "description": "run a safe smoke command",
+                "command": "echo smoke",
+                "is_dangerous": False,
             }
         if user_input == "run smoke warning action":
             return {
@@ -308,6 +316,7 @@ def main() -> None:
             return "Unsupported package operation.", False
 
         engine.executor._manage_package = fake_manage_package
+        engine.executor._run_command = lambda plan: "Done. smoke command complete."  # type: ignore[method-assign]
 
         assert_true(engine.contains_wake_word("iris status check"), "Wake-word detection failed.")
         assert_true(
@@ -326,6 +335,22 @@ def main() -> None:
             "Smoke action did not report a verified creation result.",
         )
         assert_true(spoken_messages[-1] == action_result.response, "Action result was not routed to speech.")
+
+        voice_file_prompt = engine.process_user_input("run smoke action", speak_response=True, input_source="voice")
+        assert_true(
+            engine.executor.waiting_for_permission(),
+            "Voice-origin file creation should wait for confirmation.",
+        )
+        assert_true(
+            "voice-confirmed file change" in voice_file_prompt.response.lower()
+            or "came from voice input" in voice_file_prompt.response.lower(),
+            "Voice-origin file creation did not surface the explicit approval reason.",
+        )
+        voice_file_result = engine.process_user_input("yes", speak_response=True, input_source="voice")
+        assert_true(
+            "created" in voice_file_result.response.lower(),
+            "Voice-origin file creation did not execute after approval.",
+        )
 
         followup_result = engine.process_user_input("no", speak_response=True)
         assert_true(followup_result.response == "No problem.", "Follow-up handling did not close cleanly.")
@@ -352,6 +377,21 @@ def main() -> None:
         )
         cancel_result = engine.process_user_input("no", speak_response=True)
         assert_true(cancel_result.response == "Cancelled.", "Warning action did not cancel cleanly.")
+
+        safe_command_prompt = engine.process_user_input("run smoke safe command", speak_response=True)
+        assert_true(
+            engine.executor.waiting_for_permission(),
+            "Shell commands should wait for explicit approval even when they look benign.",
+        )
+        assert_true(
+            "shell command" in safe_command_prompt.response.lower(),
+            "Shell-command approval prompt did not surface the explicit approval reason.",
+        )
+        safe_command_result = engine.process_user_input("yes", speak_response=True)
+        assert_true(
+            safe_command_result.response == "Done. smoke command complete.",
+            "Shell command did not execute after confirmation.",
+        )
 
         desktop_warning = engine.process_user_input("run smoke type action", speak_response=True)
         assert_true(
@@ -681,6 +721,7 @@ def main() -> None:
         engine.brain.think = original_think
         engine.executor._pattern_match = original_pattern_match
         engine.executor._manage_package = original_manage_package
+        engine.executor._run_command = original_run_command
         engine.shutdown()
 
 
