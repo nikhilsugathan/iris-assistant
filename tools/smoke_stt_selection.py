@@ -52,11 +52,24 @@ def main() -> None:
         Config.STT_PRIORITY = "adaptive"
         voice = StubVoice(text_mode=True)
         voice.resource_guard = DummyGuard()
+        voice._supports_faster_whisper = lambda: True  # type: ignore[method-assign]
 
         long_audio = FakeAudio(seconds=3.2)
         short_audio = FakeAudio(seconds=0.9)
 
+        local_whisper_calls = {"count": 0}
         groq_calls = {"count": 0}
+
+        def faster_candidate(audio):
+            local_whisper_calls["count"] += 1
+            return TranscriptCandidate(
+                backend="faster_whisper",
+                text="open calculator",
+                confidence=0.91,
+                language="en",
+            )
+
+        voice._transcribe_faster_whisper_candidate = faster_candidate  # type: ignore[method-assign]
 
         voice._transcribe_windows_candidate = lambda audio: TranscriptCandidate(  # type: ignore[method-assign]
             backend="system",
@@ -73,10 +86,18 @@ def main() -> None:
         voice._transcribe_google_candidate = lambda audio: TranscriptCandidate(backend="google")  # type: ignore[method-assign]
 
         text = voice._transcribe_command(long_audio)
-        assert_true(text == "open notepad", "High-confidence local transcript should be accepted.")
+        assert_true(text == "open calculator", "Adaptive mode should prefer the local Whisper backend when available.")
+        assert_true(local_whisper_calls["count"] == 1, "Local Whisper backend should be consulted in adaptive mode.")
         assert_true(groq_calls["count"] == 0, "Cloud fallback should not run when the local transcript is strong.")
 
         groq_calls["count"] = 0
+        local_whisper_calls["count"] = 0
+        voice._transcribe_faster_whisper_candidate = lambda audio: TranscriptCandidate(  # type: ignore[method-assign]
+            backend="faster_whisper",
+            text="open",
+            confidence=0.62,
+            language="en",
+        )
         voice._transcribe_windows_candidate = lambda audio: TranscriptCandidate(  # type: ignore[method-assign]
             backend="system",
             text="open",
@@ -97,7 +118,7 @@ def main() -> None:
         text = voice._transcribe_command(long_audio)
         assert_true(
             text == "open notepad and type hello",
-            "Low-confidence local transcription should fall back to Groq.",
+            "Weak local Whisper transcription should fall back to Groq.",
         )
         assert_true(groq_calls["count"] == 1, "Groq fallback should run for weak local transcripts.")
 
@@ -111,6 +132,8 @@ def main() -> None:
         text = voice._transcribe_command(short_audio)
         assert_true(text == "terminate", "Short, clear local safety commands should stay local.")
 
+        local_whisper_calls["count"] = 0
+        voice._transcribe_faster_whisper_candidate = lambda audio: TranscriptCandidate(backend="faster_whisper", text="")  # type: ignore[method-assign]
         voice._transcribe_windows_candidate = lambda audio: TranscriptCandidate(  # type: ignore[method-assign]
             backend="system",
             text="open",

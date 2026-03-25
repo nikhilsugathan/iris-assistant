@@ -1,7 +1,8 @@
 """
 IRIS Voice Module v4
 ====================
-STT  : Windows speech recognition first, then Groq Whisper, then Google
+STT  : Windows wake recognition, optional local faster-whisper for commands,
+       then Groq Whisper and Google fallback
 TTS  : Windows SAPI voices first, then Edge TTS fallback
 """
 
@@ -58,6 +59,8 @@ class Voice:
         self.last_transcript_confidence = 0.0
         self.last_transcript_language = ""
         self.last_tts_backend = ""
+        self._faster_whisper_model = None
+        self._faster_whisper_error = ""
 
         self._init_audio()
         self._init_mic()
@@ -406,21 +409,32 @@ class Voice:
     def _transcribe_command(self, audio) -> str:
         priority = getattr(Config, "STT_PRIORITY", "adaptive").lower().strip()
         allow_local_stt, _ = self.resource_guard.allows_local_stt()
-        order = ["system", "groq", "google"]
+        has_local_whisper = allow_local_stt and self._supports_faster_whisper()
+        order = ["groq", "system", "google"]
+
+        if priority == "adaptive":
+            order = ["groq", "system", "google"]
+            if has_local_whisper:
+                order = ["faster_whisper", "system", "groq", "google"]
 
         if priority == "groq_first":
-            order = ["groq", "system", "google"]
+            order = ["groq", "faster_whisper", "system", "google"] if has_local_whisper else ["groq", "system", "google"]
         elif priority == "google_first":
-            order = ["google", "system", "groq"]
+            order = ["google", "faster_whisper", "system", "groq"] if has_local_whisper else ["google", "system", "groq"]
+        elif priority in {"local_first", "faster_whisper_first"}:
+            order = ["faster_whisper", "system", "groq", "google"] if has_local_whisper else ["system", "groq", "google"]
         elif priority == "system_only":
-            order = ["system"] if allow_local_stt else ["groq", "google"]
+            if allow_local_stt and has_local_whisper:
+                order = ["faster_whisper", "system"]
+            else:
+                order = ["system"] if allow_local_stt else ["groq", "google"]
         elif priority == "groq_only":
             order = ["groq"]
         elif priority == "google_only":
             order = ["google"]
 
         if not allow_local_stt:
-            order = [backend for backend in order if backend != "system"]
+            order = [backend for backend in order if backend not in {"system", "faster_whisper"}]
             if not order:
                 order = ["groq", "google"]
 
@@ -616,6 +630,82 @@ if ($best) {{
     def _transcribe_groq(self, audio) -> str:
         return self._transcribe_groq_candidate(audio).text
 
+    def _supports_faster_whisper(self) -> bool:
+        if not getattr(Config, "LOCAL_WHISPER_ENABLED", True):
+            return False
+        if self._faster_whisper_model is not None:
+            return True
+        if self._faster_whisper_error:
+            return False
+        try:
+            import faster_whisper  # noqa: F401
+        except Exception:
+            return False
+        return True
+
+    def _get_faster_whisper_model(self):
+        if self._faster_whisper_model is not None:
+            return self._faster_whisper_model
+        if self._faster_whisper_error:
+            return None
+
+        try:
+            from faster_whisper import WhisperModel
+
+            model_name = str(getattr(Config, "LOCAL_WHISPER_MODEL", "base") or "base").strip() or "base"
+            init_options = {
+                "device": str(getattr(Config, "LOCAL_WHISPER_DEVICE", "cpu") or "cpu").strip() or "cpu",
+                "compute_type": str(getattr(Config, "LOCAL_WHISPER_COMPUTE_TYPE", "int8") or "int8").strip() or "int8",
+            }
+            self._faster_whisper_model = WhisperModel(model_name, **init_options)
+            return self._faster_whisper_model
+        except Exception as exc:
+            self._faster_whisper_error = str(exc)
+            console.print(f"[yellow]Local Whisper unavailable:[/yellow] {exc}")
+            return None
+
+    def _transcribe_faster_whisper_candidate(self, audio) -> TranscriptCandidate:
+        model = self._get_faster_whisper_model()
+        if model is None:
+            return TranscriptCandidate(backend="faster_whisper")
+
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as handle:
+                tmp_path = handle.name
+
+            self._write_audio_wav(audio, tmp_path)
+            transcribe_options = {
+                "beam_size": max(1, int(getattr(Config, "LOCAL_WHISPER_BEAM_SIZE", 1) or 1)),
+                "vad_filter": True,
+                "condition_on_previous_text": False,
+                "temperature": 0.0,
+            }
+            language_hint = self._local_whisper_language_hint()
+            if language_hint:
+                transcribe_options["language"] = language_hint
+
+            segments, info = model.transcribe(tmp_path, **transcribe_options)
+            pieces = [str(segment.text or "").strip() for segment in segments if str(segment.text or "").strip()]
+            text = " ".join(pieces).strip()
+            language_probability = float(getattr(info, "language_probability", 0.0) or 0.0)
+            confidence = min(0.98, max(0.55, language_probability)) if text else 0.0
+            return TranscriptCandidate(
+                backend="faster_whisper",
+                text=text,
+                confidence=confidence,
+                language=str(getattr(info, "language", "") or language_hint or "").strip(),
+            )
+        except Exception as exc:
+            self._faster_whisper_error = str(exc)
+            console.print(f"[yellow]Local Whisper transcription warning:[/yellow] {exc}")
+            return TranscriptCandidate(backend="faster_whisper")
+        finally:
+            try:
+                if "tmp_path" in locals():
+                    os.unlink(tmp_path)
+            except Exception:
+                pass
+
     def _transcribe_groq_candidate(self, audio) -> TranscriptCandidate:
         """Use Groq Whisper API — fastest and most accurate."""
         try:
@@ -695,6 +785,17 @@ if ($best) {{
                 )
                 continue
 
+            if backend == "faster_whisper":
+                accepted = self._accept_local_whisper_candidate(candidate, audio)
+                if accepted or order == ["faster_whisper"]:
+                    self._remember_transcript_candidate(candidate)
+                    return candidate.text
+                fallback_local = candidate
+                console.print(
+                    "[dim]Local Whisper looked weak; checking fallback recognizers.[/dim]"
+                )
+                continue
+
             self._remember_transcript_candidate(candidate)
             return candidate.text
 
@@ -713,6 +814,10 @@ if ($best) {{
             if wake_mode:
                 return self._transcribe_windows_wake_candidate(audio)
             return self._transcribe_windows_candidate(audio)
+        if backend == "faster_whisper":
+            if wake_mode:
+                return TranscriptCandidate(backend="faster_whisper")
+            return self._transcribe_faster_whisper_candidate(audio)
         if backend == "groq":
             return self._transcribe_groq_candidate(audio)
         if backend == "google":
@@ -756,6 +861,23 @@ if ($best) {{
                 threshold = max(threshold, 0.9)
 
         return candidate.confidence >= threshold
+
+    def _accept_local_whisper_candidate(self, candidate: TranscriptCandidate, audio) -> bool:
+        text = (candidate.text or "").strip()
+        if not text or self._looks_like_noise_transcript(text):
+            return False
+
+        words = self._word_count(text)
+        duration = self._audio_duration_seconds(audio)
+        if candidate.confidence and candidate.confidence < 0.58:
+            return False
+        if words <= 2 and candidate.confidence and candidate.confidence < 0.72:
+            return False
+        if words <= 1 and duration >= 2.0:
+            return False
+        if duration >= 3.2 and words < 2:
+            return False
+        return True
 
     def _audio_duration_seconds(self, audio) -> float:
         sample_rate = max(1, int(getattr(audio, "sample_rate", 16000) or 16000))
@@ -1093,6 +1215,12 @@ if ($best) {{
             if language and language not in languages:
                 languages.append(language)
         return languages
+
+    def _local_whisper_language_hint(self) -> str:
+        configured = str(getattr(Config, "LOCAL_WHISPER_LANGUAGE_HINT", "") or "").strip().lower()
+        if configured:
+            return configured
+        return ""
 
     def _audio_to_wav_bytes(self, audio) -> io.BytesIO:
         wav_data = io.BytesIO()

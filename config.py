@@ -174,7 +174,7 @@ class Config:
     MIC_CHUNK_SIZE = 1024
 
     WAKE_STT_PRIORITY = os.getenv("WAKE_STT_PRIORITY", "system_first").strip().lower()
-    STT_PRIORITY = os.getenv("STT_PRIORITY", "groq_first").strip().lower()
+    STT_PRIORITY = os.getenv("STT_PRIORITY", "adaptive").strip().lower()
     STT_LANGUAGE = os.getenv("STT_LANGUAGE", "en-US").strip()
     STT_FALLBACK_LANGUAGE = os.getenv("STT_FALLBACK_LANGUAGE", "en-GB").strip()
     STT_SECONDARY_FALLBACK_LANGUAGE = os.getenv("STT_SECONDARY_FALLBACK_LANGUAGE", "en-IN").strip()
@@ -183,6 +183,12 @@ class Config:
         for lang in os.getenv("STT_ADDITIONAL_LANGUAGES", "de-DE").split(",")
         if lang.strip()
     ]
+    LOCAL_WHISPER_ENABLED = os.getenv("LOCAL_WHISPER_ENABLED", "true").lower() == "true"
+    LOCAL_WHISPER_MODEL = os.getenv("LOCAL_WHISPER_MODEL", "base").strip()
+    LOCAL_WHISPER_DEVICE = os.getenv("LOCAL_WHISPER_DEVICE", "cpu").strip()
+    LOCAL_WHISPER_COMPUTE_TYPE = os.getenv("LOCAL_WHISPER_COMPUTE_TYPE", "int8").strip()
+    LOCAL_WHISPER_LANGUAGE_HINT = os.getenv("LOCAL_WHISPER_LANGUAGE_HINT", "").strip()
+    LOCAL_WHISPER_BEAM_SIZE = int(os.getenv("LOCAL_WHISPER_BEAM_SIZE", "1"))
     WAKE_SYSTEM_ACCEPT_CONFIDENCE = float(os.getenv("WAKE_SYSTEM_ACCEPT_CONFIDENCE", "0.58"))
     STT_SYSTEM_ACCEPT_CONFIDENCE = float(os.getenv("STT_SYSTEM_ACCEPT_CONFIDENCE", "0.82"))
     STT_SYSTEM_SHORT_ACCEPT_CONFIDENCE = float(os.getenv("STT_SYSTEM_SHORT_ACCEPT_CONFIDENCE", "0.7"))
