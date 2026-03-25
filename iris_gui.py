@@ -816,9 +816,22 @@ class IrisWindow(QtWidgets.QMainWindow):
         self.transcript.append(message_html)
         self.transcript.verticalScrollBar().setValue(self.transcript.verticalScrollBar().maximum())
 
+    def _display_voice_state(self, state: str) -> str:
+        normalized = str(state or "idle").strip().lower() or "idle"
+        if (
+            normalized == "idle"
+            and self.wake_worker
+            and self.wake_worker.isRunning()
+            and not self.busy
+            and not self._quitting
+        ):
+            return "standby"
+        return normalized
+
     def on_voice_state(self, state: str):
-        self.orb.set_state(state)
-        self.floating_window.set_state(state)
+        display_state = self._display_voice_state(state)
+        self.orb.set_state(display_state)
+        self.floating_window.set_state(display_state)
         state_pill_map = {
             "standby": "VOICE STANDBY",
             "idle": "IDLE",
@@ -827,7 +840,7 @@ class IrisWindow(QtWidgets.QMainWindow):
             "speaking": "SPEAKING",
             "error": "ERROR",
         }
-        self.state_pill.setText(state_pill_map.get(state, state.upper()))
+        self.state_pill.setText(state_pill_map.get(display_state, display_state.upper()))
         footer_map = {
             "standby": "Voice standby online. Say Iris at any time.",
             "idle": "Standing by.",
@@ -835,11 +848,11 @@ class IrisWindow(QtWidgets.QMainWindow):
             "speaking": "Iris is speaking.",
             "thinking": "Thinking through the request...",
         }
-        if state == "listening" or not self._sticky_footer:
-            self.footer.setText(footer_map.get(state, self.footer.text()))
+        if display_state == "listening" or not self._sticky_footer:
+            self.footer.setText(footer_map.get(display_state, self.footer.text()))
         self._apply_engine_visuals()
         if self.tray:
-            self.tray.setToolTip(f"{Config.PUBLIC_NAME} // {state.upper()}")
+            self.tray.setToolTip(f"{Config.PUBLIC_NAME} // {display_state.upper()}")
 
     def set_busy(self, busy: bool, footer: str = ""):
         self.busy = busy
@@ -1020,7 +1033,8 @@ class IrisWindow(QtWidgets.QMainWindow):
         snapshot = self.engine.status_snapshot()
 
         brain = str(snapshot.get("primary_brain") or "unknown").replace("_", " ").upper()
-        voice_state = str(snapshot.get("voice_state") or "idle").replace("_", " ").upper()
+        voice_state_raw = str(snapshot.get("voice_state") or "idle")
+        voice_state = self._display_voice_state(voice_state_raw).replace("_", " ").upper()
         mic_ready = bool(snapshot.get("mic_ready"))
         mic_name = str(snapshot.get("selected_mic_name") or "").strip()
         if not mic_ready:

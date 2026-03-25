@@ -28,6 +28,11 @@ def assert_true(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
+class FakeRunningWorker:
+    def isRunning(self) -> bool:
+        return True
+
+
 def configure_app(app: QtWidgets.QApplication) -> None:
     app.setApplicationName(Config.PUBLIC_NAME.upper())
     app.setOrganizationName("Aletheia")
@@ -119,6 +124,16 @@ def main() -> None:
             window.footer.text() == "Voice standby online. Say Iris at any time.",
             "Standby state did not keep the stable voice standby footer.",
         )
+
+        original_wake_worker = window.wake_worker
+        window.wake_worker = FakeRunningWorker()
+        window.on_voice_state("idle")
+        app.processEvents()
+        assert_true(
+            window.state_pill.text() == "VOICE STANDBY",
+            "Idle voice state should render as voice standby while the wake worker is still running.",
+        )
+        window.wake_worker = original_wake_worker
 
         window.on_voice_state("thinking")
         app.processEvents()
