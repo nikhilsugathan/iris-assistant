@@ -140,8 +140,8 @@ def main() -> None:
             "Immediate terminate should not speak a farewell after the wake acknowledgement.",
         )
         assert_true(
-            fake_voice.command_interrupt_flags == [False],
-            "Wake acknowledgement handoff should start command listening without interrupting the quick acknowledgement.",
+            fake_voice.command_interrupt_flags == [True],
+            "Wake acknowledgement handoff should interrupt any overlapping quick acknowledgement before command capture.",
         )
 
         normal_engine = IRISEngine(text_mode=True)

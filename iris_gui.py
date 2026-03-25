@@ -409,7 +409,7 @@ class VoiceStandbyWorker(QtCore.QThread):
                 if self.isInterruptionRequested():
                     break
 
-                command = self.engine.listen_for_voice_command(interrupt_speech=False)
+                command = self.engine.listen_for_voice_command(interrupt_speech=True)
                 if not command:
                     log_runtime(
                         "wake_command_missing",
