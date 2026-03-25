@@ -264,6 +264,16 @@ def test_voice_preferences() -> None:
             guarded_stt_calls == ["groq"],
             "Resource guard should bypass local STT when local resources are constrained.",
         )
+
+        voice._default_microphone_name = lambda names: "Microphone Array [Windows default]"  # type: ignore[method-assign]
+        default_mic_index, default_mic_name = voice._select_microphone_device(
+            ["Microphone Array", "USB Mic"],
+            "",
+        )
+        assert_true(
+            default_mic_index is None and default_mic_name == "Microphone Array [Windows default]",
+            "Voice should use the Windows default microphone when no preferred device is configured.",
+        )
     finally:
         Config.TTS_BACKEND_PRIORITY = original_tts
         Config.STT_PRIORITY = original_stt

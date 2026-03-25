@@ -167,6 +167,11 @@ class Voice:
             console.print(f"[red]Microphone init failed:[/red] {e}")
 
     def _select_microphone_device(self, mic_names: list[str], preferred: str) -> tuple[int | None, str]:
+        preferred = str(preferred or "").strip()
+        if not preferred:
+            default_name = self._default_microphone_name(mic_names)
+            return None, default_name
+
         if not mic_names:
             return None, "Default Windows microphone"
 
@@ -190,6 +195,25 @@ class Voice:
 
         return best_index, best_name
 
+    def _default_microphone_name(self, mic_names: list[str]) -> str:
+        try:
+            import pyaudio
+
+            audio = pyaudio.PyAudio()
+            try:
+                info = audio.get_default_input_device_info()
+            finally:
+                audio.terminate()
+            default_name = str(info.get("name", "") or "").strip()
+            if default_name:
+                return f"{default_name} [Windows default]"
+        except Exception:
+            pass
+
+        if mic_names:
+            return "Default Windows microphone"
+        return "No microphone detected"
+
     def _score_microphone_name(self, name: str, preferred: str) -> int:
         normalized = self._normalize_microphone_name(name)
         preferred = self._normalize_microphone_name(preferred)
@@ -204,10 +228,14 @@ class Voice:
             else:
                 score -= 20
 
+        if normalized.startswith("microphone array (") or "mic array input" in normalized:
+            score += 115
         if normalized.startswith("microphone ("):
             score += 85
         if "microphone array" in normalized:
-            score += 30
+            score += 45
+        if "mic input" in normalized and "array" not in normalized:
+            score -= 35
         if normalized.startswith("headset microphone"):
             score -= 105
 

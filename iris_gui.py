@@ -554,6 +554,21 @@ class IrisWindow(QtWidgets.QMainWindow):
         self.wake_worker.event.connect(self.on_standby_event)
         self.wake_worker.failed.connect(self.on_worker_failed)
         self.wake_worker.start()
+        if getattr(self.engine.voice, "mic_ready", False):
+            self.orb.set_state("standby")
+            self.floating_window.set_state("standby")
+            self.state_pill.setText("VOICE STANDBY")
+            self._set_mode_banner("VOICE STANDBY")
+            if not self._sticky_footer and not self.busy:
+                self.footer.setText("Voice standby online. Say Iris at any time.")
+        else:
+            self.orb.set_state("error")
+            self.floating_window.set_state("error")
+            self.state_pill.setText("MIC ERROR")
+            self._set_mode_banner("MIC ERROR")
+            if not self._sticky_footer:
+                self.footer.setText(self.engine.voice.describe_last_listen_feedback())
+        self._apply_engine_visuals()
 
     def _queue_startup_sequence(self):
         delay_ms = max(0, int(getattr(Config, "STARTUP_GREETING_DELAY_MS", 0)))
@@ -583,17 +598,9 @@ class IrisWindow(QtWidgets.QMainWindow):
         if self._start_voice_standby_enabled:
             self._start_voice_standby_after_greeting(greeting_thread)
 
-    def _start_voice_standby_after_greeting(self, greeting_thread=None):
+    def _start_voice_standby_after_greeting(self, greeting_thread=None, started_wait_at: float | None = None):
         if self._quitting or not self._start_voice_standby_enabled:
             return
-
-        if greeting_thread is not None and getattr(greeting_thread, "is_alive", None):
-            if greeting_thread.is_alive():
-                QtCore.QTimer.singleShot(
-                    120,
-                    lambda thread=greeting_thread: self._start_voice_standby_after_greeting(thread),
-                )
-                return
 
         delay_ms = max(0, int(getattr(Config, "STARTUP_LISTEN_AFTER_GREETING_MS", 180)))
         QtCore.QTimer.singleShot(delay_ms, self._start_voice_standby)
@@ -608,7 +615,7 @@ class IrisWindow(QtWidgets.QMainWindow):
         self.wake_worker = None
 
     def _voice_standby_paused(self):
-        return bool(self.busy or self._quitting)
+        return bool(self.busy or self._quitting or self.engine.voice.current_state == "speaking")
 
     def _build_ui(self):
         self.setStyleSheet(
