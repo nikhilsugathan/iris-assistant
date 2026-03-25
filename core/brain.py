@@ -7,6 +7,7 @@ Local LLM first (Ollama), cloud APIs as fallback.
 
 from __future__ import annotations
 
+import random
 import re
 import threading
 from typing import Dict, List, Optional
@@ -15,6 +16,8 @@ import requests
 from rich.console import Console
 
 from config import Config
+from core.environment import EnvironmentIntel
+from core.system_intel import SystemIntel
 
 console = Console()
 
@@ -22,6 +25,9 @@ console = Console()
 class Brain:
     def __init__(self, memory):
         self.memory = memory
+        self.system_intel = SystemIntel()
+        self.environment = EnvironmentIntel()
+        self._last_variant_by_bucket: Dict[str, str] = {}
         self.available_apis = self._detect_apis()
         self._update_priority()
         # Pre-warm local models in background so first call is instant
@@ -95,6 +101,13 @@ class Brain:
     # MAIN ENTRY
     # ─────────────────────────────────────────────────────────────
 
+    def startup_greeting(self) -> str:
+        return self._pick_variant(
+            "startup_greeting",
+            getattr(Config, "STARTUP_GREETINGS", []),
+            default="Systems online. Ready when you are.",
+        )
+
     def quick_ack(self, user_input: str) -> str:
         text = (user_input or "").lower().strip()
 
@@ -102,22 +115,38 @@ class Brain:
             return ""
 
         if any(x in text for x in ["wait", "hold on", "stop"]):
-            return "All right."
+            return self._pick_variant(
+                "hold_ack",
+                getattr(Config, "HOLD_ACKS", []),
+                default="All right.",
+            )
 
         if any(
             x in text
             for x in ["hey", "hello", "hi", "iris you there", "you there", "are you there"]
         ):
-            return "I'm here."
+            return self._pick_variant(
+                "hello_ack",
+                getattr(Config, "GREETING_RESPONSES", []),
+                default="I'm here.",
+            )
 
         if len(text) > 70:
-            return "One second."
+            return self._pick_variant(
+                "thinking_ack",
+                getattr(Config, "THINKING_ACKS", []),
+                default="One second.",
+            )
 
         if any(
             x in text
             for x in ["check", "look up", "find", "search", "explain", "tell me", "what is", "how does"]
         ):
-            return "Checking."
+            return self._pick_variant(
+                "search_ack",
+                getattr(Config, "SEARCH_ACKS", []),
+                default="Checking.",
+            )
 
         return ""
 
@@ -140,6 +169,18 @@ class Brain:
             self.memory.add("user", user_input)
             self.memory.add("assistant", direct, source="local")
             return direct
+
+        system_data = self.system_intel.answer_query(user_input)
+        if system_data:
+            self.memory.add("user", user_input)
+            self.memory.add("assistant", system_data, source="system-local")
+            return system_data
+
+        live_data = self.environment.answer_query(user_input)
+        if live_data:
+            self.memory.add("user", user_input)
+            self.memory.add("assistant", live_data, source="live-data")
+            return live_data
 
         self.memory.add("user", user_input)
         query_type = self._classify_query(user_input)
@@ -221,10 +262,18 @@ class Brain:
         text = user_input.lower().strip()
 
         if any(phrase in text for phrase in ["how are you", "how're you", "how do you feel"]):
-            return "Operational. What do you need?"
+            return self._pick_variant(
+                "status_response",
+                getattr(Config, "STATUS_RESPONSES", []),
+                default="Operational. What do you need?",
+            )
 
-        if text in {"hello", "hi", "hey", "hey iris", "hi iris", "iris"}:
-            return "I'm here."
+        if text in {"hello", "hi", "hey", "hey iris", "hi iris", "iris", "yo iris", "good morning iris", "good evening iris"}:
+            return self._pick_variant(
+                "greeting_response",
+                getattr(Config, "GREETING_RESPONSES", []),
+                default="I'm here.",
+            )
 
         if text in {
             "can you help",
@@ -233,10 +282,25 @@ class Brain:
             "can you help me",
             "help me",
         }:
-            return "Yes. What's the task?"
+            return self._pick_variant(
+                "help_response",
+                getattr(Config, "HELP_RESPONSES", []),
+                default="Yes. What's the task?",
+            )
 
         if text in {"can you assist", "assist me", "i need assistance"}:
-            return "Yes. What are you trying to do?"
+            return self._pick_variant(
+                "assist_response",
+                getattr(Config, "HELP_RESPONSES", []),
+                default="Yes. What are you trying to do?",
+            )
+
+        if text in {"thanks", "thank you", "thanks iris", "thank you iris"}:
+            return self._pick_variant(
+                "thanks_response",
+                getattr(Config, "THANKS_RESPONSES", []),
+                default="You're welcome.",
+            )
 
         if (
             "codename" in text
@@ -249,6 +313,17 @@ class Brain:
 
         return ""
 
+    def _pick_variant(self, bucket: str, options: List[str], default: str = "") -> str:
+        items = [str(item).strip() for item in (options or []) if str(item).strip()]
+        if not items:
+            return default
+
+        last = self._last_variant_by_bucket.get(bucket)
+        choices = [item for item in items if item != last]
+        selected = random.choice(choices or items)
+        self._last_variant_by_bucket[bucket] = selected
+        return selected
+
     # ─────────────────────────────────────────────────────────────
     # QUERY ROUTING
     # ─────────────────────────────────────────────────────────────
@@ -256,13 +331,15 @@ class Brain:
     def _classify_query(self, text: str) -> str:
         text_lower = text.lower()
 
-        web_keywords = getattr(
-            Config,
-            "WEB_KEYWORDS",
-            [
-                "latest", "today", "news", "current", "price",
-                "weather", "stock", "score", "recent", "update",
-            ],
+        web_keywords = list(
+            getattr(
+                Config,
+                "WEB_KEYWORDS",
+                [
+                    "latest", "today", "news", "current", "price",
+                    "weather", "stock", "score", "recent", "update",
+                ],
+            )
         )
         code_keywords = getattr(
             Config,
@@ -273,11 +350,52 @@ class Brain:
             ],
         )
 
-        if any(word in text_lower for word in web_keywords):
+        if self._requires_live_web_search(text_lower, web_keywords):
             return "web_search"
         if any(word in text_lower for word in code_keywords):
             return "code"
         return "general"
+
+    def _requires_live_web_search(self, text_lower: str, web_keywords: list[str]) -> bool:
+        explicit_online_phrases = [
+            "search the web",
+            "search online",
+            "search the internet",
+            "look it up online",
+            "check online",
+            "browse online",
+        ]
+        if any(phrase in text_lower for phrase in explicit_online_phrases):
+            return True
+
+        live_subjects = [
+            "weather",
+            "forecast",
+            "price",
+            "stock",
+            "score",
+            "news",
+            "exchange rate",
+            "flight",
+            "hotel",
+            "restaurant near me",
+            "bitcoin",
+            "crypto",
+        ]
+        if any(subject in text_lower for subject in live_subjects):
+            return True
+
+        recency_markers = ["latest", "today", "current", "now", "recent", "recently", "update"]
+        public_office_terms = ["president", "prime minister", "ceo", "governor", "mayor"]
+        if any(marker in text_lower for marker in recency_markers) and any(
+            term in text_lower for term in public_office_terms
+        ):
+            return True
+
+        if not getattr(Config, "PREFER_LOCAL_RESOURCES", True):
+            return any(word in text_lower for word in web_keywords)
+
+        return False
 
     def _get_apis_for_query(self, query_type: str) -> List[str]:
         primary = getattr(Config, "PRIMARY_BRAIN", "groq")

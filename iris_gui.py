@@ -10,7 +10,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from config import Config
 from core.engine import IRISEngine
-from core.visual_identity import create_app_icon
+from core.visual_identity import apply_windows_app_user_model_id, create_app_icon
 
 
 class BackdropWidget(QtWidgets.QWidget):
@@ -44,6 +44,7 @@ class OrbWidget(QtWidgets.QWidget):
 
     COLORS = {
         "idle": ("#0E4E86", "#7FDBFF"),
+        "standby": ("#1079A5", "#C4F4FF"),
         "listening": ("#1195D4", "#CFF9FF"),
         "thinking": ("#1769C4", "#98D5FF"),
         "speaking": ("#1AB7D7", "#E7FDFF"),
@@ -74,6 +75,7 @@ class OrbWidget(QtWidgets.QWidget):
     def _tick(self):
         speed = {
             "idle": 0.02,
+            "standby": 0.028,
             "listening": 0.05,
             "thinking": 0.09,
             "speaking": 0.07,
@@ -268,7 +270,15 @@ class FloatingOrbWindow(QtWidgets.QWidget):
 
     def _refresh_labels(self):
         prefix = "OVERDRIVE // " if self._overdrive else ""
-        self.state_label.setText(f"{prefix}{self._current_state.upper()}")
+        label_map = {
+            "standby": "VOICE STANDBY",
+            "idle": "IDLE",
+            "listening": "LISTENING",
+            "thinking": "THINKING",
+            "speaking": "SPEAKING",
+            "error": "ERROR",
+        }
+        self.state_label.setText(f"{prefix}{label_map.get(self._current_state, self._current_state.upper())}")
         if self._overdrive:
             self.hint_label.setText("Critical-focus mode is active.")
         else:
@@ -319,7 +329,11 @@ class EngineWorker(QtCore.QThread):
                         }
                     )
                     return
-                result = self.engine.process_user_input(captured, speak_response=False, input_source="voice")
+                ack_token = self.engine.begin_slow_voice_ack(captured, enabled=True)
+                try:
+                    result = self.engine.process_user_input(captured, speak_response=False, input_source="voice")
+                finally:
+                    self.engine.finish_slow_voice_ack(ack_token, stop_audio=True)
                 self.completed.emit({"captured": captured, "result": result, "mode": "listen"})
                 return
 
@@ -357,20 +371,25 @@ class VoiceStandbyWorker(QtCore.QThread):
                     continue
 
                 heard_text = self.engine.voice.listen_for_wake()
+                normalized_heard = self.engine.normalize_wake_transcript(heard_text)
                 if self.isInterruptionRequested():
                     break
-                if not heard_text or not self.engine.contains_wake_word(heard_text):
+                if not normalized_heard or not self.engine.contains_wake_word(normalized_heard):
                     continue
 
-                stripped = self.engine.strip_wake_word(heard_text)
+                stripped = self.engine.strip_wake_word(normalized_heard)
                 if stripped:
-                    if not self._handle_command(heard_text, stripped, follow_up_turns):
+                    if not self._handle_command(normalized_heard, stripped, follow_up_turns):
                         break
                     continue
 
                 ack = getattr(Config, "WAKE_ACKNOWLEDGEMENT", "I'm here.")
                 self.event.emit({"type": "ack", "text": ack})
-                self.engine.voice.speak(ack)
+                quick_ack = getattr(self.engine.voice, "speak_quick_ack", None)
+                if callable(quick_ack):
+                    quick_ack(ack)
+                else:
+                    self.engine.voice.speak(ack)
 
                 if self.isInterruptionRequested():
                     break
@@ -393,14 +412,22 @@ class VoiceStandbyWorker(QtCore.QThread):
 
     def _handle_command(self, display_text: str, command_text: str, follow_up_turns: int) -> bool:
         self.event.emit({"type": "heard", "text": display_text})
-        result = self.engine.process_user_input(command_text, speak_response=False, input_source="voice")
+        ack_token = self.engine.begin_slow_voice_ack(command_text, enabled=True)
+        try:
+            result = self.engine.process_user_input(command_text, speak_response=False, input_source="voice")
+        finally:
+            self.engine.finish_slow_voice_ack(ack_token, stop_audio=True)
         self.event.emit({"type": "result", "result": result})
 
+        if result.should_exit:
+            if result.response and not getattr(result, "exit_immediately", False):
+                self.engine.voice.speak(result.response)
+            else:
+                self.engine.voice.stop_speaking()
+            self.event.emit({"type": "shutdown", "immediate": getattr(result, "exit_immediately", False)})
+            return False
         if result.response:
             self.engine.voice.speak(result.response)
-        if result.should_exit:
-            self.event.emit({"type": "shutdown"})
-            return False
 
         for _ in range(follow_up_turns):
             if self.isInterruptionRequested() or self.should_pause():
@@ -413,13 +440,21 @@ class VoiceStandbyWorker(QtCore.QThread):
                 break
 
             self.event.emit({"type": "heard", "text": follow_up})
-            result = self.engine.process_user_input(follow_up, speak_response=False, input_source="voice")
+            ack_token = self.engine.begin_slow_voice_ack(follow_up, enabled=True)
+            try:
+                result = self.engine.process_user_input(follow_up, speak_response=False, input_source="voice")
+            finally:
+                self.engine.finish_slow_voice_ack(ack_token, stop_audio=True)
             self.event.emit({"type": "result", "result": result})
+            if result.should_exit:
+                if result.response and not getattr(result, "exit_immediately", False):
+                    self.engine.voice.speak(result.response)
+                else:
+                    self.engine.voice.stop_speaking()
+                self.event.emit({"type": "shutdown", "immediate": getattr(result, "exit_immediately", False)})
+                return False
             if result.response:
                 self.engine.voice.speak(result.response)
-            if result.should_exit:
-                self.event.emit({"type": "shutdown"})
-                return False
 
         return True
 
@@ -446,6 +481,7 @@ class IrisWindow(QtWidgets.QMainWindow):
         self._sticky_footer = False
         self._startup_enabled = self._has_startup_shortcut()
         self._first_tray_hint_shown = self.settings.value("tray_hint_shown", False, type=bool)
+        self._startup_sequence_completed = False
         self._mode_banner_base = "SAY IRIS ANY TIME"
         self.app_icon = create_app_icon()
         self.setWindowIcon(self.app_icon)
@@ -461,8 +497,7 @@ class IrisWindow(QtWidgets.QMainWindow):
             self.tray = None
         self._setup_floating_orb()
         self.refresh_status()
-        if self._start_voice_standby_enabled:
-            self._start_voice_standby()
+        self._queue_startup_sequence()
 
         if self.settings.value("floating_mode", False, type=bool):
             self.set_floating_mode(True, announce=False)
@@ -513,6 +548,49 @@ class IrisWindow(QtWidgets.QMainWindow):
         self.wake_worker.event.connect(self.on_standby_event)
         self.wake_worker.failed.connect(self.on_worker_failed)
         self.wake_worker.start()
+
+    def _queue_startup_sequence(self):
+        delay_ms = max(0, int(getattr(Config, "STARTUP_GREETING_DELAY_MS", 0)))
+        QtCore.QTimer.singleShot(delay_ms, self._complete_startup_sequence)
+
+    def _complete_startup_sequence(self):
+        if self._startup_sequence_completed or self._quitting:
+            return
+        self._startup_sequence_completed = True
+
+        greeting = ""
+        greeting_thread = None
+        if bool(getattr(Config, "STARTUP_GREETING_ENABLED", True)):
+            try:
+                greeting = (self.engine.brain.startup_greeting() or "").strip()
+            except Exception:
+                greeting = ""
+
+        if greeting:
+            self.append_message(Config.PUBLIC_NAME, greeting, "assistant")
+            self.footer.setText(greeting)
+            if self.tray and not self.isVisible():
+                self.tray.showMessage(Config.PUBLIC_NAME, greeting, self.app_icon, 5000)
+            if getattr(self.engine.voice, "audio_ready", False):
+                greeting_thread = self.engine.voice.speak_background(greeting)
+
+        if self._start_voice_standby_enabled:
+            self._start_voice_standby_after_greeting(greeting_thread)
+
+    def _start_voice_standby_after_greeting(self, greeting_thread=None):
+        if self._quitting or not self._start_voice_standby_enabled:
+            return
+
+        if greeting_thread is not None and getattr(greeting_thread, "is_alive", None):
+            if greeting_thread.is_alive():
+                QtCore.QTimer.singleShot(
+                    120,
+                    lambda thread=greeting_thread: self._start_voice_standby_after_greeting(thread),
+                )
+                return
+
+        delay_ms = max(0, int(getattr(Config, "STARTUP_LISTEN_AFTER_GREETING_MS", 180)))
+        QtCore.QTimer.singleShot(delay_ms, self._start_voice_standby)
 
     def _stop_voice_standby(self):
         if not self.wake_worker:
@@ -679,7 +757,7 @@ class IrisWindow(QtWidgets.QMainWindow):
 
         self.append_message(
             "SYSTEM",
-            f"{Config.PUBLIC_NAME} is online. Say Iris any time, even while minimized or floating.",
+            "Voice standby online. Say Iris any time.",
             "system",
         )
         self._set_mode_banner("SAY IRIS ANY TIME")
@@ -711,11 +789,21 @@ class IrisWindow(QtWidgets.QMainWindow):
     def on_voice_state(self, state: str):
         self.orb.set_state(state)
         self.floating_window.set_state(state)
-        self.state_pill.setText(state.upper())
+        state_pill_map = {
+            "standby": "VOICE STANDBY",
+            "idle": "IDLE",
+            "listening": "LISTENING",
+            "thinking": "THINKING",
+            "speaking": "SPEAKING",
+            "error": "ERROR",
+        }
+        self.state_pill.setText(state_pill_map.get(state, state.upper()))
         footer_map = {
-            "idle": "Voice standby online. Say Iris at any time.",
+            "standby": "Voice standby online. Say Iris at any time.",
+            "idle": "Standing by.",
             "listening": "Listening for 'Iris' or your command.",
             "speaking": "Iris is speaking.",
+            "thinking": "Thinking through the request...",
         }
         if state == "listening" or not self._sticky_footer:
             self.footer.setText(footer_map.get(state, self.footer.text()))
@@ -819,7 +907,8 @@ class IrisWindow(QtWidgets.QMainWindow):
             return
 
         if event_type == "shutdown":
-            QtCore.QTimer.singleShot(200, self.quit_app)
+            delay_ms = 50 if payload.get("immediate") else 200
+            QtCore.QTimer.singleShot(delay_ms, self.quit_app)
 
     def _display_result(self, result, speak: bool):
         self._sticky_footer = False
@@ -827,13 +916,14 @@ class IrisWindow(QtWidgets.QMainWindow):
         self.append_message(result.label, result.response, kind)
         self._set_mode_banner(f"{result.mode.upper()} MODE")
         self.refresh_status()
-        if speak:
+        if speak and not getattr(result, "exit_immediately", False):
             self.engine.voice.speak_background(result.response)
         if self.tray and not self.isVisible():
             snippet = result.response if len(result.response) < 180 else result.response[:177] + "..."
             self.tray.showMessage(result.label, snippet, self.app_icon, 7000)
         if result.should_exit:
-            QtCore.QTimer.singleShot(1500, self.quit_app)
+            delay_ms = 50 if getattr(result, "exit_immediately", False) else 1500
+            QtCore.QTimer.singleShot(delay_ms, self.quit_app)
 
     def on_worker_failed(self, message: str):
         self._sticky_footer = True
@@ -848,12 +938,17 @@ class IrisWindow(QtWidgets.QMainWindow):
 
     def on_worker_finished(self):
         self.set_busy(False)
-        if self.engine.voice.current_state == "idle":
-            self.orb.set_state("idle")
-            self.floating_window.set_state("idle")
-            self.state_pill.setText("IDLE")
+        if self.engine.voice.current_state in {"idle", "standby"}:
+            target_state = "standby" if self.wake_worker and self.wake_worker.isRunning() else "idle"
+            self.orb.set_state(target_state)
+            self.floating_window.set_state(target_state)
+            self.state_pill.setText("VOICE STANDBY" if target_state == "standby" else "IDLE")
             if not self._sticky_footer:
-                self.footer.setText("Standing by.")
+                self.footer.setText(
+                    "Voice standby online. Say Iris at any time."
+                    if target_state == "standby"
+                    else "Standing by."
+                )
         self._apply_engine_visuals()
 
     def refresh_status(self):
@@ -1090,6 +1185,7 @@ class IrisWindow(QtWidgets.QMainWindow):
 
 
 def main():
+    apply_windows_app_user_model_id()
     app = QtWidgets.QApplication(sys.argv)
     app.setApplicationName(Config.PUBLIC_NAME.upper())
     app.setOrganizationName("Aletheia")

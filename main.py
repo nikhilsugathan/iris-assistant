@@ -59,6 +59,18 @@ def print_response(label: str, text: str) -> None:
     console.print(f"\n[bold cyan]{label}:[/bold cyan] {text}\n")
 
 
+def process_voice_turn(engine: IRISEngine, command: str) -> object:
+    ack_token = engine.begin_slow_voice_ack(command, enabled=True)
+    try:
+        result = engine.process_user_input(command, speak_response=False, input_source="voice")
+    finally:
+        engine.finish_slow_voice_ack(ack_token, stop_audio=True)
+
+    if result.response and not getattr(result, "exit_immediately", False):
+        engine.voice.speak(result.response)
+    return result
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="IRIS AI Assistant")
     parser.add_argument("--text", action="store_true", help="Keyboard input mode")
@@ -99,7 +111,7 @@ def main() -> None:
 
             if stripped:
                 console.print(f"[green]Wake detected:[/green] {heard_text}")
-                result = engine.process_user_input(stripped, speak_response=True, input_source="voice")
+                result = process_voice_turn(engine, stripped)
                 print_response(result.label, result.response)
                 if result.should_exit:
                     break
@@ -114,7 +126,7 @@ def main() -> None:
                         print_response("System", voice.describe_last_listen_feedback())
                     continue
 
-                result = engine.process_user_input(command, speak_response=True, input_source="voice")
+                result = process_voice_turn(engine, command)
                 print_response(result.label, result.response)
                 if result.should_exit:
                     break
@@ -131,7 +143,7 @@ def main() -> None:
                     console.print("[dim]  → Conversation ended[/dim]")
                     break
 
-                result = engine.process_user_input(follow_up, speak_response=True, input_source="voice")
+                result = process_voice_turn(engine, follow_up)
                 print_response(result.label, result.response)
                 if result.should_exit:
                     return

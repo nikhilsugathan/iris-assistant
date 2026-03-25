@@ -10,6 +10,7 @@ __pycache__/
 iris_memory.json
 iris_actions.log
 iris_audit.log
+iris_environment_cache.json
 
 # VS Code
 .vscode/

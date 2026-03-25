@@ -23,8 +23,19 @@ def main():
     image = render_orb_image(512)
     if not image.save(str(png_path), "PNG"):
         raise RuntimeError(f"Failed to write {png_path}")
-    if not image.save(str(ico_path), "ICO"):
-        raise RuntimeError(f"Failed to write {ico_path}")
+
+    try:
+        from PIL import Image
+
+        base = Image.open(png_path)
+        base.save(
+            ico_path,
+            format="ICO",
+            sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
+        )
+    except Exception:
+        if not image.save(str(ico_path), "ICO"):
+            raise RuntimeError(f"Failed to write {ico_path}")
 
     print(f"Wrote {png_path}")
     print(f"Wrote {ico_path}")

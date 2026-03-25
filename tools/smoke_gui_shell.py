@@ -15,7 +15,7 @@ WORKSPACE = Path(__file__).resolve().parents[1]
 if str(WORKSPACE) not in sys.path:
     sys.path.insert(0, str(WORKSPACE))
 
-from PySide6 import QtGui, QtWidgets
+from PySide6 import QtGui, QtTest, QtWidgets
 
 from config import Config
 from core.engine import IRISEngine
@@ -69,8 +69,24 @@ def main() -> None:
         window.show_dashboard(announce=False)
         window.show()
         app.processEvents()
+        QtTest.QTest.qWait(max(80, int(getattr(Config, "STARTUP_GREETING_DELAY_MS", 0)) + 80))
+        app.processEvents()
 
         assert_true(window.mode_label.text() == "SAY IRIS ANY TIME", "Dashboard mode banner did not initialize correctly.")
+        transcript_text = window.transcript.toPlainText()
+        if getattr(Config, "STARTUP_GREETING_ENABLED", True):
+            assert_true(
+                any(greeting in transcript_text for greeting in getattr(Config, "STARTUP_GREETINGS", [])),
+                "Startup greeting did not appear in the dashboard transcript.",
+            )
+
+        window.on_voice_state("standby")
+        app.processEvents()
+        assert_true(window.state_pill.text() == "VOICE STANDBY", "Standby state did not render the expected pill label.")
+        assert_true(
+            window.footer.text() == "Voice standby online. Say Iris at any time.",
+            "Standby state did not keep the stable voice standby footer.",
+        )
 
         window.on_voice_state("thinking")
         app.processEvents()

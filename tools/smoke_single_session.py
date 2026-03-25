@@ -604,6 +604,23 @@ def main() -> None:
             "Overdrive deactivation did not return the expected response.",
         )
 
+        spoken_count_before_terminate = len(spoken_messages)
+        terminate_result = engine.process_user_input("please terminate the app", speak_response=True)
+        assert_true(terminate_result.should_exit, "Terminate command did not request shutdown.")
+        assert_true(terminate_result.mode == "terminate", "Terminate command did not use the terminate mode.")
+        assert_true(
+            terminate_result.exit_immediately,
+            "Terminate command should mark the shutdown as immediate.",
+        )
+        assert_true(
+            terminate_result.response == "Terminating now.",
+            "Terminate command did not return the expected response.",
+        )
+        assert_true(
+            len(spoken_messages) == spoken_count_before_terminate,
+            "Terminate command should not route a delayed spoken farewell before exit.",
+        )
+
         security = engine.executor.security
         assert_true(
             security.assess({"action_type": "run_command", "command": "msfconsole"})[0] == "BLOCKED",

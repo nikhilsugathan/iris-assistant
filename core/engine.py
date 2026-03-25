@@ -7,6 +7,7 @@ Reusable session engine for GUI and terminal entry points.
 from __future__ import annotations
 
 import difflib
+import re
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -30,9 +31,22 @@ class EngineResult:
     response: str
     should_exit: bool = False
     mode: str = "chat"
+    exit_immediately: bool = False
 
 
 class IRISEngine:
+    SHUTDOWN_COMMANDS = {
+        "exit",
+        "quit",
+        "goodbye iris",
+        "shutdown",
+    }
+    TERMINATE_COMMANDS = {
+        "terminate",
+        "terminate iris",
+        "iris terminate",
+        "terminate immediately",
+    }
     OVERDRIVE_ON_COMMANDS = {
         "activate overdrive",
         "overdrive on",
@@ -79,6 +93,11 @@ class IRISEngine:
             "fallback_brain": Config.FALLBACK_BRAIN,
             "audio_ready": getattr(self.voice, "audio_ready", False),
             "mic_ready": getattr(self.voice, "mic_ready", False),
+            "selected_mic_name": getattr(self.voice, "selected_mic_name", ""),
+            "last_transcript_backend": getattr(self.voice, "last_transcript_backend", ""),
+            "last_transcript_confidence": getattr(self.voice, "last_transcript_confidence", 0.0),
+            "last_transcript_language": getattr(self.voice, "last_transcript_language", ""),
+            "last_tts_backend": getattr(self.voice, "last_tts_backend", ""),
             "wake_words": list(getattr(Config, "WAKE_WORDS", [])),
             "self_model": self.self_model.summary(),
             "memory": self.memory.summary(),
@@ -103,7 +122,23 @@ class IRISEngine:
             self.executor.set_input_source(inferred_source)
             self.refresh_overdrive()
 
-            if user_input.lower() in {"exit", "quit", "goodbye iris", "shutdown"}:
+            lowered_input = user_input.lower()
+
+            if self._is_terminate_command(lowered_input):
+                try:
+                    self.voice.stop_speaking()
+                except Exception:
+                    pass
+                msg = "Terminating now."
+                return EngineResult(
+                    label=Config.PUBLIC_NAME,
+                    response=msg,
+                    should_exit=True,
+                    mode="terminate",
+                    exit_immediately=True,
+                )
+
+            if lowered_input in self.SHUTDOWN_COMMANDS:
                 msg = "Shutting down. Try not to break anything while I'm gone."
                 self._speak_if_enabled(msg, speak_response)
                 return EngineResult(label=Config.PUBLIC_NAME, response=msg, should_exit=True, mode="shutdown")
@@ -324,6 +359,48 @@ class IRISEngine:
     def listen_for_voice_command(self) -> str:
         return self.voice.listen_for_command()
 
+    def begin_slow_voice_ack(self, user_input: str, enabled: bool = True):
+        if not enabled or not getattr(self.voice, "audio_ready", False):
+            return None
+
+        delay_ms = max(0, int(getattr(Config, "ACK_ON_SLOW_THINK_MS", 0)))
+        if delay_ms <= 0:
+            return None
+
+        ack_text = self.brain.quick_ack(user_input)
+        if not ack_text:
+            thinking_acks = list(getattr(Config, "THINKING_ACKS", []) or [])
+            ack_text = thinking_acks[0].strip() if thinking_acks else ""
+        if not ack_text:
+            return None
+
+        stop_event = threading.Event()
+
+        def delayed_ack():
+            if stop_event.wait(delay_ms / 1000):
+                return
+            try:
+                self.voice.speak_background(ack_text)
+            except Exception:
+                pass
+
+        threading.Thread(target=delayed_ack, daemon=True).start()
+        return stop_event
+
+    def finish_slow_voice_ack(self, token, stop_audio: bool = True) -> None:
+        if token is None:
+            return
+        try:
+            token.set()
+        except Exception:
+            return
+        if not stop_audio:
+            return
+        try:
+            self.voice.stop_speaking()
+        except Exception:
+            pass
+
     def shutdown(self) -> None:
         try:
             self.voice.stop()
@@ -349,11 +426,41 @@ class IRISEngine:
         if enabled:
             self.voice.speak(text)
 
+    def _is_terminate_command(self, lowered_input: str) -> bool:
+        lowered_input = (lowered_input or "").strip()
+        if lowered_input in self.TERMINATE_COMMANDS:
+            return True
+
+        tokens = re.findall(r"[a-z]+", lowered_input)
+        if not tokens or "terminate" not in tokens:
+            return False
+
+        blocked_context = {
+            "command", "commands", "why", "what", "when", "how", "meaning",
+            "means", "meant", "example", "examples", "test", "testing",
+        }
+        if any(token in blocked_context for token in tokens):
+            return False
+
+        if len(tokens) <= 4:
+            return True
+
+        if Config.PUBLIC_NAME.lower() in tokens and len(tokens) <= 6:
+            return True
+
+        if any(token in {"now", "immediately", "app", "application"} for token in tokens):
+            return True
+
+        return False
+
     def contains_wake_word(self, text: str) -> bool:
         text_l = (text or "").lower().strip()
         wake_words = [w.lower() for w in getattr(Config, "WAKE_WORDS", [])]
 
         if any(w in text_l for w in wake_words):
+            return True
+
+        if self._leading_wake_match(text_l):
             return True
 
         words = text_l.split()
@@ -371,8 +478,22 @@ class IRISEngine:
 
         return False
 
-    def strip_wake_word(self, text: str) -> str:
+    def normalize_wake_transcript(self, text: str) -> str:
         cleaned = (text or "").strip()
+        if not cleaned:
+            return ""
+
+        match = self._leading_wake_match(cleaned.lower())
+        if not match:
+            return cleaned
+
+        matched_phrase, canonical_wake = match
+        remainder = cleaned[len(matched_phrase):].strip(" ,:.-")
+        canonical_display = canonical_wake.capitalize()
+        return f"{canonical_display} {remainder}".strip()
+
+    def strip_wake_word(self, text: str) -> str:
+        cleaned = self.normalize_wake_transcript(text)
         text_l = cleaned.lower()
 
         for wake in sorted(getattr(Config, "WAKE_WORDS", []), key=len, reverse=True):
@@ -385,6 +506,34 @@ class IRISEngine:
             return parts[1].strip()
 
         return cleaned
+
+    def _leading_wake_match(self, text: str) -> tuple[str, str] | None:
+        normalized = (text or "").strip().lower()
+        if not normalized:
+            return None
+
+        wake_aliases = getattr(Config, "WAKE_WORD_ALIASES", {}) or {}
+        variants: list[tuple[str, str]] = []
+
+        for wake in getattr(Config, "WAKE_WORDS", []) or []:
+            wake_l = str(wake or "").lower().strip()
+            if not wake_l:
+                continue
+            variants.append((wake_l, wake_l))
+            for alias in wake_aliases.get(wake_l, []) or []:
+                alias_l = str(alias or "").lower().strip()
+                if alias_l:
+                    variants.append((alias_l, wake_l))
+
+        for variant, canonical in sorted(variants, key=lambda item: len(item[0]), reverse=True):
+            if normalized == variant:
+                return variant, canonical
+            if normalized.startswith(f"{variant} "):
+                return variant, canonical
+            if normalized.startswith(f"{variant},") or normalized.startswith(f"{variant}.") or normalized.startswith(f"{variant}:"):
+                return variant, canonical
+
+        return None
 
     def should_end_followup(self, text: str) -> bool:
         lowered = (text or "").lower().strip()

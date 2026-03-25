@@ -6,6 +6,10 @@ This build is now local-first, voice-capable, and includes a desktop GUI shell w
 
 ## Current Shape
 - Local-first brain routing through Ollama: `phi3.5`, `llama3.1:8b`, `deepseek-r1:8b`
+- Local system-intel routing for machine facts like time, location, battery, storage, memory, and network state
+- Hybrid voice stack: Windows system voices and Windows speech recognition first, cloud fallbacks second
+- Local resource guardrails so offline features back off when memory is tight or battery is low
+- Weather caching with last-synced fallback so offline weather answers stay explicit instead of guessed
 - Cognitive routing layer: self-model, dialog manager, council, diagnostics
 - Autonomous action handling with security gating
 - Voice output with state-aware playback improvements
@@ -52,5 +56,7 @@ dist\IRIS.exe
 
 ## Notes
 - If Ollama is running, IRIS can function even without cloud API keys.
+- System resources are used first where possible; cloud APIs remain available as fallbacks instead of the default.
+- Local-first is safety-bounded: if the laptop is low on free memory or low on battery, IRIS can fall back instead of pushing harder.
 - If you want cloud fallback, keep your `.env` file available.
 - `Aletheia` remains an internal codename in the architecture, but the application presents itself simply as `IRIS`.

@@ -1,24 +1,36 @@
 """
 IRIS Voice Module v4
 ====================
-STT  : Groq Whisper API (fast, accurate, free with your Groq key)
-       Falls back to Google STT if Groq unavailable
-TTS  : Edge TTS with immediate single-chunk playback (no lag)
+STT  : Windows speech recognition first, then Groq Whisper, then Google
+TTS  : Windows SAPI voices first, then Edge TTS fallback
 """
 
 import asyncio
+import difflib
 import io
+import json
 import os
 import re
+import subprocess
 import tempfile
 import threading
 import time
 import wave
+from dataclasses import dataclass
 
 from rich.console import Console
 from config import Config
+from core.resource_guard import ResourceGuard
 
 console = Console()
+
+
+@dataclass
+class TranscriptCandidate:
+    backend: str
+    text: str = ""
+    confidence: float = 0.0
+    language: str = ""
 
 
 class Voice:
@@ -31,6 +43,8 @@ class Voice:
         self.audio_ready     = False
         self.mic_ready       = False
         self.mic_error       = None
+        self._local_tts_engine = None
+        self.resource_guard = ResourceGuard()
         self.calibrated      = False
         self.selected_mic_name  = "Default"
         self.selected_mic_index = None
@@ -38,6 +52,12 @@ class Voice:
         self.microphone      = None
         self.last_listen_status = "idle"
         self.last_listen_detail = ""
+        self.last_calibrated_at = 0.0
+        self.listen_failures = 0
+        self.last_transcript_backend = ""
+        self.last_transcript_confidence = 0.0
+        self.last_transcript_language = ""
+        self.last_tts_backend = ""
 
         self._init_audio()
         self._init_mic()
@@ -66,6 +86,8 @@ class Voice:
         self._state_callback = callback
 
     def _emit_state(self, state: str):
+        if state == self.current_state:
+            return
         self.current_state = state
         callback = self._state_callback
         if not callback:
@@ -81,7 +103,15 @@ class Voice:
         try:
             import speech_recognition as sr
             self.recognizer = sr.Recognizer()
-            self.recognizer.dynamic_energy_threshold = False
+            self.recognizer.dynamic_energy_threshold = bool(
+                getattr(Config, "MIC_DYNAMIC_ENERGY_THRESHOLD", True)
+            )
+            self.recognizer.dynamic_energy_adjustment_damping = float(
+                getattr(Config, "MIC_DYNAMIC_ENERGY_ADJUSTMENT_DAMPING", 0.18)
+            )
+            self.recognizer.dynamic_energy_ratio = float(
+                getattr(Config, "MIC_DYNAMIC_ENERGY_RATIO", 1.6)
+            )
             self.recognizer.energy_threshold         = getattr(Config, "MIC_ENERGY_THRESHOLD", 50)
             self.recognizer.pause_threshold          = getattr(Config, "MIC_PAUSE_THRESHOLD", 0.6)
             self.recognizer.phrase_threshold         = getattr(Config, "MIC_PHRASE_THRESHOLD", 0.2)
@@ -89,15 +119,7 @@ class Voice:
 
             mic_names = sr.Microphone.list_microphone_names()
             preferred = getattr(Config, "PREFERRED_MIC_NAME", "").strip()
-            mic_index = None
-            mic_name  = "Default Windows microphone"
-
-            if preferred:
-                for i, name in enumerate(mic_names):
-                    if preferred.lower() in name.lower():
-                        mic_index = i
-                        mic_name  = name
-                        break
+            mic_index, mic_name = self._select_microphone_device(mic_names, preferred)
 
             self.microphone = sr.Microphone(
                 device_index=mic_index,
@@ -121,15 +143,89 @@ class Voice:
             self.mic_error = str(e)
             console.print(f"[red]Microphone init failed:[/red] {e}")
 
+    def _select_microphone_device(self, mic_names: list[str], preferred: str) -> tuple[int | None, str]:
+        if not mic_names:
+            return None, "Default Windows microphone"
+
+        ranked = sorted(
+            ((self._score_microphone_name(name, preferred), index, name) for index, name in enumerate(mic_names)),
+            key=lambda item: (-item[0], item[1]),
+        )
+
+        best_score, best_index, best_name = ranked[0]
+        if best_score <= -100:
+            return None, "Default Windows microphone"
+
+        if len(ranked) > 1:
+            preview = ", ".join(
+                f"{idx}:{name.strip()} ({score})"
+                for score, idx, name in ranked[:3]
+                if score > -100
+            )
+            if preview:
+                console.print(f"[dim]Top microphone candidates:[/dim] {preview}")
+
+        return best_index, best_name
+
+    def _score_microphone_name(self, name: str, preferred: str) -> int:
+        normalized = self._normalize_microphone_name(name)
+        preferred = self._normalize_microphone_name(preferred)
+        score = 0
+
+        if not normalized:
+            return -1000
+
+        if preferred:
+            if preferred in normalized:
+                score += 120
+            else:
+                score -= 20
+
+        if normalized.startswith("microphone ("):
+            score += 85
+        if "microphone array" in normalized:
+            score += 30
+        if normalized.startswith("headset microphone"):
+            score -= 105
+
+        if "hands-free" in normalized or "bthhfenum" in normalized:
+            score -= 120
+        if "@system32" in normalized:
+            score -= 80
+        if "mapper" in normalized or "primary sound" in normalized:
+            score -= 120
+        if normalized.startswith("input ("):
+            score -= 90
+        if "stereo mix" in normalized:
+            score -= 140
+        if "output" in normalized or "speaker" in normalized or "headphones" in normalized:
+            score -= 160
+
+        if "realtek" in normalized or "turtle beach" in normalized:
+            score += 15
+
+        if preferred:
+            preferred_tokens = [token for token in re.split(r"[^a-z0-9]+", preferred) if len(token) >= 3]
+            token_hits = sum(1 for token in preferred_tokens if token in normalized)
+            score += token_hits * 12
+
+        return score
+
+    def _normalize_microphone_name(self, text: str) -> str:
+        normalized = str(text or "").lower().strip()
+        normalized = re.sub(r"\bg(\d+)\b", r"gen \1", normalized)
+        normalized = re.sub(r"\s+", " ", normalized)
+        return normalized
+
     def _calibrate(self):
         if not self.mic_ready or self.calibrated:
             return
         try:
             with self.microphone as source:
                 console.print("[dim]Calibrating microphone... stay quiet.[/dim]")
-                self.recognizer.adjust_for_ambient_noise(
+                self._recalibrate_with_source(
                     source,
-                    duration=getattr(Config, "MIC_CALIBRATION_SECONDS", 2.0)
+                    duration=getattr(Config, "MIC_CALIBRATION_SECONDS", 2.0),
                 )
             self.calibrated = True
             console.print(
@@ -139,6 +235,33 @@ class Voice:
         except Exception as e:
             console.print(f"[yellow]Calibration warning:[/yellow] {e}")
 
+    def _recalibrate_with_source(self, source, duration: float) -> None:
+        self.recognizer.adjust_for_ambient_noise(source, duration=max(0.1, float(duration)))
+        self.last_calibrated_at = time.time()
+        self.listen_failures = 0
+        self.calibrated = True
+
+    def _maybe_recalibrate(self, source, wake_mode: bool) -> None:
+        now = time.time()
+        max_age = max(15, int(getattr(Config, "MIC_AUTO_RECALIBRATE_SECONDS", 180)))
+        failure_threshold = max(1, int(getattr(Config, "MIC_RECALIBRATE_ON_FAILURES", 2)))
+        quick_duration = float(getattr(Config, "MIC_RECALIBRATION_QUICK_SECONDS", 0.35))
+
+        should_recalibrate = not self.calibrated
+        should_recalibrate = should_recalibrate or (self.last_calibrated_at and (now - self.last_calibrated_at) >= max_age)
+        should_recalibrate = should_recalibrate or (self.listen_failures >= failure_threshold)
+
+        if not should_recalibrate:
+            return
+
+        duration = getattr(Config, "MIC_CALIBRATION_SECONDS", 2.0) if not self.calibrated else quick_duration
+        if not wake_mode and self.listen_failures >= failure_threshold:
+            console.print("[dim]Recalibrating microphone for the current room noise...[/dim]")
+        try:
+            self._recalibrate_with_source(source, duration=duration)
+        except Exception as e:
+            console.print(f"[yellow]Mic recalibration warning:[/yellow] {e}")
+
     # ─────────────────────────────────────────────────────────────
     # LISTEN
     # ─────────────────────────────────────────────────────────────
@@ -147,7 +270,6 @@ class Voice:
         return input("You: ")
 
     def listen_for_wake(self) -> str:
-        # Wake detection uses fast Google STT, not Groq Whisper
         if self.text_mode:
             return self.listen_text()
         time.sleep(0.2)   # Brief cooldown to avoid TTS echo
@@ -177,11 +299,14 @@ class Voice:
             time.sleep(1)
             return ""
 
+        active_state = "standby" if wake_mode else "listening"
+        settle_state = "standby" if wake_mode else "idle"
         self.last_listen_status = "listening"
         self.last_listen_detail = ""
-        self._emit_state("listening")
+        self._emit_state(active_state)
         try:
             with self.microphone as source:
+                self._maybe_recalibrate(source, wake_mode=wake_mode)
                 if not wake_mode:
                     console.print("[dim]Listening...[/dim]")
                 audio = self.recognizer.listen(
@@ -192,26 +317,27 @@ class Voice:
         except sr.WaitTimeoutError:
             self.last_listen_status = "timeout"
             self.last_listen_detail = "No speech was detected before the listen timeout."
-            self._emit_state("idle")
+            self.listen_failures += 1
+            self._emit_state(settle_state)
             return ""
         except Exception as e:
             self.last_listen_status = "mic_error"
             self.last_listen_detail = str(e)
+            self.listen_failures += 1
             self._emit_state("idle")
             if not wake_mode:
                 console.print(f"[red]Mic error:[/red] {e}")
             return ""
 
-        # Wake mode: use fast Google STT only (Groq adds 1-2s latency)
-        # Command mode: use accurate Groq Whisper, fall back to Google
         if wake_mode:
-            text = self._transcribe_google(audio)
+            text = self._transcribe_wake(audio)
         else:
             text = self._transcribe_command(audio)
 
         if text:
             self.last_listen_status = "heard"
             self.last_listen_detail = text
+            self.listen_failures = 0
             if wake_mode and getattr(Config, "SHOW_WAKE_DEBUG", True):
                 console.print(f"[dim]Wake heard:[/dim] {text}")
             elif not wake_mode:
@@ -220,12 +346,14 @@ class Voice:
         elif not wake_mode:
             self.last_listen_status = "transcription_failed"
             self.last_listen_detail = "Audio was captured, but speech recognition could not produce text."
+            self.listen_failures += 1
             console.print("[dim]Heard audio but couldn't transcribe it.[/dim]")
         else:
             self.last_listen_status = "wake_not_understood"
             self.last_listen_detail = "Wake audio was captured, but no wake phrase was recognized."
+            self.listen_failures += 1
 
-        self._emit_state("idle")
+        self._emit_state(settle_state)
         return text or ""
 
     def describe_last_listen_feedback(self) -> str:
@@ -252,58 +380,275 @@ class Voice:
             return "I heard you, but I couldn't make that out."
         return "I didn't catch that."
 
-    def _transcribe_command(self, audio) -> str:
-        priority = getattr(Config, "STT_PRIORITY", "google_first").lower().strip()
-        order = [self._transcribe_google, self._transcribe_groq]
-        if priority == "groq_first":
-            order = [self._transcribe_groq, self._transcribe_google]
+    def _transcribe_wake(self, audio) -> str:
+        priority = getattr(Config, "WAKE_STT_PRIORITY", "system_first").lower().strip()
+        allow_local_stt, _ = self.resource_guard.allows_local_stt()
+        order = ["google"]
+        if allow_local_stt:
+            order = ["system", "google"]
 
-        for recognizer in order:
-            text = recognizer(audio)
-            if text:
-                return text
-        return ""
+        if priority == "google_first":
+            order = ["google", "system"]
+        elif priority == "google_only":
+            order = ["google"]
+        elif priority == "system_only":
+            order = ["system"] if allow_local_stt else ["google"]
+        elif priority == "system_first" and not allow_local_stt:
+            order = ["google"]
+
+        if not allow_local_stt:
+            order = [backend for backend in order if backend != "system"]
+            if not order:
+                order = ["google"]
+
+        return self._select_transcript(order, audio, wake_mode=True)
+
+    def _transcribe_command(self, audio) -> str:
+        priority = getattr(Config, "STT_PRIORITY", "adaptive").lower().strip()
+        allow_local_stt, _ = self.resource_guard.allows_local_stt()
+        order = ["system", "groq", "google"]
+
+        if priority == "groq_first":
+            order = ["groq", "system", "google"]
+        elif priority == "google_first":
+            order = ["google", "system", "groq"]
+        elif priority == "system_only":
+            order = ["system"] if allow_local_stt else ["groq", "google"]
+        elif priority == "groq_only":
+            order = ["groq"]
+        elif priority == "google_only":
+            order = ["google"]
+
+        if not allow_local_stt:
+            order = [backend for backend in order if backend != "system"]
+            if not order:
+                order = ["groq", "google"]
+
+        return self._select_transcript(order, audio, wake_mode=False)
+
+    def _transcribe_windows(self, audio) -> str:
+        return self._transcribe_windows_candidate(audio).text
+
+    def _transcribe_windows_wake_candidate(self, audio) -> TranscriptCandidate:
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as handle:
+                tmp_path = handle.name
+
+            self._write_audio_wav(audio, tmp_path)
+            escaped_path = tmp_path.replace("'", "''")
+            languages = []
+            for lang in self._stt_languages():
+                safe_lang = str(lang or "").replace("'", "''")
+                if safe_lang:
+                    languages.append(f"'{safe_lang}'")
+            language_array = ", ".join(languages)
+
+            variants = []
+            for variant in self._wake_phrase_variants():
+                safe_variant = str(variant or "").replace("'", "''")
+                if safe_variant:
+                    variants.append(f"'{safe_variant}'")
+            variant_array = ", ".join(variants)
+
+            script = f"""
+Add-Type -AssemblyName System.Speech
+$path = '{escaped_path}'
+$languages = @({language_array})
+$variants = @({variant_array})
+$best = $null
+$bestScore = -1.0
+foreach ($lang in $languages) {{
+  try {{
+    $culture = [System.Globalization.CultureInfo]::GetCultureInfo($lang)
+    $engine = New-Object System.Speech.Recognition.SpeechRecognitionEngine($culture)
+    $choices = New-Object System.Speech.Recognition.Choices
+    foreach ($variant in $variants) {{
+      [void]$choices.Add($variant)
+    }}
+    $builder = New-Object System.Speech.Recognition.GrammarBuilder
+    $builder.Culture = $culture
+    [void]$builder.Append($choices)
+    $grammar = New-Object System.Speech.Recognition.Grammar($builder)
+    $engine.LoadGrammar($grammar)
+    $engine.InitialSilenceTimeout = [TimeSpan]::FromSeconds(1.0)
+    $engine.EndSilenceTimeout = [TimeSpan]::FromMilliseconds(350)
+    $engine.EndSilenceTimeoutAmbiguous = [TimeSpan]::FromMilliseconds(500)
+    $engine.BabbleTimeout = [TimeSpan]::FromMilliseconds(500)
+    $engine.SetInputToWaveFile($path)
+    $result = $engine.Recognize()
+    if ($result -and $result.Text) {{
+      $confidence = 0.0
+      try {{
+        $confidence = [double]$result.Confidence
+      }} catch {{
+      }}
+      if (-not $best -or $confidence -gt $bestScore) {{
+        $bestScore = $confidence
+        $best = [pscustomobject]@{{
+          text = $result.Text
+          confidence = $confidence
+          language = $lang
+        }}
+      }}
+    }}
+  }} catch {{
+  }}
+}}
+if ($best) {{
+  $best | ConvertTo-Json -Compress
+}}
+""".strip()
+
+            completed = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", script],
+                capture_output=True,
+                text=True,
+                timeout=12,
+                check=False,
+            )
+            output = (completed.stdout or "").strip()
+            if output:
+                payload = output.splitlines()[-1].strip()
+                try:
+                    data = json.loads(payload)
+                    return TranscriptCandidate(
+                        backend="system",
+                        text=str(data.get("text", "") or "").strip(),
+                        confidence=float(data.get("confidence", 0.0) or 0.0),
+                        language=str(data.get("language", "") or "").strip(),
+                    )
+                except Exception:
+                    return TranscriptCandidate(backend="system", text=payload)
+            return self._transcribe_windows_candidate(audio)
+        except Exception:
+            return self._transcribe_windows_candidate(audio)
+        finally:
+            try:
+                if "tmp_path" in locals():
+                    os.unlink(tmp_path)
+            except Exception:
+                pass
+
+    def _transcribe_windows_candidate(self, audio) -> TranscriptCandidate:
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as handle:
+                tmp_path = handle.name
+
+            self._write_audio_wav(audio, tmp_path)
+            escaped_path = tmp_path.replace("'", "''")
+            languages = []
+            for lang in self._stt_languages():
+                safe_lang = str(lang or "").replace("'", "''")
+                if safe_lang:
+                    languages.append(f"'{safe_lang}'")
+            language_array = ", ".join(languages)
+
+            script = f"""
+Add-Type -AssemblyName System.Speech
+$path = '{escaped_path}'
+$languages = @({language_array})
+$best = $null
+$bestScore = -1.0
+foreach ($lang in $languages) {{
+  try {{
+    $culture = [System.Globalization.CultureInfo]::GetCultureInfo($lang)
+    $engine = New-Object System.Speech.Recognition.SpeechRecognitionEngine($culture)
+    $engine.LoadGrammar((New-Object System.Speech.Recognition.DictationGrammar))
+    $engine.InitialSilenceTimeout = [TimeSpan]::FromSeconds(1.2)
+    $engine.EndSilenceTimeout = [TimeSpan]::FromMilliseconds(450)
+    $engine.EndSilenceTimeoutAmbiguous = [TimeSpan]::FromMilliseconds(650)
+    $engine.BabbleTimeout = [TimeSpan]::FromMilliseconds(650)
+    $engine.SetInputToWaveFile($path)
+    $result = $engine.Recognize()
+    if ($result -and $result.Text) {{
+      $confidence = 0.0
+      try {{
+        $confidence = [double]$result.Confidence
+      }} catch {{
+      }}
+      if (-not $best -or $confidence -gt $bestScore) {{
+        $bestScore = $confidence
+        $best = [pscustomobject]@{{
+          text = $result.Text
+          confidence = $confidence
+          language = $lang
+        }}
+      }}
+    }}
+  }} catch {{
+  }}
+}}
+if ($best) {{
+  $best | ConvertTo-Json -Compress
+}}
+""".strip()
+
+            completed = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", script],
+                capture_output=True,
+                text=True,
+                timeout=12,
+                check=False,
+            )
+            output = (completed.stdout or "").strip()
+            if output:
+                payload = output.splitlines()[-1].strip()
+                try:
+                    data = json.loads(payload)
+                    return TranscriptCandidate(
+                        backend="system",
+                        text=str(data.get("text", "") or "").strip(),
+                        confidence=float(data.get("confidence", 0.0) or 0.0),
+                        language=str(data.get("language", "") or "").strip(),
+                    )
+                except Exception:
+                    return TranscriptCandidate(backend="system", text=payload)
+            return TranscriptCandidate(backend="system")
+        except Exception:
+            return TranscriptCandidate(backend="system")
+        finally:
+            try:
+                if "tmp_path" in locals():
+                    os.unlink(tmp_path)
+            except Exception:
+                pass
 
     def _transcribe_groq(self, audio) -> str:
+        return self._transcribe_groq_candidate(audio).text
+
+    def _transcribe_groq_candidate(self, audio) -> TranscriptCandidate:
         """Use Groq Whisper API — fastest and most accurate."""
         try:
-            import speech_recognition as sr
-
-            # Export audio to WAV bytes
-            wav_data = io.BytesIO()
-            with wave.open(wav_data, "wb") as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(audio.sample_width)
-                wf.setframerate(audio.sample_rate)
-                wf.writeframes(audio.frame_data)
-            wav_data.seek(0)
+            wav_data = self._audio_to_wav_bytes(audio)
 
             from groq import Groq
             client = Groq(api_key=Config.GROQ_API_KEY)
+            request = {
+                "file": ("audio.wav", wav_data, "audio/wav"),
+                "model": "whisper-large-v3-turbo",
+                "response_format": "text",
+            }
+            language_hint = str(getattr(Config, "STT_GROQ_LANGUAGE_HINT", "") or "").strip()
+            if language_hint:
+                request["language"] = language_hint
 
-            transcription = client.audio.transcriptions.create(
-                file=("audio.wav", wav_data, "audio/wav"),
-                model="whisper-large-v3-turbo",
-                language="en",
-                response_format="text",
+            transcription = client.audio.transcriptions.create(**request)
+            return TranscriptCandidate(
+                backend="groq",
+                text=(transcription or "").strip(),
+                confidence=1.0 if transcription else 0.0,
             )
-            return (transcription or "").strip()
 
         except Exception:
-            return ""
+            return TranscriptCandidate(backend="groq")
 
     def _transcribe_google(self, audio) -> str:
+        return self._transcribe_google_candidate(audio).text
+
+    def _transcribe_google_candidate(self, audio) -> TranscriptCandidate:
         """Fallback: Google STT."""
-        import speech_recognition as sr
-
-        languages = [
-            getattr(Config, "STT_LANGUAGE", "en-US"),
-            getattr(Config, "STT_FALLBACK_LANGUAGE", "en-IN"),
-            getattr(Config, "STT_SECONDARY_FALLBACK_LANGUAGE", "en-GB"),
-        ]
-
         tried = set()
-        for language in languages:
+        for language in self._stt_languages():
             language = (language or "").strip()
             if not language or language in tried:
                 continue
@@ -311,16 +656,167 @@ class Voice:
             try:
                 text = self.recognizer.recognize_google(audio, language=language).strip()
                 if text:
-                    return text
+                    return TranscriptCandidate(
+                        backend="google",
+                        text=text,
+                        confidence=0.9,
+                        language=language,
+                    )
             except Exception:
                 continue
+        return TranscriptCandidate(backend="google")
+
+    def _select_transcript(self, order: list[str], audio, wake_mode: bool) -> str:
+        fallback_local = None
+        self.last_transcript_backend = ""
+        self.last_transcript_confidence = 0.0
+        self.last_transcript_language = ""
+
+        for backend in order:
+            candidate = self._transcribe_candidate(backend, audio, wake_mode=wake_mode)
+            if not candidate.text:
+                continue
+
+            if wake_mode:
+                if self._accept_wake_candidate(candidate):
+                    self._remember_transcript_candidate(candidate)
+                    return candidate.text
+                continue
+
+            if backend == "system":
+                accepted = self._accept_local_command_candidate(candidate, audio)
+                if accepted or order == ["system"]:
+                    self._remember_transcript_candidate(candidate)
+                    return candidate.text
+                fallback_local = candidate
+                console.print(
+                    "[dim]Local transcription looked weak "
+                    f"(confidence {candidate.confidence:.2f}); checking fallback recognizers.[/dim]"
+                )
+                continue
+
+            self._remember_transcript_candidate(candidate)
+            return candidate.text
+
+        if fallback_local:
+            self._remember_transcript_candidate(fallback_local)
+            return fallback_local.text
         return ""
+
+    def _remember_transcript_candidate(self, candidate: TranscriptCandidate) -> None:
+        self.last_transcript_backend = candidate.backend
+        self.last_transcript_confidence = float(candidate.confidence or 0.0)
+        self.last_transcript_language = str(candidate.language or "")
+
+    def _transcribe_candidate(self, backend: str, audio, wake_mode: bool = False) -> TranscriptCandidate:
+        if backend == "system":
+            if wake_mode:
+                return self._transcribe_windows_wake_candidate(audio)
+            return self._transcribe_windows_candidate(audio)
+        if backend == "groq":
+            return self._transcribe_groq_candidate(audio)
+        if backend == "google":
+            return self._transcribe_google_candidate(audio)
+        return TranscriptCandidate(backend=backend)
+
+    def _accept_wake_candidate(self, candidate: TranscriptCandidate) -> bool:
+        text = (candidate.text or "").strip()
+        if not text:
+            return False
+        if self._looks_like_noise_transcript(text):
+            return False
+        if not self._looks_like_wake_phrase(text):
+            return False
+
+        threshold = float(getattr(Config, "WAKE_SYSTEM_ACCEPT_CONFIDENCE", 0.58))
+        if candidate.backend == "system":
+            return candidate.confidence >= threshold
+        return True
+
+    def _accept_local_wake_candidate(self, candidate: TranscriptCandidate) -> bool:
+        return self._accept_wake_candidate(candidate)
+
+    def _accept_local_command_candidate(self, candidate: TranscriptCandidate, audio) -> bool:
+        text = (candidate.text or "").strip()
+        if not text or self._looks_like_noise_transcript(text):
+            return False
+
+        words = self._word_count(text)
+        threshold = float(getattr(Config, "STT_SYSTEM_ACCEPT_CONFIDENCE", 0.82))
+        if words <= 2:
+            threshold = min(
+                threshold,
+                float(getattr(Config, "STT_SYSTEM_SHORT_ACCEPT_CONFIDENCE", 0.7)),
+            )
+
+        duration = self._audio_duration_seconds(audio)
+        if duration >= float(getattr(Config, "STT_SYSTEM_LONG_AUDIO_SECONDS", 2.6)):
+            minimum_words = max(1, int(getattr(Config, "STT_SYSTEM_LONG_AUDIO_MIN_WORDS", 3)))
+            if words < minimum_words:
+                threshold = max(threshold, 0.9)
+
+        return candidate.confidence >= threshold
+
+    def _audio_duration_seconds(self, audio) -> float:
+        sample_rate = max(1, int(getattr(audio, "sample_rate", 16000) or 16000))
+        sample_width = max(1, int(getattr(audio, "sample_width", 2) or 2))
+        frame_data = getattr(audio, "frame_data", b"") or b""
+        return len(frame_data) / float(sample_rate * sample_width)
+
+    def _word_count(self, text: str) -> int:
+        return len(re.findall(r"[A-Za-z0-9']+", text or ""))
+
+    def _looks_like_noise_transcript(self, text: str) -> bool:
+        normalized = re.sub(r"[^a-z0-9'\s]+", " ", (text or "").lower()).strip()
+        if not normalized:
+            return True
+        if normalized in {"uh", "um", "hmm", "huh", "ah", "the"}:
+            return True
+        tokens = [token for token in normalized.split() if token]
+        if len(tokens) >= 3 and len(set(tokens)) == 1:
+            return True
+        return False
+
+    def _wake_phrase_variants(self) -> list[str]:
+        variants = []
+        wake_aliases = getattr(Config, "WAKE_WORD_ALIASES", {}) or {}
+        for wake in getattr(Config, "WAKE_WORDS", []) or []:
+            wake_text = str(wake or "").strip().lower()
+            if wake_text and wake_text not in variants:
+                variants.append(wake_text)
+            for alias in wake_aliases.get(wake_text, []) or []:
+                alias_text = str(alias or "").strip().lower()
+                if alias_text and alias_text not in variants:
+                    variants.append(alias_text)
+        return variants
+
+    def _looks_like_wake_phrase(self, text: str) -> bool:
+        normalized = re.sub(r"[^a-z0-9'\s]+", " ", (text or "").lower()).strip()
+        if not normalized:
+            return False
+
+        tokens = [token for token in normalized.split() if token]
+        if not tokens:
+            return False
+
+        chunks = [tokens[0]]
+        if len(tokens) >= 2:
+            chunks.append(f"{tokens[0]} {tokens[1]}")
+
+        threshold = float(getattr(Config, "WAKE_FUZZY_THRESHOLD", 0.75))
+        for variant in self._wake_phrase_variants():
+            for chunk in chunks:
+                if chunk == variant:
+                    return True
+                if difflib.SequenceMatcher(None, chunk, variant).ratio() >= threshold:
+                    return True
+        return False
 
     # ─────────────────────────────────────────────────────────────
     # SPEAK — Edge TTS, immediate playback, no chunking lag
     # ─────────────────────────────────────────────────────────────
 
-    def speak(self, text: str):
+    def speak(self, text: str, backend_priority: str | None = None):
         if not text:
             return
         if self.text_mode and not getattr(Config, "SPEAK_IN_TEXT_MODE", False):
@@ -337,16 +833,118 @@ class Voice:
             self._stop_flag.clear()
             self._emit_state("speaking")
             try:
-                self._speak_blocking(clean)
+                self._speak_with_backends(clean, backend_priority=backend_priority)
             finally:
                 self._emit_state("idle")
 
-    def _speak_blocking(self, text: str):
-        """Blocking speak — runs in thread."""
+    def speak_quick_ack(self, text: str):
+        priority = getattr(Config, "WAKE_ACK_TTS_BACKEND_PRIORITY", "system_first")
+        self.speak(text, backend_priority=priority)
+
+    def _speak_with_backends(self, text: str, backend_priority: str | None = None):
+        last_error = None
+        self.last_tts_backend = ""
+        for backend in self._tts_backend_order(backend_priority=backend_priority):
+            try:
+                if backend == "system" and self._speak_local_blocking(text):
+                    self.last_tts_backend = "system"
+                    return
+                if backend == "edge" and self._speak_edge_blocking(text):
+                    self.last_tts_backend = "edge"
+                    return
+            except Exception as exc:
+                last_error = exc
+
+        if last_error is not None:
+            console.print(f"[red]TTS error:[/red] {last_error}")
+
+    def _tts_backend_order(self, backend_priority: str | None = None) -> list[str]:
+        priority = str(
+            backend_priority if backend_priority is not None else getattr(Config, "TTS_BACKEND_PRIORITY", "system_first")
+        ).lower().strip()
+        allow_local_tts, _ = self.resource_guard.allows_local_tts()
+
+        if priority == "edge_first":
+            order = ["edge", "system"]
+        elif priority == "system_only":
+            order = ["system"]
+        elif priority == "edge_only":
+            order = ["edge"]
+        else:
+            order = ["system", "edge"]
+
+        if not allow_local_tts:
+            order = [backend for backend in order if backend != "system"]
+            if "edge" not in order:
+                order.append("edge")
+        return order
+
+    def _speak_local_blocking(self, text: str) -> bool:
         try:
-            asyncio.run(self._speak_async(text))
-        except Exception as e:
-            console.print(f"[red]TTS error:[/red] {e}")
+            import pyttsx3
+        except Exception:
+            return False
+
+        engine = pyttsx3.init()
+        self._local_tts_engine = engine
+        try:
+            self._configure_local_tts_engine(engine)
+            for chunk in self._chunk_text(text):
+                if self._stop_flag.is_set():
+                    break
+                engine.say(chunk)
+                engine.runAndWait()
+            return True
+        finally:
+            try:
+                engine.stop()
+            except Exception:
+                pass
+            self._local_tts_engine = None
+
+    def _configure_local_tts_engine(self, engine) -> None:
+        hint = str(getattr(Config, "LOCAL_TTS_VOICE_HINT", "") or "").lower().strip()
+        if hint:
+            for voice in engine.getProperty("voices") or []:
+                voice_name = str(getattr(voice, "name", "") or "").lower()
+                voice_id = str(getattr(voice, "id", "") or "").lower()
+                if hint in voice_name or hint in voice_id:
+                    engine.setProperty("voice", voice.id)
+                    break
+
+        engine.setProperty("rate", self._local_tts_rate())
+        engine.setProperty("volume", self._local_tts_volume())
+
+    def _local_tts_rate(self) -> int:
+        raw = str(getattr(Config, "VOICE_RATE", "0")).strip()
+        base_rate = 185
+        if raw.endswith("%"):
+            try:
+                percent = float(raw.rstrip("%"))
+                return max(120, int(base_rate * (1 + percent / 100.0)))
+            except ValueError:
+                return base_rate
+        try:
+            return max(120, int(float(raw)))
+        except ValueError:
+            return base_rate
+
+    def _local_tts_volume(self) -> float:
+        raw = str(getattr(Config, "VOICE_VOLUME", "+0%")).strip()
+        if raw.endswith("%"):
+            try:
+                percent = float(raw.rstrip("%"))
+                return max(0.2, min(1.0, 1.0 + percent / 100.0))
+            except ValueError:
+                return 1.0
+        try:
+            return max(0.2, min(1.0, float(raw)))
+        except ValueError:
+            return 1.0
+
+    def _speak_edge_blocking(self, text: str) -> bool:
+        asyncio.run(self._speak_async(text))
+        return True
 
     async def _speak_async(self, text: str):
         import edge_tts
@@ -395,6 +993,11 @@ class Voice:
 
     def stop_speaking(self):
         self._stop_flag.set()
+        try:
+            if self._local_tts_engine is not None:
+                self._local_tts_engine.stop()
+        except Exception:
+            pass
         try:
             import pygame
             pygame.mixer.music.stop()
@@ -476,3 +1079,32 @@ class Voice:
             chunks.append(" ".join(current).strip())
 
         return chunks
+
+    def _stt_languages(self) -> list[str]:
+        languages = []
+        configured = [
+            getattr(Config, "STT_LANGUAGE", "en-US"),
+            getattr(Config, "STT_FALLBACK_LANGUAGE", "en-GB"),
+            getattr(Config, "STT_SECONDARY_FALLBACK_LANGUAGE", "en-IN"),
+            *list(getattr(Config, "STT_ADDITIONAL_LANGUAGES", []) or []),
+        ]
+        for language in configured:
+            language = str(language or "").strip()
+            if language and language not in languages:
+                languages.append(language)
+        return languages
+
+    def _audio_to_wav_bytes(self, audio) -> io.BytesIO:
+        wav_data = io.BytesIO()
+        with wave.open(wav_data, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(audio.sample_width)
+            wf.setframerate(audio.sample_rate)
+            wf.writeframes(audio.frame_data)
+        wav_data.seek(0)
+        return wav_data
+
+    def _write_audio_wav(self, audio, path: str) -> None:
+        wav_data = self._audio_to_wav_bytes(audio)
+        with open(path, "wb") as handle:
+            handle.write(wav_data.read())
