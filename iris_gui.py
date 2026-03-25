@@ -43,17 +43,18 @@ class OrbWidget(QtWidgets.QWidget):
     secondary_activated = QtCore.Signal()
 
     COLORS = {
-        "idle": ("#2C6E77", "#D9A25F"),
-        "listening": ("#1F9DB7", "#8DE8F4"),
-        "thinking": ("#9A5C1D", "#F2C572"),
-        "speaking": ("#257A67", "#F4B066"),
-        "error": ("#8D2E2E", "#FF7A7A"),
+        "idle": ("#0E4E86", "#7FDBFF"),
+        "listening": ("#1195D4", "#CFF9FF"),
+        "thinking": ("#1769C4", "#98D5FF"),
+        "speaking": ("#1AB7D7", "#E7FDFF"),
+        "error": ("#7E2E58", "#FF98B6"),
     }
 
     def __init__(self, parent=None, compact: bool = False):
         super().__init__(parent)
         self._phase = 0.0
         self._state = "idle"
+        self._overdrive = False
         self._compact = compact
         self._base_radius = 70 if compact else 88
         self.setMinimumSize(220, 220) if compact else self.setMinimumSize(340, 340)
@@ -66,6 +67,10 @@ class OrbWidget(QtWidgets.QWidget):
         self._state = state if state in self.COLORS else "idle"
         self.update()
 
+    def set_overdrive(self, active: bool):
+        self._overdrive = bool(active)
+        self.update()
+
     def _tick(self):
         speed = {
             "idle": 0.02,
@@ -74,6 +79,8 @@ class OrbWidget(QtWidgets.QWidget):
             "speaking": 0.07,
             "error": 0.12,
         }.get(self._state, 0.02)
+        if self._overdrive:
+            speed += 0.018
         self._phase += speed
         self.update()
 
@@ -103,69 +110,93 @@ class OrbWidget(QtWidgets.QWidget):
 
         pulse = (math.sin(self._phase * 2.2) + 1.0) / 2.0
         radius = self._base_radius + pulse * (14 if self._state != "idle" else 8)
+        if self._overdrive:
+            radius += 4
 
-        halo = QtGui.QRadialGradient(center, radius * 1.85)
-        halo.setColorAt(0.0, QtGui.QColor(accent.red(), accent.green(), accent.blue(), 130))
-        halo.setColorAt(0.38, QtGui.QColor(primary.red(), primary.green(), primary.blue(), 90))
+        halo = QtGui.QRadialGradient(center, radius * 2.15)
+        halo.setColorAt(0.0, QtGui.QColor(accent.red(), accent.green(), accent.blue(), 145))
+        halo.setColorAt(0.34, QtGui.QColor(primary.red(), primary.green(), primary.blue(), 110))
         halo.setColorAt(1.0, QtGui.QColor(primary.red(), primary.green(), primary.blue(), 0))
         painter.setPen(QtCore.Qt.NoPen)
         painter.setBrush(QtGui.QBrush(halo))
-        painter.drawEllipse(center, radius * 1.85, radius * 1.85)
-
-        frame_pen = QtGui.QPen(QtGui.QColor(247, 243, 234, 42), 1.1)
-        frame_pen.setJoinStyle(QtCore.Qt.RoundJoin)
-        painter.setPen(frame_pen)
-        painter.setBrush(QtCore.Qt.NoBrush)
-        frame_scales = (0.88, 1.12, 1.38, 1.70)
-        frame_polygons = []
-        for depth, frame_scale in enumerate(frame_scales):
-            rotation = self._phase * 0.55 + depth * 0.42
-            polygon = QtGui.QPolygonF()
-            for corner in range(4):
-                angle = rotation + corner * (math.pi / 2) + (math.pi / 4)
-                x = center.x() + math.cos(angle) * radius * frame_scale
-                y = center.y() + math.sin(angle) * radius * frame_scale * 0.62
-                polygon.append(QtCore.QPointF(x, y))
-            painter.drawPolygon(polygon)
-            frame_polygons.append(polygon)
-
-        if len(frame_polygons) >= 2:
-            lattice_pen = QtGui.QPen(QtGui.QColor(accent.red(), accent.green(), accent.blue(), 46), 1.0)
-            painter.setPen(lattice_pen)
-            for left, right in zip(frame_polygons, frame_polygons[1:]):
-                for idx in range(4):
-                    painter.drawLine(left[idx], right[idx])
-
-        orbit_pen = QtGui.QPen(QtGui.QColor(accent.red(), accent.green(), accent.blue(), 110), 2.2)
-        orbit_pen.setCapStyle(QtCore.Qt.RoundCap)
-        painter.setPen(orbit_pen)
-        painter.setBrush(QtCore.Qt.NoBrush)
-        for idx, orbit_scale in enumerate((1.45, 1.80, 2.20)):
-            orbit_rect = QtCore.QRectF(
-                center.x() - radius * orbit_scale,
-                center.y() - radius * orbit_scale,
-                radius * orbit_scale * 2,
-                radius * orbit_scale * 2,
-            )
-            start = int((self._phase * 120 + idx * 100) * 16)
-            span = int((120 + pulse * 120) * 16)
-            painter.drawArc(orbit_rect, start, span)
+        painter.drawEllipse(center, radius * 2.15, radius * 2.15)
 
         core = QtGui.QRadialGradient(center, radius)
-        core.setColorAt(0.0, QtGui.QColor("#FFF9F0"))
-        core.setColorAt(0.34, QtGui.QColor(accent.red(), accent.green(), accent.blue(), 230))
-        core.setColorAt(1.0, QtGui.QColor(primary.red(), primary.green(), primary.blue(), 235))
+        core.setColorAt(0.0, QtGui.QColor("#F6FEFF"))
+        core.setColorAt(0.24, QtGui.QColor(210, 248, 255, 250))
+        core.setColorAt(0.56, QtGui.QColor(accent.red(), accent.green(), accent.blue(), 220))
+        core.setColorAt(1.0, QtGui.QColor(primary.red(), primary.green(), primary.blue(), 240))
         painter.setPen(QtCore.Qt.NoPen)
         painter.setBrush(QtGui.QBrush(core))
         painter.drawEllipse(center, radius, radius)
 
-        painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 95), 1.4))
+        sheen = QtGui.QRadialGradient(
+            QtCore.QPointF(center.x() - radius * 0.32, center.y() - radius * 0.42),
+            radius * 0.82,
+        )
+        sheen.setColorAt(0.0, QtGui.QColor(255, 255, 255, 165))
+        sheen.setColorAt(0.55, QtGui.QColor(255, 255, 255, 36))
+        sheen.setColorAt(1.0, QtGui.QColor(255, 255, 255, 0))
+        painter.setBrush(sheen)
+        painter.drawEllipse(
+            QtCore.QRectF(center.x() - radius * 0.78, center.y() - radius * 0.95, radius * 1.2, radius * 0.98)
+        )
+
+        grid_pen = QtGui.QPen(QtGui.QColor(255, 255, 255, 88), 1.2)
+        painter.setPen(grid_pen)
         painter.setBrush(QtCore.Qt.NoBrush)
-        painter.drawEllipse(center, radius * 0.74, radius * 0.74)
+
+        painter.save()
+        painter.translate(center)
+        painter.rotate(math.sin(self._phase * 0.75) * 18)
+        for scale in (1.0, 0.72, 0.44):
+            painter.drawEllipse(
+                QtCore.QRectF(-radius * scale, -radius * 0.94, radius * 2 * scale, radius * 1.88)
+            )
+        painter.restore()
+
+        for latitude in (-0.62, -0.28, 0.0, 0.28, 0.62):
+            band_height = max(radius * 0.08, radius * (0.24 - abs(latitude) * 0.15))
+            painter.drawEllipse(
+                QtCore.QRectF(
+                    center.x() - radius * 0.88,
+                    center.y() + latitude * radius - band_height / 2,
+                    radius * 1.76,
+                    band_height,
+                )
+            )
+
+        painter.setPen(QtGui.QPen(QtGui.QColor(accent.red(), accent.green(), accent.blue(), 128), 2.0))
+        for idx, orbit_scale in enumerate((1.24, 1.52)):
+            orbit_rect = QtCore.QRectF(
+                center.x() - radius * orbit_scale,
+                center.y() - radius * orbit_scale * 0.58,
+                radius * orbit_scale * 2,
+                radius * orbit_scale * 1.16,
+            )
+            start = int((self._phase * 135 + idx * 140) * 16)
+            span = int((150 + pulse * 80) * 16)
+            painter.drawArc(orbit_rect, start, span)
+
+        for idx in range(3):
+            angle = self._phase * (1.3 + idx * 0.18) + idx * 2.15
+            x = center.x() + math.cos(angle) * radius * (1.15 + idx * 0.08)
+            y = center.y() + math.sin(angle) * radius * 0.52
+            dot_color = QtGui.QColor(255, 255, 255, 210 if idx == 0 else 145)
+            painter.setBrush(dot_color)
+            painter.setPen(QtCore.Qt.NoPen)
+            painter.drawEllipse(QtCore.QPointF(x, y), 3.4 + idx, 3.4 + idx)
+
+        if self._overdrive:
+            overdrive_pen = QtGui.QPen(QtGui.QColor(223, 251, 255, 215), 2.6)
+            painter.setPen(overdrive_pen)
+            painter.setBrush(QtCore.Qt.NoBrush)
+            painter.drawEllipse(center, radius * 1.14, radius * 1.14)
+            painter.drawEllipse(center, radius * 1.32, radius * 1.32)
 
         label_font = QtGui.QFont("Bahnschrift SemiBold", 12 if not self._compact else 11)
         painter.setFont(label_font)
-        painter.setPen(QtGui.QColor("#F6F2E8"))
+        painter.setPen(QtGui.QColor("#F3FDFF"))
         painter.drawText(
             QtCore.QRectF(center.x() - 85, center.y() - 18, 170, 36),
             QtCore.Qt.AlignCenter,
@@ -175,11 +206,11 @@ class OrbWidget(QtWidgets.QWidget):
         if not self._compact:
             state_font = QtGui.QFont("Segoe UI Semibold", 10)
             painter.setFont(state_font)
-            painter.setPen(QtGui.QColor(240, 240, 240, 190))
+            painter.setPen(QtGui.QColor(235, 250, 255, 188))
             painter.drawText(
                 QtCore.QRectF(0, h - 42, w, 24),
                 QtCore.Qt.AlignCenter,
-                self._state.upper(),
+                f"{self._state.upper()}{' // OVERDRIVE' if self._overdrive else ''}",
             )
 
 
@@ -197,29 +228,17 @@ class FloatingOrbWindow(QtWidgets.QWidget):
             | QtCore.Qt.WindowStaysOnTopHint
         )
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
-        self.resize(270, 290)
+        self.resize(250, 270)
         self._drag_offset = None
+        self._current_state = "idle"
+        self._overdrive = False
 
         wrapper = QtWidgets.QVBoxLayout(self)
-        wrapper.setContentsMargins(8, 8, 8, 8)
+        wrapper.setContentsMargins(0, 0, 0, 0)
 
-        frame = QtWidgets.QFrame()
-        frame.setStyleSheet(
-            """
-            QFrame {
-                background: rgba(7, 15, 24, 0.58);
-                border: 1px solid rgba(255, 255, 255, 0.10);
-                border-radius: 30px;
-            }
-            QLabel {
-                color: #F7F3EA;
-            }
-            """
-        )
-        wrapper.addWidget(frame)
-
-        layout = QtWidgets.QVBoxLayout(frame)
-        layout.setContentsMargins(18, 14, 18, 18)
+        layout = QtWidgets.QVBoxLayout()
+        wrapper.addLayout(layout)
+        layout.setContentsMargins(10, 6, 10, 10)
         layout.setSpacing(6)
 
         self.orb = OrbWidget(compact=True)
@@ -228,18 +247,32 @@ class FloatingOrbWindow(QtWidgets.QWidget):
 
         self.state_label = QtWidgets.QLabel("VOICE STANDBY")
         self.state_label.setAlignment(QtCore.Qt.AlignCenter)
-        self.state_label.setStyleSheet("color: rgba(247, 243, 234, 0.82); font-size: 11px; letter-spacing: 2px;")
+        self.state_label.setStyleSheet("color: rgba(225, 248, 255, 0.90); font-size: 11px; letter-spacing: 2px;")
         layout.addWidget(self.state_label)
 
-        hint = QtWidgets.QLabel("Say Iris. Double-click for chat.")
-        hint.setWordWrap(True)
-        hint.setAlignment(QtCore.Qt.AlignCenter)
-        hint.setStyleSheet("color: rgba(247, 243, 234, 0.58); font-size: 11px;")
-        layout.addWidget(hint)
+        self.hint_label = QtWidgets.QLabel("Say Iris. Double-click for chat.")
+        self.hint_label.setWordWrap(True)
+        self.hint_label.setAlignment(QtCore.Qt.AlignCenter)
+        self.hint_label.setStyleSheet("color: rgba(225, 248, 255, 0.62); font-size: 11px;")
+        layout.addWidget(self.hint_label)
 
     def set_state(self, state: str):
+        self._current_state = state
         self.orb.set_state(state)
-        self.state_label.setText(state.upper())
+        self._refresh_labels()
+
+    def set_overdrive(self, active: bool):
+        self._overdrive = bool(active)
+        self.orb.set_overdrive(active)
+        self._refresh_labels()
+
+    def _refresh_labels(self):
+        prefix = "OVERDRIVE // " if self._overdrive else ""
+        self.state_label.setText(f"{prefix}{self._current_state.upper()}")
+        if self._overdrive:
+            self.hint_label.setText("Critical-focus mode is active.")
+        else:
+            self.hint_label.setText("Say Iris. Double-click for chat.")
 
     def mousePressEvent(self, event):
         if event.button() == QtCore.Qt.LeftButton:
@@ -286,11 +319,11 @@ class EngineWorker(QtCore.QThread):
                         }
                     )
                     return
-                result = self.engine.process_user_input(captured, speak_response=False)
+                result = self.engine.process_user_input(captured, speak_response=False, input_source="voice")
                 self.completed.emit({"captured": captured, "result": result, "mode": "listen"})
                 return
 
-            result = self.engine.process_user_input(self.text, speak_response=False)
+            result = self.engine.process_user_input(self.text, speak_response=False, input_source="text")
             self.completed.emit({"captured": self.text, "result": result, "mode": "process"})
         except Exception as exc:
             self.failed.emit(str(exc))
@@ -360,7 +393,7 @@ class VoiceStandbyWorker(QtCore.QThread):
 
     def _handle_command(self, display_text: str, command_text: str, follow_up_turns: int) -> bool:
         self.event.emit({"type": "heard", "text": display_text})
-        result = self.engine.process_user_input(command_text, speak_response=False)
+        result = self.engine.process_user_input(command_text, speak_response=False, input_source="voice")
         self.event.emit({"type": "result", "result": result})
 
         if result.response:
@@ -380,7 +413,7 @@ class VoiceStandbyWorker(QtCore.QThread):
                 break
 
             self.event.emit({"type": "heard", "text": follow_up})
-            result = self.engine.process_user_input(follow_up, speak_response=False)
+            result = self.engine.process_user_input(follow_up, speak_response=False, input_source="voice")
             self.event.emit({"type": "result", "result": result})
             if result.response:
                 self.engine.voice.speak(result.response)
@@ -406,6 +439,7 @@ class IrisWindow(QtWidgets.QMainWindow):
         self._sticky_footer = False
         self._startup_enabled = self._has_startup_shortcut()
         self._first_tray_hint_shown = self.settings.value("tray_hint_shown", False, type=bool)
+        self._mode_banner_base = "SAY IRIS ANY TIME"
         self.app_icon = create_app_icon()
         self.setWindowIcon(self.app_icon)
 
@@ -438,6 +472,10 @@ class IrisWindow(QtWidgets.QMainWindow):
         self.floating_action = menu.addAction("Floating Orb Mode")
         self.floating_action.setCheckable(True)
         self.floating_action.triggered.connect(lambda checked: self.set_floating_mode(checked))
+
+        self.overdrive_action = menu.addAction("Enable Overdrive")
+        self.overdrive_action.setCheckable(True)
+        self.overdrive_action.triggered.connect(lambda _checked: self.toggle_overdrive())
 
         self.startup_action = menu.addAction("Launch At Sign-In")
         self.startup_action.setCheckable(True)
@@ -528,6 +566,14 @@ class IrisWindow(QtWidgets.QMainWindow):
             QPushButton#PrimaryButton:hover {
                 background: #E8B776;
             }
+            QPushButton#SecondaryButton {
+                background: rgba(126, 219, 255, 0.14);
+                color: #E7FBFF;
+                border: 1px solid rgba(126, 219, 255, 0.28);
+            }
+            QPushButton#SecondaryButton:hover {
+                background: rgba(126, 219, 255, 0.24);
+            }
             QLabel#Chip {
                 border-radius: 13px;
                 padding: 7px 12px;
@@ -584,6 +630,11 @@ class IrisWindow(QtWidgets.QMainWindow):
         self.state_pill.setAlignment(QtCore.Qt.AlignCenter)
         layout.addWidget(self.state_pill, alignment=QtCore.Qt.AlignCenter)
 
+        self.overdrive_button = QtWidgets.QPushButton("Enable Overdrive")
+        self.overdrive_button.setObjectName("SecondaryButton")
+        self.overdrive_button.clicked.connect(self.toggle_overdrive)
+        layout.addWidget(self.overdrive_button, alignment=QtCore.Qt.AlignCenter)
+
         orbit_hint = QtWidgets.QLabel("Double-click the orb to float it. Voice standby stays active even when hidden.")
         orbit_hint.setWordWrap(True)
         orbit_hint.setAlignment(QtCore.Qt.AlignCenter)
@@ -620,6 +671,7 @@ class IrisWindow(QtWidgets.QMainWindow):
             f"{Config.PUBLIC_NAME} is online. Say Iris any time, even while minimized or floating.",
             "system",
         )
+        self._set_mode_banner("SAY IRIS ANY TIME")
 
     def append_message(self, label: str, text: str, kind: str):
         if not text:
@@ -656,6 +708,7 @@ class IrisWindow(QtWidgets.QMainWindow):
         }
         if state == "listening" or not self._sticky_footer:
             self.footer.setText(footer_map.get(state, self.footer.text()))
+        self._apply_engine_visuals()
         if self.tray:
             self.tray.setToolTip(f"{Config.PUBLIC_NAME} // {state.upper()}")
 
@@ -677,6 +730,7 @@ class IrisWindow(QtWidgets.QMainWindow):
         self.append_message("You", text, "user")
         self.orb.set_state("thinking")
         self.state_pill.setText("THINKING")
+        self._apply_engine_visuals()
         self.start_worker(mode="process", text=text, footer="Thinking through the request...")
 
     def on_listen(self):
@@ -686,6 +740,7 @@ class IrisWindow(QtWidgets.QMainWindow):
         self.orb.set_state("listening")
         self.state_pill.setText("LISTENING")
         self.footer.setText("Voice standby is already active. Say Iris to speak.")
+        self._apply_engine_visuals()
 
     def start_worker(self, mode: str, text: str = "", footer: str = ""):
         self.set_busy(True, footer)
@@ -726,7 +781,7 @@ class IrisWindow(QtWidgets.QMainWindow):
             self._sticky_footer = False
             text = payload.get("text", getattr(Config, "WAKE_ACKNOWLEDGEMENT", "I'm here."))
             self.append_message(Config.PUBLIC_NAME, text, "assistant")
-            self.mode_label.setText("VOICE STANDBY")
+            self._set_mode_banner("VOICE STANDBY")
             self.footer.setText("Listening for your command...")
             return
 
@@ -734,7 +789,7 @@ class IrisWindow(QtWidgets.QMainWindow):
             text = payload.get("text", "")
             if text:
                 self.append_message("You", text, "user")
-                self.mode_label.setText("VOICE MODE")
+                self._set_mode_banner("VOICE MODE")
             return
 
         if event_type == "result":
@@ -759,7 +814,7 @@ class IrisWindow(QtWidgets.QMainWindow):
         self._sticky_footer = False
         kind = "assistant" if "Diagnostics" not in result.label else "system"
         self.append_message(result.label, result.response, kind)
-        self.mode_label.setText(f"{result.mode.upper()} MODE")
+        self._set_mode_banner(f"{result.mode.upper()} MODE")
         self.refresh_status()
         if speak:
             self.engine.voice.speak_background(result.response)
@@ -774,6 +829,7 @@ class IrisWindow(QtWidgets.QMainWindow):
         self.orb.set_state("error")
         self.floating_window.set_state("error")
         self.state_pill.setText("ERROR")
+        self._apply_engine_visuals()
         self.append_message("System", f"Something broke: {message}", "system")
         self.footer.setText("The last operation failed.")
         if self.tray:
@@ -787,10 +843,70 @@ class IrisWindow(QtWidgets.QMainWindow):
             self.state_pill.setText("IDLE")
             if not self._sticky_footer:
                 self.footer.setText("Standing by.")
+        self._apply_engine_visuals()
 
     def refresh_status(self):
         if self.floating_window.isVisible():
-            self.mode_label.setText("FLOATING ORB")
+            self._set_mode_banner("FLOATING ORB")
+        self._apply_engine_visuals()
+
+    def _set_mode_banner(self, text: str):
+        self._mode_banner_base = text
+        if self.engine.overdrive_active:
+            self.mode_label.setText(f"{text} // OVERDRIVE")
+        else:
+            self.mode_label.setText(text)
+
+    def _apply_engine_visuals(self):
+        overdrive = self.engine.overdrive_active
+        self.orb.set_overdrive(overdrive)
+        self.floating_window.set_overdrive(overdrive)
+        self._set_mode_banner(getattr(self, "_mode_banner_base", "SAY IRIS ANY TIME"))
+        if hasattr(self, "overdrive_button"):
+            self.overdrive_button.setText("Disable Overdrive" if overdrive else "Enable Overdrive")
+        if overdrive:
+            self.state_pill.setStyleSheet(
+                "border-radius: 14px; padding: 8px 16px; background: rgba(142, 229, 255, 0.18); "
+                "color: #E8FBFF; font-family: 'Bahnschrift SemiBold'; font-size: 11px; letter-spacing: 2px;"
+            )
+        else:
+            self.state_pill.setStyleSheet("")
+        if self.tray and hasattr(self, "overdrive_action"):
+            self.overdrive_action.blockSignals(True)
+            self.overdrive_action.setChecked(overdrive)
+            self.overdrive_action.setText("Disable Overdrive" if overdrive else "Enable Overdrive")
+            self.overdrive_action.blockSignals(False)
+
+    def toggle_overdrive(self):
+        target_state = not self.engine.overdrive_active
+        if target_state:
+            self.engine.activate_overdrive()
+            self.engine.executor._audit(
+                "OVERDRIVE_ACTIVATED",
+                {
+                    "action_type": "overdrive_mode",
+                    "description": "activate overdrive via GUI",
+                    "command": "gui_toggle_on",
+                },
+                source="gui",
+            )
+            message = "Overdrive is active. IRIS will reason more deeply without widening permissions."
+        else:
+            self.engine.deactivate_overdrive()
+            self.engine.executor._audit(
+                "OVERDRIVE_DEACTIVATED",
+                {
+                    "action_type": "overdrive_mode",
+                    "description": "deactivate overdrive via GUI",
+                    "command": "gui_toggle_off",
+                },
+                source="gui",
+            )
+            message = "Overdrive is off. IRIS is back to the normal execution profile."
+
+        self.append_message("System", message, "system")
+        self.footer.setText(message)
+        self._apply_engine_visuals()
 
     def _restore_floating_orb_position(self):
         x = self.settings.value("floating_orb_x", None, type=int)

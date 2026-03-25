@@ -1,16 +1,16 @@
 """
-JARVIS Action Executor
-=======================
-When you ask JARVIS to DO something — install, create, delete, run —
+IRIS Action Executor
+====================
+When you ask IRIS to do something — install, create, delete, run —
 it plans the action, tells you exactly what it's about to do,
-and waits for your voice/text permission before executing.
+and waits for your voice/text permission before executing when required.
 
 PERMISSION GATE FLOW:
-  You: "Jarvis, install Python"
-  JARVIS: "I'll run: winget install Python.Python.3 — shall I go ahead?"
+  You: "Iris, install Python"
+  IRIS: "I'll run: winget install Python.Python.3 — shall I go ahead?"
   You: "yes" / "go ahead" / "do it"
-  JARVIS: [runs the command, reports result]
-  JARVIS: "Done. Python installed. Want me to verify it worked?"
+  IRIS: [runs the command, reports result]
+  IRIS: "Done. Python installed. Want me to verify it worked?"
 
 SUPPORTED ACTION TYPES:
   - install_package  : winget / pip / npm install
@@ -22,9 +22,9 @@ SUPPORTED ACTION TYPES:
   - write_to_file    : append/write content to existing file
 
 SAFETY:
-  - JARVIS ALWAYS announces what it will do before doing it
+  - IRIS always announces what it will do before doing it when confirmation is required
   - Destructive actions (delete, format, rm -rf) require DOUBLE confirmation
-  - Every action and result is logged to jarvis_actions.log
+  - Every action and result is logged to iris_actions.log
 """
 
 import subprocess
@@ -33,13 +33,16 @@ import platform
 import re
 import json
 import difflib
-from datetime import datetime
+import logging
+from datetime import datetime, timedelta
+from logging.handlers import RotatingFileHandler
 from typing import Optional, Tuple
 
 from config import Config
 from core.security import SecurityGuard, SAFE, WARNING, BLOCKED, NEED_ADMIN
 from core.autocorrect import AutoCorrector
 from core.browser import BrowserAutomation
+from core.desktop_control import DesktopController, DesktopControlError, normalize_key_token
 from core.improv import ImprovEngine
 
 
@@ -70,16 +73,25 @@ class ActionExecutor:
         self.brain   = brain
         self.security = SecurityGuard(brain)
         self.log_file    = "iris_actions.log"
+        self.audit_file  = "iris_audit.log"
         self.is_windows  = platform.system() == "Windows"
         self.pending_action         = None
         self.pending_verdict        = None
+        self.pending_action_source  = "unknown"
+        self.pending_presence_check = False
         self.follow_up              = None
         self.autocorrect            = AutoCorrector(brain)
         self.improv                 = ImprovEngine(brain)
         self.pending_plans          = None   # stores A/B/C plans waiting for user choice
         self.last_action_path       = None
+        self.current_input_source   = "text" if getattr(voice, "text_mode", False) else "unknown"
+        self.auto_action_timestamps = []
+        self.recent_action_history  = []
+        self._audit_logger          = None
+        self._audit_logger_path     = None
         self._clarification_options = []
         self._browser = None   # lazy — created only when needed
+        self._desktop = None   # lazy — created only when needed
 
     @property
     def browser(self):
@@ -87,6 +99,29 @@ class ActionExecutor:
         if self._browser is None:
             self._browser = BrowserAutomation()
         return self._browser
+
+    @property
+    def desktop(self):
+        """Create desktop automation only when first needed."""
+        if self._desktop is None:
+            self._desktop = DesktopController()
+        return self._desktop
+
+    def set_input_source(self, source: str | None) -> None:
+        normalized = (source or "").strip().lower()
+        if normalized not in {"voice", "text"}:
+            normalized = "unknown"
+        self.current_input_source = normalized
+
+    def _matches_any_phrase(self, text: str, phrases: list[str]) -> bool:
+        lowered = (text or "").strip().lower()
+        if not lowered:
+            return False
+        for phrase in phrases:
+            pattern = r"(?<!\w)" + re.escape(phrase.lower()) + r"(?!\w)"
+            if re.search(pattern, lowered):
+                return True
+        return False
 
     # ─────────────────────────────────────────────────────────────
     # DETECTION: Does this input want an action?
@@ -100,12 +135,22 @@ class ActionExecutor:
         "update", "upgrade", "configure", "enable", "disable",
         "move", "copy", "rename",
         "search for", "look up", "find",
+        "hotkey", "shortcut",
+    ]
+
+    DESKTOP_ACTION_PATTERNS = [
+        r"^(?:type|enter)\s+.+",
+        r"^(?:press|hit|use)\s+(?:the\s+)?(?:hotkey|shortcut|key(?: combo)?)\s+.+",
+        r"^(?:press|hit)\s+(?:ctrl|control|alt|shift|win|windows|enter|tab|escape|esc|space|backspace|delete|left|right|up|down|f\d+)\b.*",
+        r"^(?:click|double click|right click)\s+(?:at\s+)?\d+\s*(?:,|\s)\s*\d+",
     ]
 
     def should_handle(self, user_input: str) -> bool:
-        """Detect if user wants JARVIS to take a real action."""
+        """Detect if user wants IRIS to take a real action."""
         text = user_input.lower()
-        return any(trigger in text for trigger in self.ACTION_TRIGGERS)
+        return any(trigger in text for trigger in self.ACTION_TRIGGERS) or any(
+            re.search(pattern, text) for pattern in self.DESKTOP_ACTION_PATTERNS
+        )
 
     # ─────────────────────────────────────────────────────────────
     # PERMISSION CHECK: Are we waiting for yes/no?
@@ -113,6 +158,9 @@ class ActionExecutor:
 
     def waiting_for_permission(self) -> bool:
         return self.pending_action is not None and not self.waiting_for_clarification()
+
+    def waiting_for_presence_check(self) -> bool:
+        return self.pending_presence_check
 
     def waiting_for_followup(self) -> bool:
         return self.follow_up is not None
@@ -126,7 +174,7 @@ class ActionExecutor:
         followup = self.follow_up
         self.follow_up = None
 
-        if any(word in text for word in YES_WORDS):
+        if self._matches_any_phrase(text, YES_WORDS):
             action = followup.get("action")
             if action == "open_file":
                 path = followup.get("path", "")
@@ -142,10 +190,37 @@ class ActionExecutor:
                     return f"Opening {app}."
                 except Exception as e:
                     return f"Couldn't open it: {e}"
-        elif any(word in text for word in NO_WORDS):
+        elif self._matches_any_phrase(text, NO_WORDS):
             return "No problem."
 
         return None  # Unrecognised — fall through to brain
+
+    def handle_presence_check_response(self, user_input: str) -> Optional[str]:
+        if not self.waiting_for_presence_check():
+            return None
+
+        text = (user_input or "").lower().strip()
+        if self._matches_any_phrase(text, YES_WORDS):
+            self.pending_presence_check = False
+            self.auto_action_timestamps = []
+            self._audit(
+                "PRESENCE_CHECK_CONFIRMED",
+                {"action_type": "presence_check", "description": "rapid auto sequence"},
+                source=self.current_input_source,
+            )
+            return "All right. Continuing."
+
+        if self._matches_any_phrase(text, NO_WORDS):
+            self.pending_presence_check = False
+            self.auto_action_timestamps = []
+            self._audit(
+                "PRESENCE_CHECK_CANCELLED",
+                {"action_type": "presence_check", "description": "rapid auto sequence"},
+                source=self.current_input_source,
+            )
+            return "Paused. Tell me when you want to continue."
+
+        return "Still with you? Say go ahead or cancel."
 
     def handle_clarification_response(self, user_input: str) -> Optional[str]:
         """Resolve a pending clarification, usually a file extension choice."""
@@ -156,7 +231,7 @@ class ActionExecutor:
         if not text:
             return "Say the extension you want, or cancel."
 
-        if any(word in text for word in NO_WORDS):
+        if self._matches_any_phrase(text, NO_WORDS):
             self.pending_action = None
             self.pending_verdict = None
             self._clarification_options = []
@@ -184,25 +259,21 @@ class ActionExecutor:
     def handle_permission_response(self, user_input: str) -> str:
         """
         User responded to a permission or security request.
-        No filtering — you're the admin, your word is final.
-        Say 'override' to bypass any security warning or block.
+        Confirmation is allowed only for actions that are not hard-blocked.
         """
         text = user_input.lower().strip()
 
-        # ── Admin override — bypasses everything including hard blocks ──
-        if "override" in text:
-            cmd = self.pending_action.get("command") or self.pending_action.get("description", "?")
-            self._log(f"ADMIN OVERRIDE: {cmd}")
-            return self._execute_pending()
-
         # ── Yes — proceed ──
-        if any(word in text for word in YES_WORDS):
+        if self._matches_any_phrase(text, YES_WORDS):
+            self._audit_pending("CONFIRM_ONCE_APPROVED", source=self.current_input_source)
             return self._execute_pending()
 
         # ── No — cancel ──
-        if any(word in text for word in NO_WORDS):
+        if self._matches_any_phrase(text, NO_WORDS):
+            self._audit_pending("CONFIRM_ONCE_CANCELLED", source=self.current_input_source)
             self.pending_action  = None
             self.pending_verdict = None
+            self.pending_action_source = "unknown"
             return "Cancelled."
 
         # ── Anything else — ask once more plainly ──
@@ -224,7 +295,7 @@ class ActionExecutor:
     def _is_simple_task(self, plan: dict, verdict: str) -> bool:
         """
         Everything that isn't a security/ethical issue executes automatically.
-        JARVIS thinks and acts like a human assistant — no permission needed
+        IRIS thinks and acts like a human assistant — no permission needed
         for normal tasks. Only BLOCKED, WARNING, NEED_ADMIN stop for auth.
         """
         if verdict in (BLOCKED, WARNING, NEED_ADMIN):
@@ -280,13 +351,20 @@ class ActionExecutor:
 
         # ── Run security assessment ──────────────────────────
         verdict, security_msg = self.security.assess(plan)
+        chain_warning = self._check_action_chain(plan)
+        if chain_warning and verdict == SAFE:
+            verdict = WARNING
+            security_msg = chain_warning
         header = self.security.format_security_header(verdict)
 
         if verdict == BLOCKED:
             self._log(f"BLOCKED: {plan.get('command','?')} — {security_msg}")
-            self.pending_action  = plan
-            self.pending_verdict = verdict
-            return f"{header}\n{security_msg}\n\nSay 'override' to run it anyway, or 'cancel' to drop it."
+            self._audit("BLOCKED", plan, source=self.current_input_source)
+            self.pending_action = None
+            self.pending_verdict = None
+            self.pending_action_source = "unknown"
+            self._clarification_options = []
+            return f"{header}\n{security_msg}"
 
         # ── Simple safe task — execute with verification ─────
         if self._is_simple_task(plan, verdict):
@@ -298,6 +376,7 @@ class ActionExecutor:
         # ── Everything else — ask for permission ─────────────
         self.pending_action  = plan
         self.pending_verdict = verdict
+        self.pending_action_source = self.current_input_source
         permission_msg = self._build_permission_request(plan)
 
         if verdict in (WARNING, NEED_ADMIN):
@@ -310,7 +389,59 @@ class ActionExecutor:
         Fast pattern-based action detection for common requests.
         Handles the most frequent actions without needing AI JSON parsing.
         """
-        text = user_input.lower().strip()
+        raw = (user_input or "").strip()
+        text = raw.lower()
+
+        click_match = re.search(
+            r"^(right click|double click|click)\s+(?:at\s+)?(\d+)\s*(?:,|\s)\s*(\d+)$",
+            text,
+        )
+        if click_match:
+            click_kind = click_match.group(1)
+            button = "right" if click_kind == "right click" else "left"
+            clicks = 2 if click_kind == "double click" else 1
+            x = int(click_match.group(2))
+            y = int(click_match.group(3))
+            return {
+                "action_type": "click_at",
+                "description": f"{click_kind} at {x},{y}",
+                "x": x,
+                "y": y,
+                "button": button,
+                "clicks": clicks,
+                "is_dangerous": False,
+            }
+
+        type_match = re.search(r"^(?:type|enter)\s+(.+)$", raw, re.IGNORECASE)
+        if type_match:
+            text_to_type = type_match.group(1).strip()
+            if (text_to_type.startswith('"') and text_to_type.endswith('"')) or (
+                text_to_type.startswith("'") and text_to_type.endswith("'")
+            ):
+                text_to_type = text_to_type[1:-1]
+            if text_to_type:
+                return {
+                    "action_type": "type_text",
+                    "description": f"type text into the active window: {text_to_type[:60]}",
+                    "text_to_type": text_to_type,
+                    "is_dangerous": False,
+                }
+
+        hotkey_match = re.search(
+            r"^(?:press|hit|use)\s+(?:the\s+)?(?:(?:hotkey|shortcut|key(?: combo)?)\s+)?(.+)$",
+            raw,
+            re.IGNORECASE,
+        )
+        if hotkey_match:
+            keys = self._parse_key_sequence(hotkey_match.group(1))
+            if keys:
+                rendered = " + ".join(keys)
+                return {
+                    "action_type": "press_hotkey",
+                    "description": f"send keyboard shortcut {rendered}",
+                    "keys": keys,
+                    "is_dangerous": False,
+                }
 
         # ── Create file ───────────────────────────────────────
         # "create a file called X in Y" / "create file named X in Y" / "make a file X"
@@ -478,6 +609,34 @@ class ActionExecutor:
 
         return os.path.join(folder, filename)
 
+    def _parse_key_sequence(self, raw_keys: str) -> list[str]:
+        candidate = (raw_keys or "").strip().lower()
+        if not candidate:
+            return []
+
+        candidate = candidate.replace(" plus ", "+")
+        candidate = candidate.replace(" then ", "+")
+        candidate = candidate.replace("-", "+")
+
+        parts = [normalize_key_token(part) for part in re.split(r"\s*\+\s*|\s+", candidate) if part.strip()]
+        parts = [part for part in parts if part]
+        if not parts:
+            return []
+
+        supported_tokens = {
+            "ctrl", "alt", "shift", "win", "enter", "tab", "space", "esc", "delete",
+            "backspace", "left", "right", "up", "down", "home", "end",
+            "pageup", "pagedown", "insert",
+        }
+        supported_tokens.update({f"f{idx}" for idx in range(1, 13)})
+        supported_tokens.update({chr(code) for code in range(ord("a"), ord("z") + 1)})
+        supported_tokens.update({str(num) for num in range(10)})
+
+        if not all(part in supported_tokens for part in parts):
+            return []
+
+        return parts
+
     def _ai_plan(self, user_input: str) -> Optional[dict]:
         """AI JSON planner — fallback when pattern matching fails."""
         system = platform.system()
@@ -494,7 +653,7 @@ User request: "{user_input}"
 
 Respond ONLY with valid JSON in this exact format:
 {{
-  "action_type": "install_package | run_command | create_file | create_folder | open_app | search_web | write_to_file | unsupported",
+  "action_type": "install_package | run_command | create_file | create_folder | open_app | search_web | write_to_file | type_text | press_hotkey | click_at | unsupported",
   "description": "what will happen in plain English",
   "command": "exact shell command if needed",
   "filename": "full file path if creating a file",
@@ -502,6 +661,12 @@ Respond ONLY with valid JSON in this exact format:
   "app_name": "app name if opening",
   "search_query": "query if searching",
   "url": "",
+  "text_to_type": "",
+  "keys": [],
+  "x": 0,
+  "y": 0,
+  "button": "left",
+  "clicks": 1,
   "is_dangerous": false
 }}
 
@@ -509,6 +674,9 @@ Rules:
 - Windows paths use backslashes
 - For installs use winget (apps) or pip (python packages)
 - is_dangerous only true for delete/format/uninstall
+- Use type_text for typing into the currently focused app
+- Use press_hotkey for keyboard shortcuts and single key presses
+- Use click_at only when the request explicitly provides coordinates
 - For rename: use command like: ren "full\\path\\oldname" "newname"
 - Return unsupported only if truly impossible to determine
 
@@ -561,7 +729,7 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
             return None
 
         # Cancel
-        if any(w in user_input.lower() for w in ["cancel", "never mind", "forget it", "no"]):
+        if self._matches_any_phrase(user_input, ["cancel", "never mind", "forget it", "no"]):
             self.pending_plans = None
             return "Cancelled."
 
@@ -577,6 +745,7 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
         if selected.get("requires_permission"):
             self.pending_action  = selected
             self.pending_verdict = WARNING
+            self.pending_action_source = self.current_input_source
             self.pending_plans   = None
             desc = selected.get("description", "this action")
             cmd  = selected.get("command", "")
@@ -590,6 +759,7 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
         self.pending_plans   = None
         self.pending_action  = selected
         self.pending_verdict = SAFE
+        self.pending_action_source = self.current_input_source
         return self._execute_pending()
 
     def _execute_pending(self) -> str:
@@ -606,6 +776,7 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
         verdict = self.pending_verdict
         self.pending_action  = None
         self.pending_verdict = None
+        self.pending_action_source = "unknown"
         self._clarification_options = []
 
         if not plan:
@@ -618,6 +789,11 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
         result, success = self._execute_with_verify(plan)
 
         if success:
+            self._record_executed_action(plan, verdict)
+            if verdict == SAFE:
+                presence_prompt = self._note_auto_action()
+                if presence_prompt:
+                    return f"{result} {presence_prompt}"
             return result
 
         # ── Failed — use improv engine ────────────────────────
@@ -670,6 +846,18 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
                 result  = self._write_to_file(plan)
                 success = "Done." in result
 
+            elif action_type == "type_text":
+                result = self._type_text(plan)
+                success = result == "Done."
+
+            elif action_type == "press_hotkey":
+                result = self._press_hotkey(plan)
+                success = result == "Done."
+
+            elif action_type == "click_at":
+                result = self._click_at(plan)
+                success = result == "Done."
+
             else:
                 return "I don't know how to execute that type of action.", False
 
@@ -694,7 +882,7 @@ if start command failed, try webbrowser; if one path failed, try a different pat
 
 Respond ONLY with valid JSON in this exact format:
 {{
-  "action_type": "install_package | run_command | create_file | create_folder | open_app | search_web | write_to_file",
+  "action_type": "install_package | run_command | create_file | create_folder | open_app | search_web | write_to_file | type_text | press_hotkey | click_at",
   "description": "alternative approach in plain English",
   "command": "alternative shell command if needed",
   "filename": "full file path if needed",
@@ -702,6 +890,12 @@ Respond ONLY with valid JSON in this exact format:
   "app_name": "app name if opening",
   "search_query": "",
   "url": "direct URL if opening browser",
+  "text_to_type": "",
+  "keys": [],
+  "x": 0,
+  "y": 0,
+  "button": "left",
+  "clicks": 1,
   "is_dangerous": false
 }}
 
@@ -963,6 +1157,37 @@ Be specific and practical. No preamble."""
         with open(filename, "a", encoding="utf-8") as f:
             f.write(content + "\n")
         self._log(f"WROTE TO: {filename}")
+        self.last_action_path = filename
+        return "Done."
+
+    def _type_text(self, plan: dict) -> str:
+        text_to_type = str(plan.get("text_to_type", "") or "")
+        try:
+            self.desktop.type_text(text_to_type)
+        except DesktopControlError as exc:
+            return f"Desktop typing didn't work: {exc}"
+        self._log(f"TYPED TEXT: {text_to_type[:120]}")
+        return "Done."
+
+    def _press_hotkey(self, plan: dict) -> str:
+        keys = plan.get("keys", []) or []
+        try:
+            self.desktop.press_hotkey(keys)
+        except DesktopControlError as exc:
+            return f"Keyboard shortcut didn't work: {exc}"
+        self._log(f"PRESSED HOTKEY: {' + '.join(keys)}")
+        return "Done."
+
+    def _click_at(self, plan: dict) -> str:
+        x = plan.get("x", 0)
+        y = plan.get("y", 0)
+        button = plan.get("button", "left")
+        clicks = plan.get("clicks", 1)
+        try:
+            self.desktop.click_at(x=x, y=y, button=button, clicks=clicks)
+        except DesktopControlError as exc:
+            return f"Desktop click didn't work: {exc}"
+        self._log(f"CLICKED: {button} at {x},{y} ({clicks}x)")
         return "Done."
 
     # ─────────────────────────────────────────────────────────────
@@ -976,3 +1201,156 @@ Be specific and practical. No preamble."""
             self.log_file = "iris_actions.log"
         with open(self.log_file, "a", encoding="utf-8") as f:
             f.write(f"[{timestamp}] {message}\n")
+
+    def _audit(self, verdict: str, plan: dict | None, source: str | None = None) -> None:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        logger = self._get_audit_logger()
+        action_type = (plan or {}).get("action_type", "unknown")
+        command = (plan or {}).get("command") or (plan or {}).get("description", "?")
+        normalized_source = (source or "unknown").strip().lower() or "unknown"
+        logger.info(f"[{timestamp}] {verdict} | {action_type} | {command} | SOURCE({normalized_source})")
+
+    def _audit_pending(self, verdict: str, source: str | None = None) -> None:
+        self._audit(
+            verdict,
+            self.pending_action,
+            source=source or self.pending_action_source or self.current_input_source,
+        )
+
+    def _get_audit_logger(self):
+        if not getattr(self, "audit_file", None):
+            self.audit_file = "iris_audit.log"
+
+        if self._audit_logger and self._audit_logger_path == self.audit_file:
+            return self._audit_logger
+
+        logger = logging.getLogger(f"iris.audit.{id(self)}")
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+        logger.handlers.clear()
+
+        handler = RotatingFileHandler(
+            self.audit_file,
+            maxBytes=5 * 1024 * 1024,
+            backupCount=3,
+            encoding="utf-8",
+        )
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        logger.addHandler(handler)
+
+        self._audit_logger = logger
+        self._audit_logger_path = self.audit_file
+        return logger
+
+    def _note_auto_action(self) -> str | None:
+        now = datetime.now()
+        self.auto_action_timestamps.append(now)
+        cutoff = now - timedelta(seconds=60)
+        self.auto_action_timestamps = [ts for ts in self.auto_action_timestamps if ts >= cutoff]
+
+        if len(self.auto_action_timestamps) >= 4 and not self.follow_up:
+            self.pending_presence_check = True
+            self._audit(
+                "PRESENCE_CHECK_REQUESTED",
+                {"action_type": "presence_check", "description": "rapid auto sequence"},
+                source=self.current_input_source,
+            )
+            return "Still with you? Say go ahead or cancel."
+
+        return None
+
+    def _record_executed_action(self, plan: dict, verdict: str) -> None:
+        record = {
+            "timestamp": datetime.now(),
+            "action_type": plan.get("action_type", ""),
+            "path": self._resolve_plan_path(plan),
+            "sensitive_path": self._plan_touches_sensitive_path(plan),
+            "network_or_browser": self._plan_is_network_or_browser(plan),
+            "verdict": verdict,
+        }
+        self.recent_action_history.append(record)
+        self.recent_action_history = self.recent_action_history[-6:]
+
+    def _check_action_chain(self, plan: dict) -> Optional[str]:
+        recent = self.recent_action_history[-3:]
+        if not recent:
+            return None
+
+        latest = recent[-1]
+        current_is_network = self._plan_is_network_or_browser(plan)
+
+        if (
+            latest.get("action_type") in {"create_file", "write_to_file"}
+            and latest.get("path")
+            and current_is_network
+            and (
+                self._plan_references_path(plan, latest["path"])
+                or latest.get("sensitive_path")
+            )
+        ):
+            return (
+                "This next step follows a file write with a browser or network-capable action "
+                "that references the same path. Confirm before IRIS continues."
+            )
+
+        if current_is_network and any(item.get("sensitive_path") for item in recent):
+            return (
+                "A recent action touched a potentially sensitive path, and this next step uses "
+                "a browser or network-capable action. Confirm before IRIS continues."
+            )
+
+        return None
+
+    def _resolve_plan_path(self, plan: dict) -> str:
+        action_type = plan.get("action_type", "")
+        if action_type in {"create_file", "create_folder", "write_to_file"} and self.last_action_path:
+            return str(self.last_action_path)
+        return str(plan.get("filename", "") or "")
+
+    def _plan_touches_sensitive_path(self, plan: dict) -> bool:
+        values = [
+            str(plan.get("filename", "") or ""),
+            str(plan.get("command", "") or ""),
+            str(plan.get("description", "") or ""),
+            str(plan.get("text_to_type", "") or ""),
+        ]
+        keywords = getattr(self.security, "SENSITIVE_PATH_KEYWORDS", [])
+        lowered_values = " ".join(values).lower()
+        return any(keyword in lowered_values for keyword in keywords)
+
+    def _plan_is_network_or_browser(self, plan: dict) -> bool:
+        action_type = plan.get("action_type", "")
+        if action_type == "search_web":
+            return True
+
+        url = str(plan.get("url", "") or "")
+        if url.startswith("http://") or url.startswith("https://"):
+            return True
+
+        app_name = str(plan.get("app_name", "") or "").lower()
+        if app_name in {"chrome", "google chrome", "firefox", "edge", "microsoft edge"}:
+            return True
+
+        command = str(plan.get("command", "") or "").lower()
+        network_tokens = [
+            "http://", "https://", "curl ", "wget ", "invoke-webrequest",
+            "start https", "start http",
+        ]
+        return any(token in command for token in network_tokens)
+
+    def _plan_references_path(self, plan: dict, path: str) -> bool:
+        target = str(path or "").lower()
+        if not target:
+            return False
+
+        basename = os.path.basename(target)
+        candidate_values = [
+            str(plan.get("filename", "") or ""),
+            str(plan.get("command", "") or ""),
+            str(plan.get("search_query", "") or ""),
+            str(plan.get("description", "") or ""),
+            str(plan.get("url", "") or ""),
+            str(plan.get("app_name", "") or ""),
+        ]
+        lowered = " ".join(candidate_values).lower()
+        return target in lowered or (basename and basename in lowered)

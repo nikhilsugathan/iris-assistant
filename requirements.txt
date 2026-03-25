@@ -1,4 +1,5 @@
 google-generativeai
+google-genai
 groq
 anthropic
 requests
@@ -9,3 +10,5 @@ pygame
 SpeechRecognition
 PyAudio
 PySide6
+playwright
+pyautogui

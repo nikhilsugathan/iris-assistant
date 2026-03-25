@@ -1,6 +1,6 @@
 """
-JARVIS Security Guard
-======================
+IRIS Security Guard
+===================
 Every single action passes through here before execution.
 No exceptions.
 
@@ -17,7 +17,7 @@ RESPONSE TYPES:
   BLOCKED     — refuse entirely, explain why
   NEED_ADMIN  — inform user that elevated rights are required, ask to confirm
 
-ETHICAL BASELINE (always enforced, no override):
+ETHICAL BASELINE (always enforced):
   - No commands that harm other systems (DDoS, exploits, port scanners with attack intent)
   - No downloads from known malware/phishing domains
   - No accessing or exfiltrating private data without consent
@@ -45,8 +45,8 @@ BLOCKED    = "BLOCKED"
 NEED_ADMIN = "NEED_ADMIN"
 
 
-# ── Hardcoded blocked patterns (never overrideable) ────────────
-# These are absolute — no user permission can override them.
+# ── Hardcoded blocked patterns (never executable) ───────────────
+# These are absolute hard blocks under the current safety contract.
 
 BLOCKED_COMMANDS = [
     # Exploit / attack tools
@@ -65,15 +65,21 @@ BLOCKED_COMMANDS = [
     r":\(\)\{.*\|.*&\}", r"%0\|%0",
 ]
 
-BLOCKED_DOMAINS = [
-    # Known malware / phishing categories (examples — AI judge handles the full list)
-    "bit.ly", "tinyurl.com",           # URL shorteners hide destination (warn, not block)
-    "pastebin.com",                    # Often used for payload delivery
+WARNING_DOMAINS = [
+    # Known risky-but-sometimes-legitimate destinations
+    "bit.ly",
+    "tinyurl.com",
+    "pastebin.com",
 ]
 
-SUSPICIOUS_FILE_EXTENSIONS = [
-    ".exe", ".bat", ".cmd", ".vbs", ".ps1", ".msi",
-    ".dll", ".scr", ".pif", ".com", ".jar", ".reg"
+BLOCKED_DOMAINS = []
+
+DOWNLOAD_SUSPICIOUS_EXTENSIONS = [
+    ".exe", ".msi", ".dll", ".scr", ".pif", ".com", ".jar"
+]
+
+EXECUTION_SUSPICIOUS_EXTENSIONS = [
+    ".bat", ".cmd", ".vbs", ".ps1", ".reg"
 ]
 
 SAFE_DOWNLOAD_DOMAINS = [
@@ -109,8 +115,20 @@ SENSITIVE_OPERATIONS = [
     r"proxy\s+settings", r"ssl.*bypass", r"certificate.*trust",
 ]
 
+SENSITIVE_PATH_KEYWORDS = [
+    "password", "credential", "token", ".env",
+    "id_rsa", "secret", "api_key", "private_key",
+]
+
+DESKTOP_AUTOMATION_ACTIONS = {
+    "type_text",
+    "press_hotkey",
+    "click_at",
+}
+
 
 class SecurityGuard:
+    SENSITIVE_PATH_KEYWORDS = SENSITIVE_PATH_KEYWORDS
 
     def __init__(self, brain):
         self.brain = brain
@@ -128,19 +146,24 @@ class SecurityGuard:
           message : Human-readable explanation to speak to user
         """
         command  = plan.get("command", "")
+        command_lower = command.lower()
         url      = self._extract_url(command) or plan.get("url", "")
         filename = plan.get("filename", "")
         action   = plan.get("action_type", "")
 
-        # ── Layer 1: Hard blocks (no override ever) ────────────
+        # ── Layer 1: Hard blocks (never executable) ────────────
         blocked, reason = self._check_hard_blocks(command)
         if blocked:
-            return BLOCKED, f"Can't do that — {reason}. Say 'override' to force it."
+            return BLOCKED, f"Can't do that — {reason}. This action is blocked by the safety contract."
 
         # ── Layer 2: Admin rights check ────────────────────────
         needs_admin, admin_reason = self._check_admin_required(command)
         if needs_admin:
             return NEED_ADMIN, f"Needs admin rights. Run as Administrator or say 'go ahead' for UAC prompt."
+
+        # ── Layer 2.5: Focused desktop automation ─────────────
+        if action in DESKTOP_AUTOMATION_ACTIONS:
+            return self._check_desktop_automation(plan)
 
         # ── Layer 3: URL / domain safety ──────────────────────
         if url:
@@ -150,18 +173,27 @@ class SecurityGuard:
 
         # ── Layer 4: Download safety ───────────────────────────
         if action in ("install_package", "run_command") and any(
-            ext in command.lower() for ext in SUSPICIOUS_FILE_EXTENSIONS
+            ext in command_lower for ext in DOWNLOAD_SUSPICIOUS_EXTENSIONS
         ):
             dl_verdict, dl_msg = self._check_download(command, url)
             if dl_verdict in (BLOCKED, WARNING):
                 return dl_verdict, dl_msg
 
-        # ── Layer 5: Sensitive operations (need explicit OK) ───
+        # ── Layer 5: Local script / registry execution ──────────
+        if action == "run_command" and any(
+            ext in command_lower for ext in EXECUTION_SUSPICIOUS_EXTENSIONS
+        ):
+            return WARNING, (
+                "This executes a local script or registry file. "
+                "Review the command carefully and confirm before IRIS runs it."
+            )
+
+        # ── Layer 6: Sensitive operations (need explicit OK) ───
         sensitive, sens_reason = self._check_sensitive(command)
         if sensitive:
             return WARNING, f"This touches a sensitive area: {sens_reason}. Go ahead?"
 
-        # Layer 6 (AI ethical check) intentionally removed —
+        # Layer 7 (AI ethical check) intentionally removed —
         # it was blocking legitimate user actions like delete.
         # Hard blocks in Layer 1 handle actual dangerous commands.
 
@@ -199,8 +231,8 @@ class SecurityGuard:
         # Check against known safe domains
         is_trusted = any(domain in url_lower for domain in SAFE_DOWNLOAD_DOMAINS)
 
-        # Check against known suspicious domains
-        for domain in BLOCKED_DOMAINS:
+        # Check against warning domains first
+        for domain in WARNING_DOMAINS:
             if domain in url_lower:
                 if domain in ["bit.ly", "tinyurl.com"]:
                     return WARNING, (
@@ -209,6 +241,16 @@ class SecurityGuard:
                         f"This could be safe or could redirect to something harmful. "
                         f"Do you explicitly want me to proceed to this unknown destination?"
                     )
+                if domain == "pastebin.com":
+                    return WARNING, (
+                        "This URL is hosted on Pastebin. Pastebin can be legitimate, "
+                        "but it is also commonly used for payload delivery and transient scripts. "
+                        "Do you explicitly want me to proceed?"
+                    )
+
+        # Check against known blocked domains
+        for domain in BLOCKED_DOMAINS:
+            if domain in url_lower:
                 return BLOCKED, (
                     f"The domain '{domain}' is flagged as potentially unsafe. "
                     f"I'm blocking this to protect you."
@@ -242,7 +284,7 @@ class SecurityGuard:
         cmd_lower = command.lower()
 
         # Executable downloaded from unverified source
-        for ext in [".exe", ".msi", ".bat", ".cmd", ".ps1", ".vbs"]:
+        for ext in DOWNLOAD_SUSPICIOUS_EXTENSIONS:
             if ext in cmd_lower:
                 if not any(domain in (url or "").lower() for domain in SAFE_DOWNLOAD_DOMAINS):
                     return WARNING, (
@@ -264,6 +306,44 @@ class SecurityGuard:
                 readable = pattern.replace(r"\s+", " ")
                 return True, f"this touches '{readable}'"
         return False, ""
+
+    def _check_desktop_automation(self, plan: dict) -> Tuple[str, str]:
+        action = plan.get("action_type", "")
+        if action == "type_text":
+            text_to_type = str(plan.get("text_to_type", "") or "")
+            if self._contains_sensitive_text(text_to_type):
+                return WARNING, (
+                    "This types potentially sensitive text into the currently focused app. "
+                    "Confirm before IRIS proceeds."
+                )
+            return WARNING, (
+                "This types into the currently focused app. "
+                "Confirm before IRIS proceeds so the text goes to the right place."
+            )
+
+        if action == "press_hotkey":
+            keys = ", ".join(plan.get("keys", []) or [])
+            return WARNING, (
+                f"This sends a keyboard shortcut ({keys or 'shortcut'}) to the currently focused app. "
+                f"Confirm before IRIS proceeds."
+            )
+
+        if action == "click_at":
+            x = plan.get("x", "?")
+            y = plan.get("y", "?")
+            return WARNING, (
+                f"This clicks the desktop at screen coordinates {x},{y}. "
+                f"Confirm before IRIS proceeds."
+            )
+
+        return SAFE, ""
+
+    def _contains_sensitive_text(self, value: str) -> bool:
+        lowered = (value or "").lower()
+        if not lowered:
+            return False
+        sensitive_tokens = set(SENSITIVE_PATH_KEYWORDS) | {"password", "passcode", "secret", "token"}
+        return any(token in lowered for token in sensitive_tokens)
 
     # ─────────────────────────────────────────────────────────────
     # LAYER 6: AI ethical judgement
@@ -335,9 +415,9 @@ Rules:
     def format_security_header(self, verdict: str) -> str:
         """Return a spoken/printed header for security messages."""
         headers = {
-            BLOCKED:    "🔴 JARVIS Security — BLOCKED",
-            WARNING:    "🟡 JARVIS Security — WARNING",
-            NEED_ADMIN: "🔵 JARVIS Security — ADMIN REQUIRED",
+            BLOCKED:    "🔴 IRIS Security — BLOCKED",
+            WARNING:    "🟡 IRIS Security — WARNING",
+            NEED_ADMIN: "🔵 IRIS Security — ADMIN REQUIRED",
             SAFE:       "",
         }
         return headers.get(verdict, "")

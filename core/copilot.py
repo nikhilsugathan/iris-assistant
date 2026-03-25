@@ -1,6 +1,6 @@
 """
-JARVIS Co-Pilot Mode
-=====================
+IRIS Co-Pilot Mode
+==================
 ONLY activates when you explicitly ask to be walked through something.
 
 Trigger phrases:

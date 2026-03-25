@@ -21,3 +21,7 @@ desktop.ini
 build/
 dist/
 *.spec
+
+# Local collaboration/browser bridge state
+.bridge/
+ai-collab/

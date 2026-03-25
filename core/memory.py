@@ -1,6 +1,6 @@
 """
-JARVIS Memory Module
-====================
+IRIS Memory Module
+==================
 Handles persistent conversation history and context.
 Stores everything locally in a JSON file on your PC.
 """

@@ -133,6 +133,8 @@ def handle_user_input(
     if not user_input:
         return None, False
 
+    executor.set_input_source("text" if getattr(voice, "text_mode", False) else "voice")
+
     if user_input.lower() in {"exit", "quit", "goodbye iris", "shutdown"}:
         msg = "Shutting down. Try not to break anything while I'm gone."
         print_response("IRIS", msg)
@@ -169,6 +171,14 @@ def handle_user_input(
         response = executor.handle_plan_choice(user_input)
         if response is not None:
             update_self_model_after_response(self_model, response, "plan-choice")
+            print_response("IRIS", response)
+            voice.speak(response)
+            return response, False
+
+    if executor.waiting_for_presence_check():
+        response = executor.handle_presence_check_response(user_input)
+        if response is not None:
+            update_self_model_after_response(self_model, response, "presence-check")
             print_response("IRIS", response)
             voice.speak(response)
             return response, False
