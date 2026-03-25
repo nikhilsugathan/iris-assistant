@@ -394,7 +394,7 @@ class VoiceStandbyWorker(QtCore.QThread):
                 if self.isInterruptionRequested():
                     break
 
-                command = self.engine.listen_for_voice_command()
+                command = self.engine.listen_for_voice_command(interrupt_speech=False)
                 if not command:
                     if getattr(self.engine.voice, "last_listen_status", "") == "transcription_failed":
                         self.event.emit(
@@ -987,6 +987,7 @@ class IrisWindow(QtWidgets.QMainWindow):
 
         stt_backend = str(snapshot.get("last_transcript_backend") or "--").upper()
         confidence = float(snapshot.get("last_transcript_confidence") or 0.0)
+        uncertain = bool(snapshot.get("last_transcript_uncertain"))
         attempts = str(snapshot.get("last_transcript_attempts") or "").replace("_", " ").upper()
         capture_ms = int(snapshot.get("last_capture_duration_ms") or 0)
         transcribe_ms = int(snapshot.get("last_transcription_duration_ms") or 0)
@@ -995,6 +996,8 @@ class IrisWindow(QtWidgets.QMainWindow):
             stt_display = f"{stt_backend} {confidence:.2f}"
         else:
             stt_display = stt_backend
+        if uncertain:
+            stt_display = f"{stt_display} / UNCERTAIN"
 
         tts_display = str(snapshot.get("last_tts_backend") or "--").upper()
         audio_display = "READY" if snapshot.get("audio_ready") else "OFF"

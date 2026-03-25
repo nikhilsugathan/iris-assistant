@@ -37,9 +37,11 @@ class FakeVoice:
         self.current_state = "idle"
         self.last_listen_status = "idle"
         self.last_listen_detail = ""
+        self.last_transcript_uncertain = False
         self._wake_inputs = ["iris"]
         self._command_inputs = ["please terminate the app"]
         self.spoken: list[str] = []
+        self.command_interrupt_flags: list[bool] = []
 
     def set_state_callback(self, callback) -> None:
         self._state_callback = callback
@@ -58,7 +60,8 @@ class FakeVoice:
         self._emit_state("idle")
         return text
 
-    def listen_for_command(self) -> str:
+    def listen_for_command(self, interrupt_speech: bool = True) -> str:
+        self.command_interrupt_flags.append(bool(interrupt_speech))
         self._emit_state("listening")
         text = self._command_inputs.pop(0) if self._command_inputs else ""
         self.last_listen_status = "heard" if text else "timeout"
@@ -76,6 +79,9 @@ class FakeVoice:
         self._emit_state("speaking")
         self._emit_state("idle")
         return None
+
+    def speak_quick_ack(self, text: str):
+        return self.speak_background(text)
 
     def stop_speaking(self) -> None:
         self._emit_state("idle")
@@ -127,6 +133,10 @@ def main() -> None:
         assert_true(
             fake_voice.spoken == [Config.WAKE_ACKNOWLEDGEMENT],
             "Immediate terminate should not speak a farewell after the wake acknowledgement.",
+        )
+        assert_true(
+            fake_voice.command_interrupt_flags == [False],
+            "Wake acknowledgement handoff should start command listening without interrupting the quick acknowledgement.",
         )
 
         print("PASS: IRIS voice standby smoke test completed.")

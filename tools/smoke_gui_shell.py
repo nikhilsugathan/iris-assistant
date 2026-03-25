@@ -81,6 +81,16 @@ def main() -> None:
             "LISTEN " in window.diagnostics_label.text() and "PATH " in window.diagnostics_label.text(),
             "Runtime diagnostics did not render the voice timing path.",
         )
+        engine.voice.last_transcript_uncertain = True
+        engine.voice.last_transcript_backend = "faster_whisper"
+        engine.voice.last_transcript_confidence = 0.61
+        window.refresh_status()
+        app.processEvents()
+        assert_true(
+            "UNCERTAIN" in window.diagnostics_label.text(),
+            "Runtime diagnostics did not surface uncertain transcript state.",
+        )
+        engine.voice.last_transcript_uncertain = False
         transcript_text = window.transcript.toPlainText()
         if getattr(Config, "STARTUP_GREETING_ENABLED", True):
             assert_true(

@@ -98,6 +98,7 @@ class IRISEngine:
             "last_transcript_confidence": getattr(self.voice, "last_transcript_confidence", 0.0),
             "last_transcript_language": getattr(self.voice, "last_transcript_language", ""),
             "last_transcript_attempts": getattr(self.voice, "last_transcript_attempts", ""),
+            "last_transcript_uncertain": getattr(self.voice, "last_transcript_uncertain", False),
             "last_capture_duration_ms": getattr(self.voice, "last_capture_duration_ms", 0),
             "last_transcription_duration_ms": getattr(self.voice, "last_transcription_duration_ms", 0),
             "last_total_listen_duration_ms": getattr(self.voice, "last_total_listen_duration_ms", 0),
@@ -125,6 +126,11 @@ class IRISEngine:
             inferred_source = input_source or ("text" if self.text_mode else "unknown")
             self.executor.set_input_source(inferred_source)
             self.refresh_overdrive()
+
+            if self._should_reprompt_uncertain_voice(inferred_source):
+                message = self._uncertain_voice_prompt()
+                self._speak_if_enabled(message, speak_response)
+                return EngineResult(label=Config.PUBLIC_NAME, response=message, mode="voice-repeat")
 
             lowered_input = user_input.lower()
 
@@ -360,8 +366,8 @@ class IRISEngine:
         packet.allow_long_response = True
         return packet
 
-    def listen_for_voice_command(self) -> str:
-        return self.voice.listen_for_command()
+    def listen_for_voice_command(self, interrupt_speech: bool = True) -> str:
+        return self.voice.listen_for_command(interrupt_speech=interrupt_speech)
 
     def begin_slow_voice_ack(self, user_input: str, enabled: bool = True):
         if not enabled or not getattr(self.voice, "audio_ready", False):
@@ -433,6 +439,19 @@ class IRISEngine:
     def _speak_if_enabled(self, text: str, enabled: bool) -> None:
         if enabled:
             self.voice.speak(text)
+
+    def _should_reprompt_uncertain_voice(self, input_source: str) -> bool:
+        if input_source != "voice":
+            return False
+        return bool(getattr(self.voice, "last_transcript_uncertain", False))
+
+    def _uncertain_voice_prompt(self) -> str:
+        describe = getattr(self.voice, "describe_uncertain_transcript", None)
+        if callable(describe):
+            message = str(describe() or "").strip()
+            if message:
+                return message
+        return "That sounded uncertain. Please say it again."
 
     def _is_terminate_command(self, lowered_input: str) -> bool:
         lowered_input = (lowered_input or "").strip()

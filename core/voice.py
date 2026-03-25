@@ -63,6 +63,10 @@ class Voice:
         self.last_transcription_duration_ms = 0
         self.last_total_listen_duration_ms = 0
         self.last_transcript_attempts = ""
+        self.last_transcript_uncertain = False
+        self.last_uncertain_transcript = ""
+        self.last_uncertain_transcript_backend = ""
+        self.last_uncertain_transcript_confidence = 0.0
         self._faster_whisper_model = None
         self._faster_whisper_error = ""
 
@@ -286,11 +290,12 @@ class Voice:
             wake_mode=True,
         )
 
-    def listen_for_command(self) -> str:
+    def listen_for_command(self, interrupt_speech: bool = True) -> str:
         if self.text_mode:
             return self.listen_text()
         # Stop Iris speaking if she is — user interrupted
-        self.stop_speaking()
+        if interrupt_speech:
+            self.stop_speaking()
         return self._listen(
             timeout=getattr(Config, "MIC_TIMEOUT", 6),
             phrase_time_limit=getattr(Config, "MIC_PHRASE_LIMIT", 12),
@@ -316,6 +321,10 @@ class Voice:
         self.last_capture_duration_ms = 0
         self.last_transcription_duration_ms = 0
         self.last_total_listen_duration_ms = 0
+        self.last_transcript_uncertain = False
+        self.last_uncertain_transcript = ""
+        self.last_uncertain_transcript_backend = ""
+        self.last_uncertain_transcript_confidence = 0.0
         self._emit_state(active_state)
         listen_started_at = time.perf_counter()
         try:
@@ -355,11 +364,13 @@ class Voice:
         self.last_total_listen_duration_ms = int((time.perf_counter() - listen_started_at) * 1000)
 
         if text:
-            self.last_listen_status = "heard"
+            self.last_listen_status = "uncertain_transcript" if self.last_transcript_uncertain and not wake_mode else "heard"
             self.last_listen_detail = text
             self.listen_failures = 0
             if wake_mode and getattr(Config, "SHOW_WAKE_DEBUG", True):
                 console.print(f"[dim]Wake heard:[/dim] {text}")
+            elif self.last_transcript_uncertain:
+                console.print(f"[yellow]Uncertain transcription:[/yellow] {text}")
             elif not wake_mode:
                 console.print(f"[green]You:[/green] {text}")
 
@@ -388,6 +399,8 @@ class Voice:
             return "I didn't hear anything that time. Try again or type your request."
         if status == "transcription_failed":
             return "I heard audio, but I couldn't turn it into text. Try speaking a little closer or type the request."
+        if status == "uncertain_transcript":
+            return self.describe_uncertain_transcript()
         return "That didn't come through clearly. Please try again."
 
     def short_last_listen_feedback(self) -> str:
@@ -398,7 +411,18 @@ class Voice:
             return "My microphone ran into a problem."
         if status == "transcription_failed":
             return "I heard you, but I couldn't make that out."
+        if status == "uncertain_transcript":
+            return "That sounded uncertain. Please repeat it."
         return "I didn't catch that."
+
+    def describe_uncertain_transcript(self) -> str:
+        text = str(getattr(self, "last_uncertain_transcript", "") or "").strip()
+        backend = str(getattr(self, "last_uncertain_transcript_backend", "") or "").replace("_", " ").strip()
+        if text and backend:
+            return f"I caught something like '{text}' from {backend}, but it sounded uncertain. Please say it again."
+        if text:
+            return f"I caught something like '{text}', but it sounded uncertain. Please say it again."
+        return "That sounded uncertain. Please say it again."
 
     def _transcribe_wake(self, audio) -> str:
         priority = getattr(Config, "WAKE_STT_PRIORITY", "system_first").lower().strip()
@@ -779,6 +803,10 @@ if ($best) {{
         self.last_transcript_confidence = 0.0
         self.last_transcript_language = ""
         attempted: list[str] = []
+        self.last_transcript_uncertain = False
+        self.last_uncertain_transcript = ""
+        self.last_uncertain_transcript_backend = ""
+        self.last_uncertain_transcript_confidence = 0.0
 
         for backend in order:
             attempted.append(backend)
@@ -795,9 +823,14 @@ if ($best) {{
 
             if backend == "system":
                 accepted = self._accept_local_command_candidate(candidate, audio)
-                if accepted or order == ["system"]:
+                if accepted:
                     self.last_transcript_attempts = " > ".join(attempted)
                     self._remember_transcript_candidate(candidate)
+                    return candidate.text
+                if order == ["system"]:
+                    self.last_transcript_attempts = " > ".join(attempted)
+                    self._remember_transcript_candidate(candidate)
+                    self._mark_uncertain_transcript(candidate)
                     return candidate.text
                 fallback_local = candidate
                 console.print(
@@ -808,9 +841,14 @@ if ($best) {{
 
             if backend == "faster_whisper":
                 accepted = self._accept_local_whisper_candidate(candidate, audio)
-                if accepted or order == ["faster_whisper"]:
+                if accepted:
                     self.last_transcript_attempts = " > ".join(attempted)
                     self._remember_transcript_candidate(candidate)
+                    return candidate.text
+                if order == ["faster_whisper"]:
+                    self.last_transcript_attempts = " > ".join(attempted)
+                    self._remember_transcript_candidate(candidate)
+                    self._mark_uncertain_transcript(candidate)
                     return candidate.text
                 fallback_local = candidate
                 console.print(
@@ -825,6 +863,7 @@ if ($best) {{
         if fallback_local:
             self.last_transcript_attempts = " > ".join(attempted)
             self._remember_transcript_candidate(fallback_local)
+            self._mark_uncertain_transcript(fallback_local)
             return fallback_local.text
         self.last_transcript_attempts = " > ".join(attempted)
         return ""
@@ -833,6 +872,12 @@ if ($best) {{
         self.last_transcript_backend = candidate.backend
         self.last_transcript_confidence = float(candidate.confidence or 0.0)
         self.last_transcript_language = str(candidate.language or "")
+
+    def _mark_uncertain_transcript(self, candidate: TranscriptCandidate) -> None:
+        self.last_transcript_uncertain = True
+        self.last_uncertain_transcript = str(candidate.text or "").strip()
+        self.last_uncertain_transcript_backend = str(candidate.backend or "")
+        self.last_uncertain_transcript_confidence = float(candidate.confidence or 0.0)
 
     def _transcribe_candidate(self, backend: str, audio, wake_mode: bool = False) -> TranscriptCandidate:
         if backend == "system":
@@ -986,7 +1031,7 @@ if ($best) {{
 
     def speak_quick_ack(self, text: str):
         priority = getattr(Config, "WAKE_ACK_TTS_BACKEND_PRIORITY", "system_first")
-        self.speak(text, backend_priority=priority)
+        return self.speak_background(text, backend_priority=priority)
 
     def _speak_with_backends(self, text: str, backend_priority: str | None = None):
         last_error = None
@@ -1155,8 +1200,13 @@ if ($best) {{
     def stop(self):
         self.stop_speaking()
 
-    def speak_background(self, text: str):
-        thread = threading.Thread(target=self.speak, args=(text,), daemon=True)
+    def speak_background(self, text: str, backend_priority: str | None = None):
+        thread = threading.Thread(
+            target=self.speak,
+            args=(text,),
+            kwargs={"backend_priority": backend_priority},
+            daemon=True,
+        )
         thread.start()
         return thread
 

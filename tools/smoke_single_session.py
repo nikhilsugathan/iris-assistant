@@ -352,6 +352,30 @@ def main() -> None:
             "Voice-origin file creation did not execute after approval.",
         )
 
+        engine.voice.last_transcript_uncertain = True
+        engine.voice.last_uncertain_transcript = "open smoke file"
+        engine.voice.last_uncertain_transcript_backend = "faster_whisper"
+        uncertain_voice_result = engine.process_user_input(
+            "open smoke file",
+            speak_response=True,
+            input_source="voice",
+        )
+        assert_true(
+            uncertain_voice_result.mode == "voice-repeat",
+            "Weak voice transcripts should trigger a repeat prompt instead of normal execution.",
+        )
+        assert_true(
+            "sounded uncertain" in uncertain_voice_result.response.lower(),
+            "Weak voice transcripts did not return the expected repeat prompt.",
+        )
+        assert_true(
+            spoken_messages[-1] == uncertain_voice_result.response,
+            "Weak voice transcript prompt was not routed to speech.",
+        )
+        engine.voice.last_transcript_uncertain = False
+        engine.voice.last_uncertain_transcript = ""
+        engine.voice.last_uncertain_transcript_backend = ""
+
         followup_result = engine.process_user_input("no", speak_response=True)
         assert_true(followup_result.response == "No problem.", "Follow-up handling did not close cleanly.")
         assert_true(spoken_messages[-1] == "No problem.", "Follow-up response was not routed to speech.")
