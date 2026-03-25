@@ -8,7 +8,8 @@ The intent is simple:
 - make approval boundaries explicit
 - keep high-confidence local assistance fast
 
-Session approval memory is a product goal, but not fully implemented yet. Until it is, `CONFIRM_ONCE` should be treated as "ask explicitly before execution."
+Session approval memory is available for exact repeat actions when the operator explicitly says `always for this session`.
+For desktop typing, hotkeys, and clicks, that remembered approval is only reused while the same window stays focused.
 
 ## NEVER
 
@@ -49,6 +50,7 @@ These actions are acceptable for silent or near-silent execution when they stay 
 - safe file creation in user space
 - safe folder creation in user space
 - opening local applications
+- focusing an existing local window
 - opening trusted URLs
 - local status checks and diagnostics
 - read-only inspection tasks

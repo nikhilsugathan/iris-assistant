@@ -1,29 +1,19 @@
 """
 IRIS Main Entry Point
 =====================
-Voice standby mode with tighter wake-word handling.
+Terminal entry point backed by the shared IRIS runtime engine.
 """
 
 from __future__ import annotations
 
 import argparse
-import difflib
 import time
 
 from rich.console import Console
 from rich.panel import Panel
 
 from config import Config
-from core.autocorrect import AutoCorrector
-from core.brain import Brain
-from core.council import Council
-from core.copilot import CoPilot
-from core.dialog_manager import DialogManager
-from core.diagnostics import SelfDiagnostics
-from core.executor import ActionExecutor
-from core.memory import Memory
-from core.self_model import SelfModel
-from core.voice import Voice
+from core.engine import IRISEngine
 
 console = Console()
 
@@ -38,207 +28,35 @@ BANNER = f"""
 """
 
 
-def show_status(memory: Memory, text_mode: bool, voice: Voice, self_model: SelfModel) -> None:
-    mic_status = "Ready" if getattr(voice, "mic_ready", False) else "Unavailable"
-    audio_status = "Ready" if getattr(voice, "audio_ready", False) else "Unavailable"
+def show_status(engine: IRISEngine, text_mode: bool) -> None:
+    snapshot = engine.status_snapshot()
+    mic_status = "Ready" if snapshot.get("mic_ready") else "Unavailable"
+    audio_status = "Ready" if snapshot.get("audio_ready") else "Unavailable"
+    overdrive = "Active" if snapshot.get("overdrive_active") else "Off"
 
     console.print(
         Panel(
             "[bold green]Online[/bold green]\n"
-            f"[white]Primary Brain  :[/white] [cyan]{Config.PRIMARY_BRAIN}[/cyan]\n"
-            f"[white]Fallback Brain :[/white] [cyan]{Config.FALLBACK_BRAIN}[/cyan]\n"
+            f"[white]Primary Brain  :[/white] [cyan]{snapshot.get('primary_brain')}[/cyan]\n"
+            f"[white]Fallback Brain :[/white] [cyan]{snapshot.get('fallback_brain')}[/cyan]\n"
             f"[white]Cognitive Core :[/white] [cyan]Adaptive council online[/cyan]\n"
             f"[white]Input Mode     :[/white] [cyan]{'Keyboard' if text_mode else 'Voice standby'}[/cyan]\n"
             f"[white]Microphone     :[/white] [cyan]{mic_status}[/cyan]\n"
             f"[white]Audio Output   :[/white] [cyan]{audio_status}[/cyan]\n"
-            f"[white]Wake Words     :[/white] [cyan]{', '.join(Config.WAKE_WORDS)}[/cyan]\n"
-            f"[white]Self Model     :[/white] [cyan]{self_model.summary()}[/cyan]\n"
-            f"[white]Memory         :[/white] [cyan]{memory.summary()}[/cyan]\n",
-            title=f"[bold cyan]{Config.SYSTEM_NAME}[/bold cyan]",
+            f"[white]Wake Words     :[/white] [cyan]{', '.join(snapshot.get('wake_words', []))}[/cyan]\n"
+            f"[white]Overdrive      :[/white] [cyan]{overdrive}[/cyan]\n"
+            f"[white]Self Model     :[/white] [cyan]{snapshot.get('self_model')}[/cyan]\n"
+            f"[white]Memory         :[/white] [cyan]{snapshot.get('memory')}[/cyan]\n",
+            title=f"[bold cyan]{snapshot.get('system_name', Config.SYSTEM_NAME)}[/bold cyan]",
             border_style="cyan",
         )
     )
 
 
 def print_response(label: str, text: str) -> None:
-    console.print(f"\n[bold cyan]{label}:[/bold cyan] {text}\n")
-
-
-def update_self_model_after_response(self_model: SelfModel, response: str, source: str) -> None:
-    lowered = (response or "").lower()
-    if any(token in lowered for token in ["failed", "error", "couldn't", "didn't work", "blocked"]):
-        self_model.note_failure(response)
-        self_model.note_response(response, source="error")
+    if not text:
         return
-
-    self_model.note_response(response, source=source)
-    if any(token in lowered for token in ["done", "created", "opened", "cancelled", "completed"]):
-        self_model.note_success(response)
-
-
-def contains_wake_word(text: str) -> bool:
-    text_l = (text or "").lower().strip()
-    wake_words = [w.lower() for w in Config.WAKE_WORDS]
-
-    # exact contains first
-    if any(w in text_l for w in wake_words):
-        return True
-
-    # tighter fuzzy match on short chunks only
-    words = text_l.split()
-    chunks = []
-    for i in range(len(words)):
-        chunks.append(words[i])
-        if i + 1 < len(words):
-            chunks.append(f"{words[i]} {words[i + 1]}")
-
-    for wake in wake_words:
-        for chunk in chunks:
-            ratio = difflib.SequenceMatcher(None, chunk, wake).ratio()
-            if ratio >= getattr(Config, "WAKE_FUZZY_THRESHOLD", 0.82):
-                return True
-
-    return False
-
-
-def strip_wake_word(text: str) -> str:
-    cleaned = text.strip()
-    text_l = cleaned.lower()
-
-    for wake in sorted(Config.WAKE_WORDS, key=len, reverse=True):
-        wake_l = wake.lower()
-        if text_l.startswith(wake_l):
-            return cleaned[len(wake):].strip(" ,:.-")
-
-    parts = cleaned.split(maxsplit=1)
-    if len(parts) == 2 and contains_wake_word(parts[0]):
-        return parts[1].strip()
-
-    return cleaned
-
-
-def handle_user_input(
-    user_input: str,
-    voice: Voice,
-    autocorrect: AutoCorrector,
-    executor: ActionExecutor,
-    copilot: CoPilot,
-    brain: Brain,
-    self_model: SelfModel,
-    dialog_manager: DialogManager,
-    council: Council,
-    diagnostics: SelfDiagnostics,
-):
-    user_input = user_input.strip()
-    if not user_input:
-        return None, False
-
-    executor.set_input_source("text" if getattr(voice, "text_mode", False) else "voice")
-
-    if user_input.lower() in {"exit", "quit", "goodbye iris", "shutdown"}:
-        msg = "Shutting down. Try not to break anything while I'm gone."
-        print_response("IRIS", msg)
-        voice.speak(msg)
-        return msg, True
-
-    corrected, correction_note = autocorrect.correct_input(user_input)
-    if correction_note:
-        console.print(f"[dim]  ✎ {correction_note}[/dim]")
-        user_input = corrected
-
-    try:
-        voice.stop_speaking()
-    except Exception:
-        pass
-
-    if executor.waiting_for_followup():
-        response = executor.handle_followup_response(user_input)
-        if response is not None:
-            update_self_model_after_response(self_model, response, "followup")
-            print_response("IRIS", response)
-            voice.speak(response)
-            return response, False
-
-    if executor.waiting_for_clarification():
-        response = executor.handle_clarification_response(user_input)
-        if response is not None:
-            update_self_model_after_response(self_model, response, "clarification")
-            print_response("IRIS", response)
-            voice.speak(response)
-            return response, False
-
-    if executor.waiting_for_plan_choice():
-        response = executor.handle_plan_choice(user_input)
-        if response is not None:
-            update_self_model_after_response(self_model, response, "plan-choice")
-            print_response("IRIS", response)
-            voice.speak(response)
-            return response, False
-
-    if executor.waiting_for_presence_check():
-        response = executor.handle_presence_check_response(user_input)
-        if response is not None:
-            update_self_model_after_response(self_model, response, "presence-check")
-            print_response("IRIS", response)
-            voice.speak(response)
-            return response, False
-
-    if executor.waiting_for_permission():
-        with console.status("[cyan]Executing...[/cyan]", spinner="dots"):
-            response = executor.handle_permission_response(user_input)
-        update_self_model_after_response(self_model, response, "permission")
-        print_response("IRIS", response)
-        voice.speak(response)
-        return response, False
-
-    decision = dialog_manager.analyze(user_input, executor, copilot, diagnostics, self_model)
-    self_model.observe_user_input(user_input, decision)
-
-    if decision.mode == "diagnostics":
-        with console.status("[cyan]Running self-diagnostics...[/cyan]", spinner="dots"):
-            response = diagnostics.run(user_input, brain, voice, executor, copilot, brain.memory, self_model)
-        update_self_model_after_response(self_model, response, "diagnostics")
-        print_response("IRIS (Diagnostics)", response)
-        voice.speak(response)
-        return response, False
-
-    if copilot.active:
-        with console.status("[cyan]Co-Pilot...[/cyan]", spinner="dots"):
-            response = copilot.handle_input(user_input)
-        if response:
-            update_self_model_after_response(self_model, response, "copilot")
-            print_response("IRIS (Co-Pilot)", response)
-            voice.speak(response)
-        return response, False
-
-    if decision.mode == "copilot":
-        console.print("[dim]  → Co-Pilot mode activated[/dim]")
-        with console.status("[cyan]Planning steps...[/cyan]", spinner="dots"):
-            response = copilot.start(user_input)
-        update_self_model_after_response(self_model, response, "copilot")
-        print_response("IRIS (Co-Pilot)", response)
-        voice.speak(response)
-        return response, False
-
-    if decision.mode == "action":
-        console.print("[dim]  → Action mode — planning...[/dim]")
-        with console.status("[cyan]Planning action...[/cyan]", spinner="dots"):
-            response = executor.plan_action(user_input)
-        update_self_model_after_response(self_model, response, "action")
-        print_response("IRIS (Action)", response)
-        voice.speak(response)
-        return response, False
-
-    packet = council.deliberate(user_input, decision, self_model)
-    self_model.apply_council(packet.roles)
-
-    with console.status("[cyan]Thinking...[/cyan]", spinner="dots"):
-        response = brain.think(user_input, council_packet=packet)
-
-    update_self_model_after_response(self_model, response, "brain")
-    print_response("IRIS", response)
-    voice.speak(response)
-    return response, False
+    console.print(f"\n[bold cyan]{label}:[/bold cyan] {text}\n")
 
 
 def main() -> None:
@@ -248,18 +66,9 @@ def main() -> None:
 
     console.print(BANNER, style="bold cyan")
 
-    memory = Memory(Config.MEMORY_FILE)
-    brain = Brain(memory)
-    voice = Voice(text_mode=args.text)
-    copilot = CoPilot(brain, voice, memory)
-    executor = ActionExecutor(voice, brain)
-    autocorrect = AutoCorrector(brain)
-    self_model = SelfModel()
-    dialog_manager = DialogManager()
-    council = Council()
-    diagnostics = SelfDiagnostics()
-
-    show_status(memory, args.text, voice, self_model)
+    engine = IRISEngine(text_mode=args.text)
+    voice = engine.voice
+    show_status(engine, args.text)
 
     if args.text:
         console.print("[dim]Text mode active. Type 'exit' to shut down.[/dim]\n")
@@ -267,99 +76,76 @@ def main() -> None:
         console.print("[dim]Standby mode active. Call Iris when you need her.[/dim]")
         console.print(f"[dim]Wake words: {', '.join(Config.WAKE_WORDS)}[/dim]\n")
 
-    # How many follow-up turns Iris listens for after being woken
-    CONVERSATION_TURNS = 5
+    conversation_turns = max(1, int(getattr(Config, "VOICE_FOLLOWUP_TURNS", 4)))
 
-    while True:
-        try:
+    try:
+        while True:
             if args.text:
                 user_input = voice.listen_text()
-                _, should_exit = handle_user_input(
-                    user_input, voice, autocorrect, executor, copilot, brain,
-                    self_model, dialog_manager, council, diagnostics
-                )
-                if should_exit:
+                result = engine.process_user_input(user_input, speak_response=True, input_source="text")
+                print_response(result.label, result.response)
+                if result.should_exit:
                     break
                 continue
 
-            # ── Standby: wait for wake word ──────────────────────
             heard_text = voice.listen_for_wake()
             if not heard_text:
                 continue
 
-            if not contains_wake_word(heard_text):
+            if not engine.contains_wake_word(heard_text):
                 continue
 
-            stripped = strip_wake_word(heard_text)
+            stripped = engine.strip_wake_word(heard_text)
 
-            # Wake word + command in one phrase (e.g. "Iris open notepad")
             if stripped:
                 console.print(f"[green]Wake detected:[/green] {heard_text}")
-                _, should_exit = handle_user_input(
-                    stripped, voice, autocorrect, executor, copilot, brain,
-                    self_model, dialog_manager, council, diagnostics
-                )
-                if should_exit:
+                result = engine.process_user_input(stripped, speak_response=True, input_source="voice")
+                print_response(result.label, result.response)
+                if result.should_exit:
                     break
             else:
-                # Wake word only — acknowledge and listen for command
-                ack = getattr(Config, "WAKE_ACKNOWLEDGEMENT", "Yes?")
-                print_response("IRIS", ack)
+                ack = getattr(Config, "WAKE_ACKNOWLEDGEMENT", "I'm here.")
+                print_response(Config.PUBLIC_NAME, ack)
                 voice.speak(ack)
 
-                command = voice.listen_for_command()
+                command = engine.listen_for_voice_command()
                 if not command:
+                    if getattr(voice, "last_listen_status", "") == "transcription_failed":
+                        print_response("System", voice.describe_last_listen_feedback())
                     continue
 
-                _, should_exit = handle_user_input(
-                    command, voice, autocorrect, executor, copilot, brain,
-                    self_model, dialog_manager, council, diagnostics
-                )
-                if should_exit:
+                result = engine.process_user_input(command, speak_response=True, input_source="voice")
+                print_response(result.label, result.response)
+                if result.should_exit:
                     break
 
-            # ── Conversation mode: keep listening for follow-ups ──
-            # No need to say "Iris" again for CONVERSATION_TURNS turns
-            for _ in range(CONVERSATION_TURNS):
+            for _ in range(conversation_turns):
                 console.print("[dim]  (follow-up listening...)[/dim]")
-                follow_up = voice.listen_for_command()
+                follow_up = engine.listen_for_voice_command()
 
                 if not follow_up:
-                    # Silence — go back to standby
                     console.print("[dim]  → Back to standby[/dim]")
                     break
 
-                # If they say "stop", "bye", "goodbye" — end conversation
-                if any(w in follow_up.lower() for w in ["stop", "bye", "goodbye", "that's all", "thanks iris"]):
+                if engine.should_end_followup(follow_up):
                     console.print("[dim]  → Conversation ended[/dim]")
                     break
 
-                _, should_exit = handle_user_input(
-                    follow_up, voice, autocorrect, executor, copilot, brain,
-                    self_model, dialog_manager, council, diagnostics
-                )
-                if should_exit:
-                    break
-
-            if should_exit:
-                break
-
-        except KeyboardInterrupt:
-            console.print("\n\n[bold cyan]IRIS:[/bold cyan] Interrupted. Goodbye!")
-            try:
-                voice.stop_speaking()
-            except Exception:
-                pass
-            break
-        except Exception as e:
-            console.print(f"\n[bold red]Error:[/bold red] {e}")
-            time.sleep(1)
-
-    try:
-        if hasattr(memory, "_save"):
-            memory._save()
-    except Exception:
-        pass
+                result = engine.process_user_input(follow_up, speak_response=True, input_source="voice")
+                print_response(result.label, result.response)
+                if result.should_exit:
+                    return
+    except KeyboardInterrupt:
+        console.print("\n\n[bold cyan]IRIS:[/bold cyan] Interrupted. Goodbye!")
+        try:
+            voice.stop_speaking()
+        except Exception:
+            pass
+    except Exception as exc:
+        console.print(f"\n[bold red]Error:[/bold red] {exc}")
+        time.sleep(1)
+    finally:
+        engine.shutdown()
 
 
 if __name__ == "__main__":

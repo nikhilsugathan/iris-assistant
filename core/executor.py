@@ -59,6 +59,30 @@ NO_WORDS = [
     "hold on", "negative", "never mind", "nevermind", "skip"
 ]
 
+SESSION_APPROVAL_WORDS = [
+    "always for this session",
+    "approve for this session",
+    "allow for this session",
+    "remember for this session",
+    "yes for this session",
+]
+
+OVERDRIVE_CONTROL_PHRASES = {
+    "activate overdrive",
+    "overdrive on",
+    "turn on overdrive",
+    "enable overdrive",
+    "start overdrive",
+    "deactivate overdrive",
+    "overdrive off",
+    "turn off overdrive",
+    "disable overdrive",
+    "stop overdrive",
+    "overdrive status",
+    "is overdrive on",
+    "status overdrive",
+}
+
 # ── Phrases that are DANGEROUS (need double confirm) ───────────
 DANGEROUS_PATTERNS = [
     r"del\s", r"rm\s", r"rmdir", r"format", r"delete",
@@ -78,6 +102,7 @@ class ActionExecutor:
         self.pending_action         = None
         self.pending_verdict        = None
         self.pending_action_source  = "unknown"
+        self.pending_security_reason = ""
         self.pending_presence_check = False
         self.follow_up              = None
         self.autocorrect            = AutoCorrector(brain)
@@ -87,6 +112,7 @@ class ActionExecutor:
         self.current_input_source   = "text" if getattr(voice, "text_mode", False) else "unknown"
         self.auto_action_timestamps = []
         self.recent_action_history  = []
+        self.session_approvals      = {}
         self._audit_logger          = None
         self._audit_logger_path     = None
         self._clarification_options = []
@@ -123,6 +149,107 @@ class ActionExecutor:
                 return True
         return False
 
+    def _approval_fingerprint(self, plan: dict, verdict: str) -> str:
+        relevant = {
+            "action_type": plan.get("action_type", ""),
+            "command": plan.get("command", ""),
+            "filename": plan.get("filename", ""),
+            "content": plan.get("content", ""),
+            "app_name": plan.get("app_name", ""),
+            "search_query": plan.get("search_query", ""),
+            "url": plan.get("url", ""),
+            "text_to_type": plan.get("text_to_type", ""),
+            "keys": plan.get("keys", []),
+            "x": plan.get("x", 0),
+            "y": plan.get("y", 0),
+            "button": plan.get("button", ""),
+            "clicks": plan.get("clicks", 0),
+            "window_title": plan.get("window_title", ""),
+            "verdict": verdict,
+        }
+        return json.dumps(relevant, sort_keys=True)
+
+    def _desktop_context_title(self) -> str:
+        try:
+            return self.desktop.get_active_window_title()
+        except Exception:
+            return ""
+
+    def _can_remember_approval(self, plan: dict, verdict: str, security_reason: str = "") -> bool:
+        if verdict not in {WARNING, NEED_ADMIN}:
+            return False
+        if plan.get("is_dangerous", False):
+            return False
+
+        lowered_reason = (security_reason or "").lower()
+        if "recent action touched a potentially sensitive path" in lowered_reason:
+            return False
+        if "references the same path" in lowered_reason:
+            return False
+
+        action_type = plan.get("action_type", "")
+        if action_type in {"click_at", "type_text", "press_hotkey"}:
+            return True
+
+        return True
+
+    def _remember_session_approval(self, plan: dict, verdict: str, source: str | None = None) -> bool:
+        security_reason = self.pending_security_reason
+        if not self._can_remember_approval(plan, verdict, security_reason):
+            return False
+
+        now = datetime.now()
+        expires_at = now + timedelta(hours=8)
+        entry = {
+            "verdict": verdict,
+            "approved_at": now.isoformat(timespec="seconds"),
+            "expires_at": expires_at.isoformat(timespec="seconds"),
+            "source": (source or self.pending_action_source or self.current_input_source or "unknown"),
+            "security_reason": security_reason,
+            "action_type": plan.get("action_type", ""),
+        }
+
+        action_type = plan.get("action_type", "")
+        if action_type in {"click_at", "type_text", "press_hotkey"}:
+            active_window_title = self._desktop_context_title()
+            if not active_window_title:
+                return False
+            entry["active_window_title"] = active_window_title
+
+        self.session_approvals[self._approval_fingerprint(plan, verdict)] = entry
+        return True
+
+    def _get_session_approval(self, plan: dict, verdict: str) -> dict | None:
+        self._purge_expired_session_approvals()
+        key = self._approval_fingerprint(plan, verdict)
+        entry = self.session_approvals.get(key)
+        if not entry:
+            return None
+
+        required_window = entry.get("active_window_title", "")
+        if required_window:
+            current_title = self._desktop_context_title()
+            if not current_title or current_title.strip().lower() != required_window.strip().lower():
+                return None
+
+        return entry
+
+    def _purge_expired_session_approvals(self) -> None:
+        if not self.session_approvals:
+            return
+        now = datetime.now()
+        expired = []
+        for key, entry in self.session_approvals.items():
+            try:
+                expires_at = datetime.fromisoformat(entry.get("expires_at", ""))
+            except Exception:
+                expired.append(key)
+                continue
+            if expires_at <= now:
+                expired.append(key)
+        for key in expired:
+            self.session_approvals.pop(key, None)
+
     # ─────────────────────────────────────────────────────────────
     # DETECTION: Does this input want an action?
     # ─────────────────────────────────────────────────────────────
@@ -135,7 +262,7 @@ class ActionExecutor:
         "update", "upgrade", "configure", "enable", "disable",
         "move", "copy", "rename",
         "search for", "look up", "find",
-        "hotkey", "shortcut",
+        "hotkey", "shortcut", "switch to", "bring to front",
     ]
 
     DESKTOP_ACTION_PATTERNS = [
@@ -143,11 +270,14 @@ class ActionExecutor:
         r"^(?:press|hit|use)\s+(?:the\s+)?(?:hotkey|shortcut|key(?: combo)?)\s+.+",
         r"^(?:press|hit)\s+(?:ctrl|control|alt|shift|win|windows|enter|tab|escape|esc|space|backspace|delete|left|right|up|down|f\d+)\b.*",
         r"^(?:click|double click|right click)\s+(?:at\s+)?\d+\s*(?:,|\s)\s*\d+",
+        r"^(?:focus|activate|switch to|bring(?:\s+the)?(?:\s+window)?(?:\s+for)?|bring .+ to front)\s+.+",
     ]
 
     def should_handle(self, user_input: str) -> bool:
         """Detect if user wants IRIS to take a real action."""
         text = user_input.lower()
+        if text.strip() in OVERDRIVE_CONTROL_PHRASES:
+            return False
         return any(trigger in text for trigger in self.ACTION_TRIGGERS) or any(
             re.search(pattern, text) for pattern in self.DESKTOP_ACTION_PATTERNS
         )
@@ -234,6 +364,7 @@ class ActionExecutor:
         if self._matches_any_phrase(text, NO_WORDS):
             self.pending_action = None
             self.pending_verdict = None
+            self.pending_security_reason = ""
             self._clarification_options = []
             return "Cancelled."
 
@@ -262,8 +393,20 @@ class ActionExecutor:
         Confirmation is allowed only for actions that are not hard-blocked.
         """
         text = user_input.lower().strip()
+        plan = self.pending_action
+        verdict = self.pending_verdict
 
         # ── Yes — proceed ──
+        if self._matches_any_phrase(text, SESSION_APPROVAL_WORDS):
+            if plan and verdict and self._remember_session_approval(
+                plan,
+                verdict,
+                source=self.current_input_source,
+            ):
+                self._audit_pending("CONFIRM_ONCE_SESSION_APPROVED", source=self.current_input_source)
+                return self._execute_pending()
+            return "I can only remember exact safe-to-repeat actions for this session. Say go ahead to run it once."
+
         if self._matches_any_phrase(text, YES_WORDS):
             self._audit_pending("CONFIRM_ONCE_APPROVED", source=self.current_input_source)
             return self._execute_pending()
@@ -274,6 +417,7 @@ class ActionExecutor:
             self.pending_action  = None
             self.pending_verdict = None
             self.pending_action_source = "unknown"
+            self.pending_security_reason = ""
             return "Cancelled."
 
         # ── Anything else — ask once more plainly ──
@@ -363,20 +507,36 @@ class ActionExecutor:
             self.pending_action = None
             self.pending_verdict = None
             self.pending_action_source = "unknown"
+            self.pending_security_reason = ""
             self._clarification_options = []
             return f"{header}\n{security_msg}"
+
+        if verdict in {WARNING, NEED_ADMIN}:
+            remembered = self._get_session_approval(plan, verdict)
+            if remembered:
+                self._log(
+                    f"SESSION-AUTO-EXECUTE [{verdict}]: {plan.get('command') or plan.get('description','?')}"
+                )
+                self._audit("SESSION_APPROVAL_REUSED", plan, source=self.current_input_source)
+                self.pending_action = plan
+                self.pending_verdict = verdict
+                self.pending_action_source = self.current_input_source
+                self.pending_security_reason = security_msg
+                return self._execute_pending()
 
         # ── Simple safe task — execute with verification ─────
         if self._is_simple_task(plan, verdict):
             self._log(f"AUTO-EXECUTE: {plan.get('action_type')} — {plan.get('description','')}")
             self.pending_action  = plan
             self.pending_verdict = verdict
+            self.pending_security_reason = security_msg
             return self._execute_pending()
 
         # ── Everything else — ask for permission ─────────────
         self.pending_action  = plan
         self.pending_verdict = verdict
         self.pending_action_source = self.current_input_source
+        self.pending_security_reason = security_msg
         permission_msg = self._build_permission_request(plan)
 
         if verdict in (WARNING, NEED_ADMIN):
@@ -440,6 +600,21 @@ class ActionExecutor:
                     "action_type": "press_hotkey",
                     "description": f"send keyboard shortcut {rendered}",
                     "keys": keys,
+                    "is_dangerous": False,
+                }
+
+        focus_match = re.search(
+            r"^(?:focus|activate|switch to|bring(?:\s+the)?(?:\s+window)?(?:\s+for)?|bring)\s+(.+?)(?:\s+to\s+front)?$",
+            raw,
+            re.IGNORECASE,
+        )
+        if focus_match:
+            window_title = focus_match.group(1).strip(" \"'")
+            if window_title and window_title.lower() not in {"overdrive", "iris", "the app"}:
+                return {
+                    "action_type": "focus_window",
+                    "description": f"focus the '{window_title}' window",
+                    "window_title": window_title,
                     "is_dangerous": False,
                 }
 
@@ -653,7 +828,7 @@ User request: "{user_input}"
 
 Respond ONLY with valid JSON in this exact format:
 {{
-  "action_type": "install_package | run_command | create_file | create_folder | open_app | search_web | write_to_file | type_text | press_hotkey | click_at | unsupported",
+  "action_type": "install_package | run_command | create_file | create_folder | open_app | search_web | write_to_file | type_text | press_hotkey | click_at | focus_window | unsupported",
   "description": "what will happen in plain English",
   "command": "exact shell command if needed",
   "filename": "full file path if creating a file",
@@ -667,6 +842,7 @@ Respond ONLY with valid JSON in this exact format:
   "y": 0,
   "button": "left",
   "clicks": 1,
+  "window_title": "",
   "is_dangerous": false
 }}
 
@@ -677,6 +853,7 @@ Rules:
 - Use type_text for typing into the currently focused app
 - Use press_hotkey for keyboard shortcuts and single key presses
 - Use click_at only when the request explicitly provides coordinates
+- Use focus_window when the user wants a specific window brought to the front
 - For rename: use command like: ren "full\\path\\oldname" "newname"
 - Return unsupported only if truly impossible to determine
 
@@ -712,6 +889,8 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
             msg += f" Command: {command}."
         if is_dangerous:
             msg += " ⚠ This is destructive and can't be undone."
+        if self._can_remember_approval(plan, self.pending_verdict or WARNING, self.pending_security_reason):
+            msg += " Say 'always for this session' if you want me to remember this exact action."
         msg += " Go ahead?"
         return msg
 
@@ -777,6 +956,7 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
         self.pending_action  = None
         self.pending_verdict = None
         self.pending_action_source = "unknown"
+        self.pending_security_reason = ""
         self._clarification_options = []
 
         if not plan:
@@ -858,6 +1038,10 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
                 result = self._click_at(plan)
                 success = result == "Done."
 
+            elif action_type == "focus_window":
+                result = self._focus_window(plan)
+                success = result.startswith("Focused ")
+
             else:
                 return "I don't know how to execute that type of action.", False
 
@@ -882,7 +1066,7 @@ if start command failed, try webbrowser; if one path failed, try a different pat
 
 Respond ONLY with valid JSON in this exact format:
 {{
-  "action_type": "install_package | run_command | create_file | create_folder | open_app | search_web | write_to_file | type_text | press_hotkey | click_at",
+  "action_type": "install_package | run_command | create_file | create_folder | open_app | search_web | write_to_file | type_text | press_hotkey | click_at | focus_window",
   "description": "alternative approach in plain English",
   "command": "alternative shell command if needed",
   "filename": "full file path if needed",
@@ -896,6 +1080,7 @@ Respond ONLY with valid JSON in this exact format:
   "y": 0,
   "button": "left",
   "clicks": 1,
+  "window_title": "",
   "is_dangerous": false
 }}
 
@@ -1189,6 +1374,15 @@ Be specific and practical. No preamble."""
             return f"Desktop click didn't work: {exc}"
         self._log(f"CLICKED: {button} at {x},{y} ({clicks}x)")
         return "Done."
+
+    def _focus_window(self, plan: dict) -> str:
+        window_title = str(plan.get("window_title", "") or "")
+        try:
+            result = self.desktop.focus_window(window_title)
+        except DesktopControlError as exc:
+            return f"Window focus didn't work: {exc}"
+        self._log(f"FOCUSED WINDOW: {window_title}")
+        return result.message
 
     # ─────────────────────────────────────────────────────────────
     # LOGGING

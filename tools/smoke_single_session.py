@@ -30,6 +30,7 @@ def assert_true(condition: bool, message: str) -> None:
 class FakeDesktop:
     def __init__(self) -> None:
         self.events: list[tuple[str, object]] = []
+        self.current_window_title = "SmokePad"
 
     def type_text(self, text: str, interval: float = 0.02):
         self.events.append(("type_text", text))
@@ -39,6 +40,16 @@ class FakeDesktop:
 
     def click_at(self, x: int, y: int, button: str = "left", clicks: int = 1):
         self.events.append(("click_at", (x, y, button, clicks)))
+
+    def get_active_window_title(self) -> str:
+        return self.current_window_title
+
+    def focus_window(self, title_query: str):
+        self.current_window_title = title_query
+        self.events.append(("focus_window", title_query))
+        class Result:
+            message = f"Focused '{title_query}'."
+        return Result()
 
 
 def main() -> None:
@@ -195,6 +206,44 @@ def main() -> None:
             "Desktop typing action did not reach the desktop controller.",
         )
 
+        desktop_memory_prompt = engine.process_user_input("run smoke type action", speak_response=True)
+        assert_true(
+            engine.executor.waiting_for_permission(),
+            "Desktop typing action should still require permission before session approval is remembered.",
+        )
+        desktop_memory_result = engine.process_user_input("always for this session", speak_response=True)
+        assert_true(
+            desktop_memory_result.response == "Done.",
+            "Desktop typing action did not execute after session approval memory was granted.",
+        )
+        fake_desktop.current_window_title = "Different Window"
+        desktop_other_window = engine.process_user_input("run smoke type action", speak_response=True)
+        assert_true(
+            engine.executor.waiting_for_permission(),
+            "Desktop session approval should not be reused when the focused window changes.",
+        )
+        engine.process_user_input("no", speak_response=True)
+        fake_desktop.current_window_title = "SmokePad"
+        desktop_auto = engine.process_user_input("run smoke type action", speak_response=True)
+        assert_true(
+            desktop_auto.response == "Done.",
+            "Desktop session approval was not reused for the same focused window.",
+        )
+        assert_true(
+            not engine.executor.waiting_for_permission(),
+            "Remembered desktop approval should execute without leaving IRIS waiting for permission.",
+        )
+
+        focus_result = engine.process_user_input("focus Claude", speak_response=True)
+        assert_true(
+            focus_result.response == "Focused 'Claude'.",
+            "Named window focus did not return the expected result.",
+        )
+        assert_true(
+            ("focus_window", "Claude") in fake_desktop.events,
+            "Named window focus did not reach the desktop controller.",
+        )
+
         chain_step_one = engine.process_user_input("run smoke chain step 1", speak_response=True)
         assert_true(sensitive_smoke_file.exists(), "Sensitive smoke chain file was not created.")
         assert_true(
@@ -266,6 +315,10 @@ def main() -> None:
         assert_true(
             "CONFIRM_ONCE_CANCELLED" in audit_text,
             "Audit log did not capture the cancelled warning event.",
+        )
+        assert_true(
+            "CONFIRM_ONCE_SESSION_APPROVED" in audit_text and "SESSION_APPROVAL_REUSED" in audit_text,
+            "Audit log did not capture the session approval memory lifecycle.",
         )
         assert_true(
             "PRESENCE_CHECK_CONFIRMED" in audit_text,
