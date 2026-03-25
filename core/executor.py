@@ -550,6 +550,7 @@ class ActionExecutor:
     ]
 
     DESKTOP_ACTION_PATTERNS = [
+        r"^(?:background status|job status|task status|what(?:'s| is)\s+running\s+in\s+the\s+background|what(?:'s| is)\s+the\s+background\s+status)\??$",
         r"^(?:save|save this|save it|save here)$",
         r"^(?:close|close this|close it|close this tab|close the current tab|close current tab)$",
         r"^(?:new tab|open (?:a )?new tab|start (?:a )?new tab)$",
@@ -569,6 +570,7 @@ class ActionExecutor:
     ]
 
     ACTION_INFO_PATTERNS = [
+        r"^(?:background status|job status|task status|what(?:'s| is)\s+running\s+in\s+the\s+background|what(?:'s| is)\s+the\s+background\s+status)\??$",
         r"^(?:what(?:'s| is)|which)\s+(?:window|app)\s+is\s+active\??$",
         r"^active window\??$",
         r"^(?:list|show|what(?:'s| is))\s+(?:open\s+)?windows?\??$",
@@ -1117,6 +1119,16 @@ class ActionExecutor:
                 "is_dangerous": action == "close",
             }
 
+        if re.search(
+            r"^(?:background status|job status|task status|what(?:'s| is)\s+running\s+in\s+the\s+background|what(?:'s| is)\s+the\s+background\s+status)\??$",
+            text,
+        ):
+            return {
+                "action_type": "background_status",
+                "description": "report the current heavy background task status",
+                "is_dangerous": False,
+            }
+
         click_match = re.search(
             r"^(right click|double click|click)\s+(?:at\s+)?(\d+)\s*(?:,|\s)\s*(\d+)$",
             text,
@@ -1568,7 +1580,7 @@ User request: "{user_input}"
 
 Respond ONLY with valid JSON in this exact format:
 {{
-  "action_type": "install_package | manage_package | run_command | create_file | create_folder | open_app | search_web | write_to_file | type_text | type_in_window | press_hotkey | press_hotkey_in_window | click_at | click_window | focus_window | window_state | active_window | list_windows | unsupported",
+  "action_type": "install_package | manage_package | run_command | create_file | create_folder | open_app | search_web | write_to_file | type_text | type_in_window | press_hotkey | press_hotkey_in_window | click_at | click_window | focus_window | window_state | active_window | list_windows | background_status | unsupported",
   "description": "what will happen in plain English",
   "command": "exact shell command if needed",
   "filename": "full file path if creating a file",
@@ -1604,6 +1616,7 @@ Rules:
 - Use window_state when the user wants to minimize, maximize, restore, or close a named window
 - Use active_window to report the currently focused desktop window
 - Use list_windows to report visible titled windows
+- Use background_status when the user asks what heavy task IRIS is running in the background
 - For rename: use command like: ren "full\\path\\oldname" "newname"
 - Return unsupported only if truly impossible to determine
 
@@ -1884,6 +1897,10 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
                 result = self._list_windows(plan)
                 success = bool(result)
 
+            elif action_type == "background_status":
+                result = self._background_status(plan)
+                success = bool(result)
+
             else:
                 return "I don't know how to execute that type of action.", False
 
@@ -1911,7 +1928,7 @@ if start command failed, try webbrowser; if one path failed, try a different pat
 
 Respond ONLY with valid JSON in this exact format:
 {{
-  "action_type": "install_package | manage_package | run_command | create_file | create_folder | open_app | search_web | write_to_file | type_text | type_in_window | press_hotkey | press_hotkey_in_window | click_at | click_window | focus_window | window_state | active_window | list_windows",
+  "action_type": "install_package | manage_package | run_command | create_file | create_folder | open_app | search_web | write_to_file | type_text | type_in_window | press_hotkey | press_hotkey_in_window | click_at | click_window | focus_window | window_state | active_window | list_windows | background_status",
   "description": "alternative approach in plain English",
   "command": "alternative shell command if needed",
   "filename": "full file path if needed",
@@ -2379,6 +2396,21 @@ Be specific and practical. No preamble."""
             prefix = "* " if item.active else "- "
             entries.append(f"{prefix}{item.title} ({item.width}x{item.height} at {item.left},{item.top})")
         return "Visible windows:\n" + "\n".join(entries)
+
+    def _background_status(self, plan: dict) -> str:
+        snapshot = self.background_task_snapshot()
+        if snapshot.get("background_action_running"):
+            description = str(snapshot.get("background_action_description") or "a heavy task").strip()
+            started_at = str(snapshot.get("background_action_started_at") or "").strip()
+            if started_at:
+                return f"I'm currently running {description} in the background since {started_at}."
+            return f"I'm currently running {description} in the background."
+
+        last_update = str(snapshot.get("background_last_update") or "").strip()
+        if last_update:
+            return f"No heavy background task is running right now. Last background update: {last_update}"
+
+        return "No heavy background task is running right now."
 
     # ─────────────────────────────────────────────────────────────
     # LOGGING

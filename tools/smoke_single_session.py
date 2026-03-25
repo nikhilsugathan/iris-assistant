@@ -550,6 +550,16 @@ def main() -> None:
             engine.status_snapshot().get("background_action_running"),
             "Background action status was not exposed while the voice command was running.",
         )
+        background_status_running = engine.process_user_input(
+            "background status",
+            speak_response=True,
+            input_source="voice",
+        )
+        assert_true(
+            "currently running" in background_status_running.response.lower()
+            and "run a safe smoke command" in background_status_running.response.lower(),
+            "Background status query did not report the running heavy task.",
+        )
 
         background_updates = []
         deadline = time.time() + 2.0
@@ -575,6 +585,16 @@ def main() -> None:
         assert_true(
             not engine.status_snapshot().get("background_action_running"),
             "Background action status did not clear after completion.",
+        )
+        background_status_idle = engine.process_user_input(
+            "background status",
+            speak_response=True,
+            input_source="voice",
+        )
+        assert_true(
+            "no heavy background task is running" in background_status_idle.response.lower()
+            and "background action finished." in background_status_idle.response.lower(),
+            "Background status query did not fall back to the last completion update once idle.",
         )
         engine.executor._run_command = lambda plan: "Done. smoke command complete."  # type: ignore[method-assign]
 
@@ -645,6 +665,7 @@ def main() -> None:
             "Remembered desktop approval should execute without leaving IRIS waiting for permission.",
         )
 
+        engine.executor.auto_action_timestamps = []
         focus_result = engine.process_user_input("focus Claude", speak_response=True)
         assert_true(
             focus_result.response == "Focused 'Claude'.",
