@@ -7,6 +7,7 @@ TTS  : Optional Piper local neural voice, then Windows SAPI and Edge fallback
 """
 
 import asyncio
+import ctypes
 import difflib
 import io
 import json
@@ -73,10 +74,12 @@ class Voice:
         self._recent_command_language = ""
         self._recent_wake_language = ""
         self._faster_whisper_model = None
+        self._faster_whisper_model_key = ""
         self._faster_whisper_error = ""
         self._piper_tts_voice = None
         self._piper_tts_voice_key = ""
         self._piper_tts_error = ""
+        self._local_whisper_runtime_cache = None
 
         self._init_audio()
         self._init_mic()
@@ -435,21 +438,28 @@ class Voice:
     def _transcribe_wake(self, audio) -> str:
         priority = getattr(Config, "WAKE_STT_PRIORITY", "system_first").lower().strip()
         allow_local_stt, _ = self.resource_guard.allows_local_stt()
-        order = ["google"]
-        if allow_local_stt:
-            order = ["system", "google"]
+        has_local_whisper = allow_local_stt and self._supports_faster_whisper()
+        order = ["system", "google"] if allow_local_stt else ["google"]
 
-        if priority == "google_first":
-            order = ["google", "system"]
+        if priority == "adaptive":
+            order = ["system", "faster_whisper", "google"] if has_local_whisper else ["system", "google"]
+        elif priority == "google_first":
+            order = ["google", "system", "faster_whisper"] if has_local_whisper else ["google", "system"]
         elif priority == "google_only":
             order = ["google"]
+        elif priority in {"local_first", "faster_whisper_first"}:
+            order = ["faster_whisper", "system", "google"] if has_local_whisper else ["system", "google"]
+        elif priority == "faster_whisper_only":
+            order = ["faster_whisper"] if has_local_whisper else ["google"]
         elif priority == "system_only":
             order = ["system"] if allow_local_stt else ["google"]
         elif priority == "system_first" and not allow_local_stt:
             order = ["google"]
+        elif priority == "system_first":
+            order = ["system", "faster_whisper", "google"] if has_local_whisper else ["system", "google"]
 
         if not allow_local_stt:
-            order = [backend for backend in order if backend != "system"]
+            order = [backend for backend in order if backend not in {"system", "faster_whisper"}]
             if not order:
                 order = ["google"]
 
@@ -697,23 +707,104 @@ if ($best) {{
             return False
         return True
 
+    def _local_whisper_hardware_profile(self) -> dict[str, float | bool]:
+        if self._local_whisper_runtime_cache is not None:
+            return dict(self._local_whisper_runtime_cache)
+
+        has_cuda = False
+        try:
+            import ctranslate2
+
+            has_cuda = int(ctranslate2.get_cuda_device_count() or 0) > 0
+        except Exception:
+            has_cuda = False
+
+        total_ram_gb = 0.0
+        try:
+            class MemoryStatusEx(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("sullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            status = MemoryStatusEx()
+            status.dwLength = ctypes.sizeof(MemoryStatusEx)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                total_ram_gb = float(status.ullTotalPhys) / float(1024 ** 3)
+        except Exception:
+            total_ram_gb = 0.0
+
+        profile = {
+            "has_cuda": has_cuda,
+            "total_ram_gb": total_ram_gb,
+        }
+        self._local_whisper_runtime_cache = dict(profile)
+        return profile
+
+    def _resolve_local_whisper_runtime(self) -> dict[str, str]:
+        profile = self._local_whisper_hardware_profile()
+        has_cuda = bool(profile.get("has_cuda"))
+        total_ram_gb = float(profile.get("total_ram_gb", 0.0) or 0.0)
+
+        device = str(getattr(Config, "LOCAL_WHISPER_DEVICE", "auto") or "auto").strip().lower() or "auto"
+        model = str(getattr(Config, "LOCAL_WHISPER_MODEL", "auto") or "auto").strip() or "auto"
+        compute_type = str(getattr(Config, "LOCAL_WHISPER_COMPUTE_TYPE", "auto") or "auto").strip().lower() or "auto"
+
+        if device == "auto":
+            device = "cuda" if has_cuda else "cpu"
+
+        if model.lower() == "auto":
+            if device == "cuda":
+                model = "distil-large-v3"
+            elif total_ram_gb >= 16:
+                model = "small.en"
+            elif total_ram_gb >= 8:
+                model = "base"
+            else:
+                model = "tiny.en"
+
+        if compute_type == "auto":
+            compute_type = "float16" if device == "cuda" else "int8"
+
+        return {
+            "model": model,
+            "device": device,
+            "compute_type": compute_type,
+        }
+
     def _get_faster_whisper_model(self):
-        if self._faster_whisper_model is not None:
+        runtime = self._resolve_local_whisper_runtime()
+        runtime_key = "|".join([runtime["model"], runtime["device"], runtime["compute_type"]])
+
+        if self._faster_whisper_model is not None and self._faster_whisper_model_key == runtime_key:
             return self._faster_whisper_model
-        if self._faster_whisper_error:
+        if self._faster_whisper_model is not None and self._faster_whisper_model_key != runtime_key:
+            self._faster_whisper_model = None
+            self._faster_whisper_model_key = ""
+
+        if self._faster_whisper_error and self._faster_whisper_model_key == runtime_key:
             return None
 
         try:
             from faster_whisper import WhisperModel
 
-            model_name = str(getattr(Config, "LOCAL_WHISPER_MODEL", "base") or "base").strip() or "base"
             init_options = {
-                "device": str(getattr(Config, "LOCAL_WHISPER_DEVICE", "cpu") or "cpu").strip() or "cpu",
-                "compute_type": str(getattr(Config, "LOCAL_WHISPER_COMPUTE_TYPE", "int8") or "int8").strip() or "int8",
+                "device": runtime["device"],
+                "compute_type": runtime["compute_type"],
             }
-            self._faster_whisper_model = WhisperModel(model_name, **init_options)
+            self._faster_whisper_model = WhisperModel(runtime["model"], **init_options)
+            self._faster_whisper_model_key = runtime_key
+            self._faster_whisper_error = ""
             return self._faster_whisper_model
         except Exception as exc:
+            self._faster_whisper_model_key = runtime_key
             self._faster_whisper_error = str(exc)
             console.print(f"[yellow]Local Whisper unavailable:[/yellow] {exc}")
             return None
@@ -903,8 +994,6 @@ if ($best) {{
                 return self._transcribe_windows_wake_candidate(audio)
             return self._transcribe_windows_candidate(audio)
         if backend == "faster_whisper":
-            if wake_mode:
-                return TranscriptCandidate(backend="faster_whisper")
             return self._transcribe_faster_whisper_candidate(audio)
         if backend == "groq":
             return self._transcribe_groq_candidate(audio)
@@ -924,6 +1013,9 @@ if ($best) {{
         threshold = float(getattr(Config, "WAKE_SYSTEM_ACCEPT_CONFIDENCE", 0.58))
         if candidate.backend == "system":
             return candidate.confidence >= threshold
+        if candidate.backend == "faster_whisper":
+            local_threshold = float(getattr(Config, "WAKE_LOCAL_WHISPER_ACCEPT_CONFIDENCE", 0.62))
+            return candidate.confidence >= local_threshold
         return True
 
     def _accept_local_wake_candidate(self, candidate: TranscriptCandidate) -> bool:
@@ -990,14 +1082,23 @@ if ($best) {{
     def _wake_phrase_variants(self) -> list[str]:
         variants = []
         wake_aliases = getattr(Config, "WAKE_WORD_ALIASES", {}) or {}
+        wake_prefixes = [str(prefix or "").strip().lower() for prefix in getattr(Config, "WAKE_WORD_PREFIXES", []) or []]
         for wake in getattr(Config, "WAKE_WORDS", []) or []:
             wake_text = str(wake or "").strip().lower()
             if wake_text and wake_text not in variants:
                 variants.append(wake_text)
+            for prefix in wake_prefixes:
+                combined = f"{prefix} {wake_text}".strip()
+                if prefix and combined not in variants:
+                    variants.append(combined)
             for alias in wake_aliases.get(wake_text, []) or []:
                 alias_text = str(alias or "").strip().lower()
                 if alias_text and alias_text not in variants:
                     variants.append(alias_text)
+                for prefix in wake_prefixes:
+                    combined = f"{prefix} {alias_text}".strip()
+                    if prefix and combined not in variants:
+                        variants.append(combined)
         return variants
 
     def _looks_like_wake_phrase(self, text: str) -> bool:

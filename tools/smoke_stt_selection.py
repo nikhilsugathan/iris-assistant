@@ -47,15 +47,23 @@ class StubVoice(Voice):
 
 def main() -> None:
     original_priority = Config.STT_PRIORITY
+    original_wake_priority = Config.WAKE_STT_PRIORITY
     original_system_stt_max_languages = Config.SYSTEM_STT_MAX_LANGUAGES
     original_wake_system_max_languages = Config.WAKE_SYSTEM_MAX_LANGUAGES
     original_additional_languages = list(Config.STT_ADDITIONAL_LANGUAGES)
+    original_model = Config.LOCAL_WHISPER_MODEL
+    original_device = Config.LOCAL_WHISPER_DEVICE
+    original_compute_type = Config.LOCAL_WHISPER_COMPUTE_TYPE
 
     try:
         Config.STT_PRIORITY = "adaptive"
+        Config.WAKE_STT_PRIORITY = "adaptive"
         Config.SYSTEM_STT_MAX_LANGUAGES = 2
         Config.WAKE_SYSTEM_MAX_LANGUAGES = 2
         Config.STT_ADDITIONAL_LANGUAGES = ["de-DE", "fr-FR"]
+        Config.LOCAL_WHISPER_MODEL = "auto"
+        Config.LOCAL_WHISPER_DEVICE = "auto"
+        Config.LOCAL_WHISPER_COMPUTE_TYPE = "auto"
         voice = StubVoice(text_mode=True)
         voice.resource_guard = DummyGuard()
         voice._supports_faster_whisper = lambda: True  # type: ignore[method-assign]
@@ -172,12 +180,74 @@ def main() -> None:
             "Wake STT should prioritize the most recent wake language without scanning the full language list.",
         )
 
+        gpu_profile_voice = StubVoice(text_mode=True)
+        gpu_profile_voice._local_whisper_runtime_cache = {"has_cuda": True, "total_ram_gb": 24.0}
+        gpu_runtime = gpu_profile_voice._resolve_local_whisper_runtime()
+        assert_true(
+            gpu_runtime == {
+                "model": "distil-large-v3",
+                "device": "cuda",
+                "compute_type": "float16",
+            },
+            "Auto Whisper runtime selection should choose the GPU distil profile on CUDA machines.",
+        )
+
+        cpu_profile_voice = StubVoice(text_mode=True)
+        cpu_profile_voice._local_whisper_runtime_cache = {"has_cuda": False, "total_ram_gb": 6.0}
+        cpu_runtime = cpu_profile_voice._resolve_local_whisper_runtime()
+        assert_true(
+            cpu_runtime == {
+                "model": "tiny.en",
+                "device": "cpu",
+                "compute_type": "int8",
+            },
+            "Auto Whisper runtime selection should downshift to a lightweight CPU profile on smaller machines.",
+        )
+
+        wake_faster_calls = {"count": 0}
+        google_wake_calls = {"count": 0}
+        voice._transcribe_windows_wake_candidate = lambda audio: TranscriptCandidate(backend="system", text="")  # type: ignore[method-assign]
+
+        def wake_faster_candidate(audio):
+            wake_faster_calls["count"] += 1
+            return TranscriptCandidate(
+                backend="faster_whisper",
+                text="hey iris",
+                confidence=0.81,
+                language="en",
+            )
+
+        def wake_google_candidate(audio):
+            google_wake_calls["count"] += 1
+            return TranscriptCandidate(
+                backend="google",
+                text="cloud wake",
+                confidence=0.9,
+                language="en-US",
+            )
+
+        voice._transcribe_faster_whisper_candidate = wake_faster_candidate  # type: ignore[method-assign]
+        voice._transcribe_google_candidate = wake_google_candidate  # type: ignore[method-assign]
+        wake_text = voice._transcribe_wake(short_audio)
+        assert_true(
+            wake_text == "hey iris",
+            "Adaptive wake STT should fall back to local Whisper before using Google.",
+        )
+        assert_true(
+            wake_faster_calls["count"] == 1 and google_wake_calls["count"] == 0,
+            "Adaptive wake STT should satisfy a strong local Whisper wake transcript without a cloud fallback.",
+        )
+
         print("PASS: IRIS adaptive STT selection smoke test completed.")
     finally:
         Config.STT_PRIORITY = original_priority
+        Config.WAKE_STT_PRIORITY = original_wake_priority
         Config.SYSTEM_STT_MAX_LANGUAGES = original_system_stt_max_languages
         Config.WAKE_SYSTEM_MAX_LANGUAGES = original_wake_system_max_languages
         Config.STT_ADDITIONAL_LANGUAGES = original_additional_languages
+        Config.LOCAL_WHISPER_MODEL = original_model
+        Config.LOCAL_WHISPER_DEVICE = original_device
+        Config.LOCAL_WHISPER_COMPUTE_TYPE = original_compute_type
 
 
 if __name__ == "__main__":

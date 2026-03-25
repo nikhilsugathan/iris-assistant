@@ -102,6 +102,11 @@ class Config:
     LOCAL_RESOURCE_MIN_BATTERY_PERCENT_FOR_GEO = int(os.getenv("LOCAL_RESOURCE_MIN_BATTERY_PERCENT_FOR_GEO", "8"))
 
     WAKE_WORDS = ["iris"]
+    WAKE_WORD_PREFIXES = [
+        prefix.strip().lower()
+        for prefix in os.getenv("WAKE_WORD_PREFIXES", "hey,ok,okay").split(",")
+        if prefix.strip()
+    ]
     WAKE_WORD_ALIASES = {
         "iris": ["it", "eris", "airis", "heiress", "irish"],
     }
@@ -193,7 +198,7 @@ class Config:
     MIC_SAMPLE_RATE = 16000
     MIC_CHUNK_SIZE = 1024
 
-    WAKE_STT_PRIORITY = os.getenv("WAKE_STT_PRIORITY", "system_first").strip().lower()
+    WAKE_STT_PRIORITY = os.getenv("WAKE_STT_PRIORITY", "adaptive").strip().lower()
     STT_PRIORITY = os.getenv("STT_PRIORITY", "adaptive").strip().lower()
     STT_LANGUAGE = os.getenv("STT_LANGUAGE", "en-US").strip()
     STT_FALLBACK_LANGUAGE = os.getenv("STT_FALLBACK_LANGUAGE", "en-GB").strip()
@@ -204,11 +209,12 @@ class Config:
         if lang.strip()
     ]
     LOCAL_WHISPER_ENABLED = os.getenv("LOCAL_WHISPER_ENABLED", "true").lower() == "true"
-    LOCAL_WHISPER_MODEL = os.getenv("LOCAL_WHISPER_MODEL", "base").strip()
-    LOCAL_WHISPER_DEVICE = os.getenv("LOCAL_WHISPER_DEVICE", "cpu").strip()
-    LOCAL_WHISPER_COMPUTE_TYPE = os.getenv("LOCAL_WHISPER_COMPUTE_TYPE", "int8").strip()
+    LOCAL_WHISPER_MODEL = os.getenv("LOCAL_WHISPER_MODEL", "auto").strip()
+    LOCAL_WHISPER_DEVICE = os.getenv("LOCAL_WHISPER_DEVICE", "auto").strip()
+    LOCAL_WHISPER_COMPUTE_TYPE = os.getenv("LOCAL_WHISPER_COMPUTE_TYPE", "auto").strip()
     LOCAL_WHISPER_LANGUAGE_HINT = os.getenv("LOCAL_WHISPER_LANGUAGE_HINT", "").strip()
     LOCAL_WHISPER_BEAM_SIZE = int(os.getenv("LOCAL_WHISPER_BEAM_SIZE", "1"))
+    WAKE_LOCAL_WHISPER_ACCEPT_CONFIDENCE = float(os.getenv("WAKE_LOCAL_WHISPER_ACCEPT_CONFIDENCE", "0.62"))
     WAKE_SYSTEM_ACCEPT_CONFIDENCE = float(os.getenv("WAKE_SYSTEM_ACCEPT_CONFIDENCE", "0.58"))
     STT_SYSTEM_ACCEPT_CONFIDENCE = float(os.getenv("STT_SYSTEM_ACCEPT_CONFIDENCE", "0.82"))
     STT_SYSTEM_SHORT_ACCEPT_CONFIDENCE = float(os.getenv("STT_SYSTEM_SHORT_ACCEPT_CONFIDENCE", "0.7"))
