@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sys
+import time
 
 WORKSPACE = Path(__file__).resolve().parents[1]
 if str(WORKSPACE) not in sys.path:
@@ -51,6 +52,16 @@ class FakeGuard:
 
     def allows_local_geo(self):
         return True, ""
+
+
+class QueueTestVoice(Voice):
+    def _init_audio(self):
+        self.audio_ready = True
+
+    def _init_mic(self):
+        self.mic_ready = False
+        self.recognizer = None
+        self.microphone = None
 
 
 def test_system_routing() -> None:
@@ -184,9 +195,47 @@ def test_voice_preferences() -> None:
         voice.stop()
 
 
+def test_background_speech_cancellation() -> None:
+    voice = QueueTestVoice(text_mode=False)
+    spoken: list[str] = []
+    voice._clean = lambda text: text  # type: ignore[method-assign]
+    voice._speak_with_backends = lambda text, backend_priority=None: spoken.append(text)  # type: ignore[method-assign]
+
+    try:
+        voice._tts_lock.acquire()
+        first = voice.speak_background("first")
+        second = voice.speak_background("second")
+        time.sleep(0.05)
+        voice._tts_lock.release()
+        first.join(timeout=1)
+        second.join(timeout=1)
+
+        assert_true(
+            spoken == ["second"],
+            "Only the latest queued background speech should survive the speech-generation guard.",
+        )
+
+        voice._tts_lock.acquire()
+        third = voice.speak_background("third")
+        time.sleep(0.05)
+        voice.stop_speaking()
+        voice._tts_lock.release()
+        third.join(timeout=1)
+
+        assert_true(
+            spoken == ["second"],
+            "stop_speaking() should cancel queued background speech before it reaches playback.",
+        )
+    finally:
+        if voice._tts_lock.locked():
+            voice._tts_lock.release()
+        voice.stop()
+
+
 def main() -> None:
     test_system_routing()
     test_voice_preferences()
+    test_background_speech_cancellation()
     print("PASS: IRIS local-first smoke test completed.")
 
 

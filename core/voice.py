@@ -39,6 +39,8 @@ class Voice:
         self.text_mode       = text_mode
         self._tts_lock       = threading.Lock()
         self._stop_flag      = threading.Event()
+        self._speech_generation_lock = threading.Lock()
+        self._speech_generation = 0
         self._state_callback = None
         self.current_state   = "idle"
         self.audio_ready     = False
@@ -1020,7 +1022,13 @@ if ($best) {{
     # SPEAK — Edge TTS, immediate playback, no chunking lag
     # ─────────────────────────────────────────────────────────────
 
-    def speak(self, text: str, backend_priority: str | None = None):
+    def speak(
+        self,
+        text: str,
+        backend_priority: str | None = None,
+        generation_id: int | None = None,
+        interrupt_current: bool = True,
+    ):
         if not text:
             return
         if self.text_mode and not getattr(Config, "SPEAK_IN_TEXT_MODE", False):
@@ -1032,9 +1040,20 @@ if ($best) {{
         if not clean:
             return
 
+        if generation_id is None and interrupt_current:
+            self._cancel_pending_speech()
+
+        if generation_id is not None and self._is_stale_speech_generation(generation_id):
+            return
+
         with self._tts_lock:
-            self.stop_speaking()
+            if generation_id is not None and self._is_stale_speech_generation(generation_id):
+                return
+            if interrupt_current:
+                self._interrupt_active_speech()
             self._stop_flag.clear()
+            if generation_id is not None and self._is_stale_speech_generation(generation_id):
+                return
             self._emit_state("speaking")
             try:
                 self._speak_with_backends(clean, backend_priority=backend_priority)
@@ -1147,7 +1166,14 @@ if ($best) {{
             return 1.0
 
     def _speak_edge_blocking(self, text: str) -> bool:
-        asyncio.run(self._speak_async(text))
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(self._speak_async(text))
+        finally:
+            try:
+                loop.close()
+            except Exception:
+                pass
         return True
 
     async def _speak_async(self, text: str):
@@ -1195,7 +1221,12 @@ if ($best) {{
                 except Exception:
                     pass
 
-    def stop_speaking(self):
+    def stop_speaking(self, cancel_pending: bool = True):
+        if cancel_pending:
+            self._cancel_pending_speech()
+        self._interrupt_active_speech()
+
+    def _interrupt_active_speech(self) -> None:
         self._stop_flag.set()
         try:
             if self._local_tts_engine is not None:
@@ -1213,14 +1244,28 @@ if ($best) {{
         self.stop_speaking()
 
     def speak_background(self, text: str, backend_priority: str | None = None):
+        generation_id = self._cancel_pending_speech()
         thread = threading.Thread(
             target=self.speak,
             args=(text,),
-            kwargs={"backend_priority": backend_priority},
+            kwargs={
+                "backend_priority": backend_priority,
+                "generation_id": generation_id,
+                "interrupt_current": True,
+            },
             daemon=True,
         )
         thread.start()
         return thread
+
+    def _cancel_pending_speech(self) -> int:
+        with self._speech_generation_lock:
+            self._speech_generation += 1
+            return self._speech_generation
+
+    def _is_stale_speech_generation(self, generation_id: int) -> bool:
+        with self._speech_generation_lock:
+            return generation_id != self._speech_generation
 
     def _prime_audio_output(self):
         """Warm the output device once so the first spoken word is not clipped."""
