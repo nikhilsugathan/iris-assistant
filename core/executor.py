@@ -46,6 +46,7 @@ import hashlib
 import logging
 import shlex
 import threading
+import time
 from collections import deque
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
@@ -2498,7 +2499,10 @@ Be specific and practical. No preamble."""
             )
 
         # ── Step 3: Resolve correct folder path ──────────────
-        if "desktop" in filename.lower():
+        normalized_filename = str(filename or "").replace("\\", "/").lower()
+        desktop_hint = "desktop" in normalized_filename.split("/")
+
+        if desktop_hint and not os.path.isabs(filename):
             bare_name = os.path.basename(filename)
             filepath  = os.path.join(self._get_desktop_path(), bare_name)
         elif not os.path.dirname(filename):

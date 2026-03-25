@@ -15,6 +15,7 @@ from __future__ import annotations
 from datetime import timedelta
 from pathlib import Path
 import sys
+import threading
 import time
 
 WORKSPACE = Path(__file__).resolve().parents[1]
@@ -1098,6 +1099,38 @@ def main() -> None:
             "OVERDRIVE_ACTIVATED" in audit_text and "OVERDRIVE_DEACTIVATED" in audit_text,
             "Audit log did not capture the Overdrive activation lifecycle.",
         )
+
+        bg_stdout, bg_stderr, bg_returncode, bg_cancelled = engine.executor._run_process_with_cancel(
+            [sys.executable, "-c", "print('iris background smoke')"],
+            use_shell=False,
+            timeout=5,
+            cancel_event=threading.Event(),
+        )
+        assert_true(
+            bg_returncode == 0 and not bg_cancelled and "iris background smoke" in bg_stdout,
+            "Background process execution path should complete cleanly without hitting a runtime NameError.",
+        )
+
+        explicit_desktop_path = str(Path(engine.executor._get_desktop_path()) / "iris_explicit_path_smoke.txt")
+        explicit_path_result = engine.executor._create_file(
+            {
+                "filename": explicit_desktop_path,
+                "content": "desktop path smoke",
+                "description": "create a desktop file by explicit path",
+            }
+        )
+        assert_true(
+            "iris_explicit_path_smoke.txt" in explicit_path_result.lower(),
+            "Explicit desktop-path file creation should still succeed.",
+        )
+        assert_true(
+            engine.executor.last_action_path == explicit_desktop_path,
+            "Explicit desktop-path file creation should preserve the requested path instead of collapsing to basename.",
+        )
+        try:
+            Path(explicit_desktop_path).unlink(missing_ok=True)
+        except Exception:
+            pass
 
         sensitive_plan = {
             "action_type": "write_to_file",
