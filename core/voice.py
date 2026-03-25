@@ -25,6 +25,7 @@ from rich.console import Console
 from config import Config
 from core.resource_guard import ResourceGuard
 from core.runtime_log import log_runtime
+from core.subprocess_utils import hidden_process_kwargs
 
 console = Console()
 
@@ -771,6 +772,7 @@ if ($best) {{
                 text=True,
                 timeout=12,
                 check=False,
+                **hidden_process_kwargs(),
             )
             output = (completed.stdout or "").strip()
             if output:
@@ -855,6 +857,7 @@ if ($best) {{
                 text=True,
                 timeout=12,
                 check=False,
+                **hidden_process_kwargs(),
             )
             output = (completed.stdout or "").strip()
             if output:

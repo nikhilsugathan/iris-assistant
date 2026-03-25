@@ -14,6 +14,7 @@ from typing import Optional
 
 from config import Config
 from core.desktop_control import DesktopControlError, DesktopController
+from core.subprocess_utils import hidden_process_kwargs
 
 
 class DesktopIntel:
@@ -180,6 +181,7 @@ if ($null -ne $text) {
                 text=True,
                 timeout=4,
                 check=False,
+                **hidden_process_kwargs(),
             )
         except Exception:
             return ""

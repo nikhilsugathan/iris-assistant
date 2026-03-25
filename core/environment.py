@@ -21,6 +21,7 @@ import requests
 
 from config import Config
 from core.resource_guard import ResourceGuard
+from core.subprocess_utils import hidden_process_kwargs
 
 
 WEATHER_CODE_MAP = {
@@ -757,6 +758,7 @@ $coord = $pos.Coordinate.Point.Position
                 text=True,
                 timeout=12,
                 check=False,
+                **hidden_process_kwargs(),
             )
         except Exception:
             return None

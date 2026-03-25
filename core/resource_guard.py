@@ -14,6 +14,7 @@ import time
 from typing import Optional
 
 from config import Config
+from core.subprocess_utils import hidden_process_kwargs
 
 
 BATTERY_AC_STATUSES = {2, 3, 6, 7, 8, 9, 11}
@@ -105,6 +106,7 @@ $battery = Get-CimInstance Win32_Battery | Select-Object -First 1 EstimatedCharg
                 text=True,
                 timeout=4,
                 check=False,
+                **hidden_process_kwargs(),
             )
         except Exception:
             return None

@@ -18,6 +18,8 @@ import subprocess
 import time
 from typing import Any, Optional
 
+from core.subprocess_utils import hidden_process_kwargs
+
 
 BATTERY_STATUS_MAP = {
     1: "discharging",
@@ -328,6 +330,7 @@ $memory = Get-CimInstance Win32_OperatingSystem |
                 text=True,
                 timeout=8,
                 check=False,
+                **hidden_process_kwargs(),
             )
         except Exception:
             return None
