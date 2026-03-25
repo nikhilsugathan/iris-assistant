@@ -71,6 +71,8 @@ class Config:
     ACTION_PLAN_MAX_TOKENS = int(os.getenv("ACTION_PLAN_MAX_TOKENS", "480"))
     COMMAND_FIX_MAX_TOKENS = int(os.getenv("COMMAND_FIX_MAX_TOKENS", "160"))
     OLLAMA_STREAM_VOICE_RESPONSES = os.getenv("OLLAMA_STREAM_VOICE_RESPONSES", "true").lower() == "true"
+    CLIPBOARD_CONTEXT_MAX_CHARS = int(os.getenv("CLIPBOARD_CONTEXT_MAX_CHARS", "4000"))
+    CLIPBOARD_PREVIEW_CHARS = int(os.getenv("CLIPBOARD_PREVIEW_CHARS", "260"))
 
     GEMINI_MODEL = "gemini-2.0-flash"
     GROQ_MODEL = "llama-3.3-70b-versatile"

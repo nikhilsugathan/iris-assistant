@@ -7,6 +7,7 @@ Local LLM first (Ollama), cloud APIs as fallback.
 
 from __future__ import annotations
 
+import json
 import random
 import re
 import threading
@@ -16,6 +17,7 @@ import requests
 from rich.console import Console
 
 from config import Config
+from core.context_intel import ClipboardIntel, DesktopIntel
 from core.environment import EnvironmentIntel
 from core.system_intel import SystemIntel
 
@@ -27,6 +29,8 @@ class Brain:
         self.memory = memory
         self.system_intel = SystemIntel()
         self.environment = EnvironmentIntel()
+        self.desktop_intel = DesktopIntel()
+        self.clipboard_intel = ClipboardIntel()
         self._last_variant_by_bucket: Dict[str, str] = {}
         self.available_apis = self._detect_apis()
         self._update_priority()
@@ -184,6 +188,18 @@ class Brain:
             self.memory.add("assistant", direct, source="local")
             return direct
 
+        desktop_data = self.desktop_intel.answer_query(user_input)
+        if desktop_data:
+            self.memory.add("user", user_input)
+            self.memory.add("assistant", desktop_data, source="desktop-local")
+            return desktop_data
+
+        clipboard_data = self.clipboard_intel.answer_query(user_input)
+        if clipboard_data:
+            self.memory.add("user", user_input)
+            self.memory.add("assistant", clipboard_data, source="clipboard-local")
+            return clipboard_data
+
         system_data = self.system_intel.answer_query(user_input)
         if system_data:
             self.memory.add("user", user_input)
@@ -197,31 +213,37 @@ class Brain:
             return live_data
 
         self.memory.add("user", user_input)
-        query_type = self._classify_query(user_input)
+        effective_input, clipboard_error = self.clipboard_intel.build_prompt(user_input)
+        if clipboard_error:
+            self.memory.add("assistant", clipboard_error, source="clipboard-local")
+            return clipboard_error
+        effective_input = effective_input or user_input
+        query_type = self._classify_query(effective_input)
         extra_system = getattr(council_packet, "extra_system", "") if council_packet else ""
         allow_long_response = bool(getattr(council_packet, "allow_long_response", False))
 
         if getattr(Config, "USE_ENSEMBLE", False):
-            final = self._ensemble_think(user_input, query_type)
+            final = self._ensemble_think(effective_input, query_type)
             final = self._postprocess_response(final, user_input, allow_long_response=allow_long_response)
             self.memory.add("assistant", final, source="ensemble")
             return final
 
         # Web search → Perplexity
         if query_type == "web_search" and "perplexity" in self.available_apis:
-            resp = self._call_api("perplexity", user_input, use_persona=False, use_memory=False)
+            resp = self._call_api("perplexity", effective_input, use_persona=False, use_memory=False)
             if resp:
                 final = self._postprocess_response(resp, user_input, allow_long_response=allow_long_response)
                 self.memory.add("assistant", final, source="perplexity")
                 return final
 
         # Smart routing based on query complexity
-        word_count = len(user_input.split())
-        is_complex = any(w in user_input.lower() for w in [
+        lowered_effective = effective_input.lower()
+        word_count = len(effective_input.split())
+        is_complex = any(w in lowered_effective for w in [
             "explain", "analyse", "compare", "why", "how does", "what is the difference",
             "reason", "think", "evaluate", "summarise", "detail"
         ])
-        needs_reasoning = any(w in user_input.lower() for w in [
+        needs_reasoning = any(w in lowered_effective for w in [
             "reason", "logic", "proof", "solve", "calculate", "plan", "strategy"
         ])
 
@@ -237,7 +259,7 @@ class Brain:
                 continue
             resp = self._call_api(
                 api,
-                user_input,
+                effective_input,
                 use_persona=True,
                 use_memory=True,
                 allow_failover=False,

@@ -17,6 +17,7 @@ if str(WORKSPACE) not in sys.path:
     sys.path.insert(0, str(WORKSPACE))
 
 from config import Config
+import core.brain as brain_module
 from core.engine import IRISEngine
 from core.voice import TranscriptCandidate, Voice
 
@@ -38,6 +39,34 @@ class FakeSystemIntel:
         if "computer name" in lowered:
             return "This machine is named IRIS-TEST-PC."
         return None
+
+
+class FakeDesktopIntel:
+    def answer_query(self, query: str):
+        lowered = query.lower()
+        if "what am i looking at" in lowered:
+            return "Active window: SmokePad at 20,30 sized 1280x720."
+        if "what windows are open" in lowered:
+            return "Open windows right now: active: SmokePad; open: Browser."
+        return None
+
+
+class FakeClipboardIntel:
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+
+    def answer_query(self, query: str):
+        lowered = query.lower()
+        if "what's on my clipboard" in lowered or "what is on my clipboard" in lowered:
+            return "Clipboard currently contains: Traceback: smoke failure."
+        return None
+
+    def build_prompt(self, query: str):
+        self.prompts.append(query)
+        lowered = query.lower()
+        if "summarize what i copied" in lowered:
+            return ("Summarize the following clipboard content concisely.\n\nClipboard content:\nTraceback: smoke failure", None)
+        return None, None
 
 
 class FakeGuard:
@@ -68,6 +97,9 @@ class QueueTestVoice(Voice):
 def test_system_routing() -> None:
     engine = IRISEngine(text_mode=True)
     engine.brain.system_intel = FakeSystemIntel()
+    engine.brain.desktop_intel = FakeDesktopIntel()
+    fake_clipboard = FakeClipboardIntel()
+    engine.brain.clipboard_intel = fake_clipboard
 
     try:
         battery_result = engine.process_user_input("what's my battery status", speak_response=False)
@@ -81,6 +113,37 @@ def test_system_routing() -> None:
             "IRIS-TEST-PC" in host_result.response,
             "Hostname query did not route through the local system-intel handler.",
         )
+
+        active_window_result = engine.process_user_input("what am I looking at", speak_response=False)
+        assert_true(
+            "Active window: SmokePad" in active_window_result.response,
+            "Active-window question did not route through the local desktop-intel handler.",
+        )
+
+        clipboard_result = engine.process_user_input("what's on my clipboard", speak_response=False)
+        assert_true(
+            "Clipboard currently contains:" in clipboard_result.response,
+            "Direct clipboard question did not route through the local clipboard handler.",
+        )
+
+        original_call_api = engine.brain._call_api
+        llm_prompts: list[str] = []
+
+        def fake_call_api(api: str, prompt: str, **kwargs):
+            llm_prompts.append(prompt)
+            return "Clipboard summary ready."
+
+        engine.brain._call_api = fake_call_api  # type: ignore[method-assign]
+        clipboard_summary = engine.process_user_input("summarize what I copied", speak_response=False)
+        assert_true(
+            clipboard_summary.response == "Clipboard summary ready.",
+            "Clipboard-aware query did not return the mocked assistant response.",
+        )
+        assert_true(
+            llm_prompts and "Clipboard content:" in llm_prompts[-1],
+            "Clipboard-aware query did not expand into a clipboard-backed prompt.",
+        )
+        engine.brain._call_api = original_call_api  # type: ignore[method-assign]
 
         assert_true(
             engine.brain._classify_query("what is recursion") == "general",
@@ -292,11 +355,47 @@ def test_local_tts_engine_reuse() -> None:
             pass
 
 
+def test_ollama_stream_chunk_parsing() -> None:
+    engine = IRISEngine(text_mode=True)
+    original_post = brain_module.requests.post
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_lines(self, decode_unicode=True):
+            yield '{"response":"First streamed sentence. ","done":false}'
+            yield '{"response":"Second streamed sentence.","done":false}'
+            yield '{"response":"","done":true}'
+
+    chunks: list[str] = []
+
+    try:
+        brain_module.requests.post = lambda *args, **kwargs: FakeResponse()  # type: ignore[assignment]
+        result = engine.brain._call_ollama_streaming(
+            "http://localhost:11434",
+            {"model": "phi3.5", "prompt": "hi", "stream": False, "options": {"num_predict": 64}},
+            chunks.append,
+        )
+        assert_true(
+            result == "First streamed sentence. Second streamed sentence.",
+            "Streaming Ollama parser did not rebuild the full response text.",
+        )
+        assert_true(
+            chunks == ["First streamed sentence.", "Second streamed sentence."],
+            "Streaming Ollama parser did not emit sentence chunks in order.",
+        )
+    finally:
+        brain_module.requests.post = original_post  # type: ignore[assignment]
+        engine.shutdown()
+
+
 def main() -> None:
     test_system_routing()
     test_voice_preferences()
     test_background_speech_cancellation()
     test_local_tts_engine_reuse()
+    test_ollama_stream_chunk_parsing()
     print("PASS: IRIS local-first smoke test completed.")
 
 
