@@ -368,6 +368,56 @@ def test_local_tts_engine_reuse() -> None:
             pass
 
 
+def test_inactive_mic_source_guard() -> None:
+    voice = Voice(text_mode=True)
+    voice.text_mode = False
+    voice.mic_ready = True
+
+    class FakeRecognizer:
+        def __init__(self) -> None:
+            self.adjust_calls = 0
+
+        def adjust_for_ambient_noise(self, source, duration=1.0) -> None:
+            self.adjust_calls += 1
+
+        def listen(self, source, timeout=5, phrase_time_limit=10):
+            raise AssertionError("listen() should not be called when the microphone stream is inactive.")
+
+    class FakeMicrophone:
+        def __enter__(self):
+            self.stream = None
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            self.stream = None
+
+    voice.recognizer = FakeRecognizer()
+    voice.microphone = FakeMicrophone()
+    voice.calibrated = False
+    voice.listen_failures = 2
+
+    try:
+        result = voice._listen(timeout=1, phrase_time_limit=1, wake_mode=False)
+        assert_true(result == "", "Inactive microphone streams should fail cleanly without returning audio text.")
+        assert_true(
+            voice.last_listen_status == "mic_error",
+            "Inactive microphone streams should surface a microphone error instead of a recalibration warning loop.",
+        )
+        assert_true(
+            voice.recognizer.adjust_calls == 0,
+            "Inactive microphone streams should skip ambient-noise recalibration entirely.",
+        )
+        assert_true(
+            "failed to open" in voice.last_listen_detail.lower(),
+            "Inactive microphone streams should report a clear open-stream failure message.",
+        )
+    finally:
+        try:
+            voice.stop()
+        except Exception:
+            pass
+
+
 def test_piper_tts_backend() -> None:
     voice = Voice(text_mode=True)
     voice.text_mode = False
@@ -537,6 +587,7 @@ def main() -> None:
     test_voice_preferences()
     test_background_speech_cancellation()
     test_local_tts_engine_reuse()
+    test_inactive_mic_source_guard()
     test_piper_tts_backend()
     test_system_performance_queries()
     test_local_first_planner_routing()

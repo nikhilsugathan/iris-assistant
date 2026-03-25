@@ -40,6 +40,7 @@ class Voice:
     def __init__(self, text_mode: bool = False):
         self.text_mode       = text_mode
         self._tts_lock       = threading.Lock()
+        self._mic_lock       = threading.Lock()
         self._stop_flag      = threading.Event()
         self._speech_generation_lock = threading.Lock()
         self._speech_generation = 0
@@ -243,12 +244,17 @@ class Voice:
         if not self.mic_ready or self.calibrated:
             return
         try:
-            with self.microphone as source:
-                console.print("[dim]Calibrating microphone... stay quiet.[/dim]")
-                self._recalibrate_with_source(
-                    source,
-                    duration=getattr(Config, "MIC_CALIBRATION_SECONDS", 2.0),
-                )
+            with self._mic_lock:
+                with self.microphone as source:
+                    if not self._source_stream_ready(source):
+                        raise RuntimeError(
+                            "Microphone stream did not open during calibration. Check whether another app is using the mic."
+                        )
+                    console.print("[dim]Calibrating microphone... stay quiet.[/dim]")
+                    self._recalibrate_with_source(
+                        source,
+                        duration=getattr(Config, "MIC_CALIBRATION_SECONDS", 2.0),
+                    )
             self.calibrated = True
             console.print(
                 f"[green]✓ Calibration complete[/green] "
@@ -257,7 +263,15 @@ class Voice:
         except Exception as e:
             console.print(f"[yellow]Calibration warning:[/yellow] {e}")
 
+    def _source_stream_ready(self, source) -> bool:
+        try:
+            return getattr(source, "stream", None) is not None
+        except Exception:
+            return False
+
     def _recalibrate_with_source(self, source, duration: float) -> None:
+        if not self._source_stream_ready(source):
+            raise RuntimeError("Microphone stream is not active for recalibration.")
         self.recognizer.adjust_for_ambient_noise(source, duration=max(0.1, float(duration)))
         self.last_calibrated_at = time.time()
         self.listen_failures = 0
@@ -280,6 +294,8 @@ class Voice:
         if not wake_mode and self.listen_failures >= failure_threshold:
             console.print("[dim]Recalibrating microphone for the current room noise...[/dim]")
         try:
+            if not self._source_stream_ready(source):
+                return
             self._recalibrate_with_source(source, duration=duration)
         except Exception as e:
             console.print(f"[yellow]Mic recalibration warning:[/yellow] {e}")
@@ -339,16 +355,21 @@ class Voice:
         self._emit_state(active_state)
         listen_started_at = time.perf_counter()
         try:
-            with self.microphone as source:
-                self._maybe_recalibrate(source, wake_mode=wake_mode)
-                if not wake_mode:
-                    console.print("[dim]Listening...[/dim]")
-                audio = self.recognizer.listen(
-                    source,
-                    timeout=timeout,
-                    phrase_time_limit=phrase_time_limit,
-                )
-                self.last_capture_duration_ms = int((time.perf_counter() - listen_started_at) * 1000)
+            with self._mic_lock:
+                with self.microphone as source:
+                    if not self._source_stream_ready(source):
+                        raise RuntimeError(
+                            "Microphone stream failed to open. Another app may be using the selected input device."
+                        )
+                    self._maybe_recalibrate(source, wake_mode=wake_mode)
+                    if not wake_mode:
+                        console.print("[dim]Listening...[/dim]")
+                    audio = self.recognizer.listen(
+                        source,
+                        timeout=timeout,
+                        phrase_time_limit=phrase_time_limit,
+                    )
+                    self.last_capture_duration_ms = int((time.perf_counter() - listen_started_at) * 1000)
         except sr.WaitTimeoutError:
             self.last_listen_status = "timeout"
             self.last_listen_detail = "No speech was detected before the listen timeout."
