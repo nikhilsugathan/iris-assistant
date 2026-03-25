@@ -987,6 +987,10 @@ class IrisWindow(QtWidgets.QMainWindow):
 
         stt_backend = str(snapshot.get("last_transcript_backend") or "--").upper()
         confidence = float(snapshot.get("last_transcript_confidence") or 0.0)
+        attempts = str(snapshot.get("last_transcript_attempts") or "").replace("_", " ").upper()
+        capture_ms = int(snapshot.get("last_capture_duration_ms") or 0)
+        transcribe_ms = int(snapshot.get("last_transcription_duration_ms") or 0)
+        total_ms = int(snapshot.get("last_total_listen_duration_ms") or 0)
         if stt_backend != "--" and confidence > 0:
             stt_display = f"{stt_backend} {confidence:.2f}"
         else:
@@ -997,7 +1001,8 @@ class IrisWindow(QtWidgets.QMainWindow):
 
         self.diagnostics_label.setText(
             f"BRAIN {brain}  //  MIC {mic_display}\n"
-            f"STT {stt_display}  //  TTS {tts_display}  //  AUDIO {audio_display}"
+            f"STT {stt_display}  //  TTS {tts_display}  //  AUDIO {audio_display}\n"
+            f"LISTEN {capture_ms}ms + {transcribe_ms}ms = {total_ms}ms  //  PATH {attempts or '--'}"
         )
 
     def _set_mode_banner(self, text: str):

@@ -330,10 +330,36 @@ class ActionExecutor:
         r"^(?:list|show|what(?:'s| is))\s+(?:open\s+)?windows?\??$",
     ]
 
+    ACTION_INFO_PATTERNS = [
+        r"^(?:what(?:'s| is)|which)\s+(?:window|app)\s+is\s+active\??$",
+        r"^active window\??$",
+        r"^(?:list|show|what(?:'s| is))\s+(?:open\s+)?windows?\??$",
+        r"^(?:list|show|what(?:'s| is))\s+(?:my\s+)?(?:installed\s+apps?|installed\s+programs?|apps\s+installed)\??$",
+        r"^what apps are installed\??$",
+    ]
+
+    ACTION_ADVICE_PREFIXES = (
+        "should i ",
+        "should we ",
+        "how do i ",
+        "how can i ",
+        "what happens if i ",
+        "is it safe to ",
+        "is it okay to ",
+        "do you think i should ",
+        "can i ",
+        "could i ",
+        "would it be better to ",
+    )
+
     def should_handle(self, user_input: str) -> bool:
         """Detect if user wants IRIS to take a real action."""
-        text = user_input.lower()
+        text = user_input.lower().strip()
         if text.strip() in OVERDRIVE_CONTROL_PHRASES:
+            return False
+        if any(re.search(pattern, text) for pattern in self.ACTION_INFO_PATTERNS):
+            return True
+        if any(text.startswith(prefix) for prefix in self.ACTION_ADVICE_PREFIXES):
             return False
         return any(trigger in text for trigger in self.ACTION_TRIGGERS) or any(
             re.search(pattern, text) for pattern in self.DESKTOP_ACTION_PATTERNS

@@ -77,6 +77,10 @@ def main() -> None:
             "BRAIN " in window.diagnostics_label.text() and "MIC " in window.diagnostics_label.text(),
             "Runtime diagnostics did not render in the dashboard.",
         )
+        assert_true(
+            "LISTEN " in window.diagnostics_label.text() and "PATH " in window.diagnostics_label.text(),
+            "Runtime diagnostics did not render the voice timing path.",
+        )
         transcript_text = window.transcript.toPlainText()
         if getattr(Config, "STARTUP_GREETING_ENABLED", True):
             assert_true(

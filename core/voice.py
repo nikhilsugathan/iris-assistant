@@ -59,6 +59,10 @@ class Voice:
         self.last_transcript_confidence = 0.0
         self.last_transcript_language = ""
         self.last_tts_backend = ""
+        self.last_capture_duration_ms = 0
+        self.last_transcription_duration_ms = 0
+        self.last_total_listen_duration_ms = 0
+        self.last_transcript_attempts = ""
         self._faster_whisper_model = None
         self._faster_whisper_error = ""
 
@@ -299,6 +303,9 @@ class Voice:
         if not self.mic_ready or self.microphone is None:
             self.last_listen_status = "mic_unavailable"
             self.last_listen_detail = self.mic_error or "Microphone is not ready."
+            self.last_capture_duration_ms = 0
+            self.last_transcription_duration_ms = 0
+            self.last_total_listen_duration_ms = 0
             time.sleep(1)
             return ""
 
@@ -306,7 +313,11 @@ class Voice:
         settle_state = "standby" if wake_mode else "idle"
         self.last_listen_status = "listening"
         self.last_listen_detail = ""
+        self.last_capture_duration_ms = 0
+        self.last_transcription_duration_ms = 0
+        self.last_total_listen_duration_ms = 0
         self._emit_state(active_state)
+        listen_started_at = time.perf_counter()
         try:
             with self.microphone as source:
                 self._maybe_recalibrate(source, wake_mode=wake_mode)
@@ -317,25 +328,31 @@ class Voice:
                     timeout=timeout,
                     phrase_time_limit=phrase_time_limit,
                 )
+                self.last_capture_duration_ms = int((time.perf_counter() - listen_started_at) * 1000)
         except sr.WaitTimeoutError:
             self.last_listen_status = "timeout"
             self.last_listen_detail = "No speech was detected before the listen timeout."
             self.listen_failures += 1
+            self.last_total_listen_duration_ms = int((time.perf_counter() - listen_started_at) * 1000)
             self._emit_state(settle_state)
             return ""
         except Exception as e:
             self.last_listen_status = "mic_error"
             self.last_listen_detail = str(e)
             self.listen_failures += 1
+            self.last_total_listen_duration_ms = int((time.perf_counter() - listen_started_at) * 1000)
             self._emit_state("idle")
             if not wake_mode:
                 console.print(f"[red]Mic error:[/red] {e}")
             return ""
 
+        transcribe_started_at = time.perf_counter()
         if wake_mode:
             text = self._transcribe_wake(audio)
         else:
             text = self._transcribe_command(audio)
+        self.last_transcription_duration_ms = int((time.perf_counter() - transcribe_started_at) * 1000)
+        self.last_total_listen_duration_ms = int((time.perf_counter() - listen_started_at) * 1000)
 
         if text:
             self.last_listen_status = "heard"
@@ -761,14 +778,17 @@ if ($best) {{
         self.last_transcript_backend = ""
         self.last_transcript_confidence = 0.0
         self.last_transcript_language = ""
+        attempted: list[str] = []
 
         for backend in order:
+            attempted.append(backend)
             candidate = self._transcribe_candidate(backend, audio, wake_mode=wake_mode)
             if not candidate.text:
                 continue
 
             if wake_mode:
                 if self._accept_wake_candidate(candidate):
+                    self.last_transcript_attempts = " > ".join(attempted)
                     self._remember_transcript_candidate(candidate)
                     return candidate.text
                 continue
@@ -776,6 +796,7 @@ if ($best) {{
             if backend == "system":
                 accepted = self._accept_local_command_candidate(candidate, audio)
                 if accepted or order == ["system"]:
+                    self.last_transcript_attempts = " > ".join(attempted)
                     self._remember_transcript_candidate(candidate)
                     return candidate.text
                 fallback_local = candidate
@@ -788,6 +809,7 @@ if ($best) {{
             if backend == "faster_whisper":
                 accepted = self._accept_local_whisper_candidate(candidate, audio)
                 if accepted or order == ["faster_whisper"]:
+                    self.last_transcript_attempts = " > ".join(attempted)
                     self._remember_transcript_candidate(candidate)
                     return candidate.text
                 fallback_local = candidate
@@ -796,12 +818,15 @@ if ($best) {{
                 )
                 continue
 
+            self.last_transcript_attempts = " > ".join(attempted)
             self._remember_transcript_candidate(candidate)
             return candidate.text
 
         if fallback_local:
+            self.last_transcript_attempts = " > ".join(attempted)
             self._remember_transcript_candidate(fallback_local)
             return fallback_local.text
+        self.last_transcript_attempts = " > ".join(attempted)
         return ""
 
     def _remember_transcript_candidate(self, candidate: TranscriptCandidate) -> None:
