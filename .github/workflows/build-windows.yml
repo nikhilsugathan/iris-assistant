@@ -23,18 +23,18 @@ jobs:
       - name: Install dependencies
         shell: powershell
         run: |
-          py -3 -m pip install --upgrade pip
-          py -3 -m pip install -r requirements.txt pyinstaller
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
 
       - name: Generate visual identity assets
         shell: powershell
         run: |
-          py -3 tools/generate_app_icon.py
+          python tools/generate_app_icon.py
 
       - name: Build desktop executable
         shell: powershell
         run: |
-          py -3 -m PyInstaller `
+          python -m PyInstaller `
             --noconfirm `
             --clean `
             --windowed `
