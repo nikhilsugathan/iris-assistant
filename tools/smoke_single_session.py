@@ -520,12 +520,21 @@ def main() -> None:
         )
         original_correct_input = engine.autocorrect.correct_input
         engine.autocorrect.correct_input = lambda text: ("yes", 1.0)  # type: ignore[method-assign]
-        unrelated_permission_input = engine.process_user_input("what's the weather?", speak_response=True)
+        unrelated_permission_input = engine.process_user_input("run smoke list windows", speak_response=True)
         assert_true(
-            unrelated_permission_input.response == "Go ahead, or cancel?",
-            "Pending permissions should not autocorrect unrelated input into an approval.",
+            "visible windows:" in unrelated_permission_input.response.lower(),
+            "A fresh command should supersede a stale permission prompt instead of being trapped as yes/no.",
+        )
+        assert_true(
+            not engine.executor.waiting_for_permission(),
+            "Superseding a stale permission prompt should clear the pending action.",
         )
         engine.autocorrect.correct_input = original_correct_input
+        safe_command_prompt = engine.process_user_input("run smoke safe command", speak_response=True)
+        assert_true(
+            engine.executor.waiting_for_permission(),
+            "Re-issued shell command should still require explicit approval after the stale prompt is cleared.",
+        )
         safe_command_result = engine.process_user_input("yes", speak_response=True)
         assert_true(
             "confirmed. running: echo smoke." in safe_command_result.response.lower()

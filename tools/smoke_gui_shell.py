@@ -56,11 +56,16 @@ def main() -> None:
     dashboard_preview = smoke_dir / "iris_gui_dashboard.png"
     floating_preview = smoke_dir / "iris_gui_floating_orb.png"
     audit_log = smoke_dir / "iris_gui_audit.log"
+    original_runtime_log = Config.RUNTIME_LOG_FILE
+    Config.RUNTIME_LOG_FILE = str(smoke_dir / "iris_gui_runtime.log")
     runtime_log = get_runtime_log_path()
 
     for artifact in (dashboard_preview, floating_preview, audit_log, runtime_log):
         if artifact.exists():
-            artifact.unlink()
+            try:
+                artifact.unlink()
+            except PermissionError:
+                pass
 
     app = QtWidgets.QApplication.instance()
     owns_app = app is None
@@ -166,6 +171,7 @@ def main() -> None:
         print(f"Dashboard preview: {dashboard_preview}")
         print(f"Floating orb preview: {floating_preview}")
     finally:
+        Config.RUNTIME_LOG_FILE = original_runtime_log
         window._quitting = True
         window.close()
         app.processEvents()

@@ -21,6 +21,7 @@ from core.dialog_manager import DialogManager
 from core.diagnostics import SelfDiagnostics
 from core.executor import ActionExecutor
 from core.memory import Memory
+from core.runtime_log import log_runtime
 from core.self_model import SelfModel
 from core.voice import Voice
 
@@ -140,9 +141,21 @@ class IRISEngine:
             inferred_source = input_source or ("text" if self.text_mode else "unknown")
             self.executor.set_input_source(inferred_source)
             self.refresh_overdrive()
+            skip_autocorrect = False
+            log_runtime(
+                "engine_input_received",
+                text=user_input[:240],
+                input_source=inferred_source,
+                speak_response=bool(speak_response),
+            )
 
             if self._should_reprompt_uncertain_voice(inferred_source):
                 message = self._uncertain_voice_prompt()
+                log_runtime(
+                    "engine_uncertain_voice_reprompt",
+                    text=user_input[:240],
+                    input_source=inferred_source,
+                )
                 self._speak_if_enabled(message, speak_response)
                 return EngineResult(label=Config.PUBLIC_NAME, response=message, mode="voice-repeat")
 
@@ -196,13 +209,45 @@ class IRISEngine:
                     return EngineResult(label=Config.PUBLIC_NAME, response=response, mode="presence-check")
 
             if self.executor.waiting_for_permission():
-                response = self.executor.handle_permission_response(user_input)
-                self._update_self_model_after_response(response, "permission")
-                self._speak_if_enabled(response, speak_response)
-                return EngineResult(label=Config.PUBLIC_NAME, response=response, mode="permission")
+                if self._should_supersede_pending_permission(user_input):
+                    previous_action = self.executor.pending_action_snapshot()
+                    self.executor.cancel_pending_action(reason="superseded_by_new_input")
+                    skip_autocorrect = True
+                    log_runtime(
+                        "engine_permission_superseded",
+                        new_input=user_input[:240],
+                        input_source=inferred_source,
+                        previous_action=previous_action,
+                    )
+                else:
+                    response = self.executor.handle_permission_response(user_input)
+                    log_runtime(
+                        "engine_permission_response",
+                        text=user_input[:240],
+                        input_source=inferred_source,
+                        response=response[:240],
+                    )
+                    self._update_self_model_after_response(response, "permission")
+                    self._speak_if_enabled(response, speak_response)
+                    return EngineResult(label=Config.PUBLIC_NAME, response=response, mode="permission")
 
-            corrected, _ = self.autocorrect.correct_input(user_input)
-            user_input = corrected
+            if not skip_autocorrect:
+                corrected, _ = self.autocorrect.correct_input(user_input)
+                if corrected != user_input:
+                    log_runtime(
+                        "engine_input_corrected",
+                        original=user_input[:240],
+                        corrected=corrected[:240],
+                        input_source=inferred_source,
+                    )
+                user_input = corrected
+            else:
+                log_runtime(
+                    "engine_autocorrect_skipped",
+                    text=user_input[:240],
+                    input_source=inferred_source,
+                    reason="superseded_pending_permission",
+                )
 
             overdrive_result = self._maybe_handle_overdrive_command(
                 user_input,
@@ -225,6 +270,15 @@ class IRISEngine:
                 self.diagnostics,
                 self.self_model,
             )
+            log_runtime(
+                "engine_decision",
+                text=user_input[:240],
+                mode=getattr(decision, "mode", "unknown"),
+                reason=getattr(decision, "reason", ""),
+                tone=getattr(decision, "tone", ""),
+                depth=getattr(decision, "depth", ""),
+                input_source=inferred_source,
+            )
             self.self_model.observe_user_input(user_input, decision)
 
             if decision.mode == "diagnostics":
@@ -237,6 +291,7 @@ class IRISEngine:
                     self.memory,
                     self.self_model,
                 )
+                log_runtime("engine_response", mode="diagnostics", response=response[:240])
                 self._update_self_model_after_response(response, "diagnostics")
                 self._speak_if_enabled(response, speak_response)
                 return EngineResult(label=f"{Config.PUBLIC_NAME} (Diagnostics)", response=response, mode="diagnostics")
@@ -244,18 +299,21 @@ class IRISEngine:
             if self.copilot.active:
                 response = self.copilot.handle_input(user_input)
                 if response:
+                    log_runtime("engine_response", mode="copilot", response=response[:240])
                     self._update_self_model_after_response(response, "copilot")
                     self._speak_if_enabled(response, speak_response)
                 return EngineResult(label=f"{Config.PUBLIC_NAME} (Co-Pilot)", response=response or "", mode="copilot")
 
             if decision.mode == "copilot":
                 response = self.copilot.start(user_input)
+                log_runtime("engine_response", mode="copilot", response=response[:240])
                 self._update_self_model_after_response(response, "copilot")
                 self._speak_if_enabled(response, speak_response)
                 return EngineResult(label=f"{Config.PUBLIC_NAME} (Co-Pilot)", response=response, mode="copilot")
 
             if decision.mode == "action":
                 response = self.executor.plan_action(user_input)
+                log_runtime("engine_response", mode="action", response=response[:240])
                 self._update_self_model_after_response(response, "action")
                 self._speak_if_enabled(response, speak_response)
                 return EngineResult(label=f"{Config.PUBLIC_NAME} (Action)", response=response, mode="action")
@@ -273,6 +331,12 @@ class IRISEngine:
                 council_packet=packet,
                 stream_callback=stream_state["callback"],
             )
+            log_runtime(
+                "engine_response",
+                mode=decision.mode,
+                response=response[:240],
+                speech_started=bool(stream_state["started"]),
+            )
             self._update_self_model_after_response(response, "brain")
             self._speak_if_enabled(response, speak_response)
             return EngineResult(
@@ -281,6 +345,39 @@ class IRISEngine:
                 mode=decision.mode,
                 speech_started=bool(stream_state["started"]),
             )
+
+    def _should_supersede_pending_permission(self, user_input: str) -> bool:
+        text = (user_input or "").strip()
+        if not text:
+            return False
+        if self.executor.is_permission_response(text):
+            return False
+
+        lowered = text.lower()
+        if self.diagnostics.should_handle(lowered):
+            return True
+        if self.copilot.should_activate(lowered):
+            return True
+        if self.executor.should_handle(lowered):
+            return True
+
+        question_like_prefixes = (
+            "what ",
+            "what's ",
+            "what is ",
+            "why ",
+            "how ",
+            "when ",
+            "where ",
+            "who ",
+            "can you ",
+            "could you ",
+            "would you ",
+            "please ",
+            "tell me ",
+            "show me ",
+        )
+        return lowered.endswith("?") or lowered.startswith(question_like_prefixes)
 
     def activate_overdrive(self) -> None:
         now = datetime.now()

@@ -59,6 +59,7 @@ from core.autocorrect import AutoCorrector
 from core.browser import BrowserAutomation
 from core.desktop_control import DesktopController, DesktopControlError, normalize_key_token
 from core.improv import ImprovEngine
+from core.runtime_log import log_runtime
 
 
 # ── Phrases that mean YES ──────────────────────────────────────
@@ -747,6 +748,7 @@ class ActionExecutor:
         r"^(?:stop|end|cancel|turn off)\s+(?:focus mode|my work session)\??$",
         r"^(?:cancel|stop)\s+(?:the\s+)?(?:background|current)\s+(?:task|job|action|command|install)\??$",
         r"^(?:background status|job status|task status|what(?:'s| is)\s+running\s+in\s+the\s+background|what(?:'s| is)\s+the\s+background\s+status)\??$",
+        r"^(?:what(?:'s| is)\s+(?:the\s+)?active\s+(?:window|app)|what\s+(?:window|app)\s+is\s+active|which\s+(?:window|app)\s+is\s+active|what\s+app\s+am\s+i\s+in|which\s+app\s+am\s+i\s+in)\??$",
         r"^(?:what(?:'s| is)|which)\s+(?:window|app)\s+is\s+active\??$",
         r"^active window\??$",
         r"^(?:list|show|what(?:'s| is))\s+(?:open\s+)?windows?\??$",
@@ -780,6 +782,36 @@ class ActionExecutor:
         return any(trigger in text for trigger in self.ACTION_TRIGGERS) or any(
             re.search(pattern, text) for pattern in self.DESKTOP_ACTION_PATTERNS
         )
+
+    def is_permission_response(self, user_input: str) -> bool:
+        text = (user_input or "").strip().lower()
+        if not text:
+            return False
+        return (
+            self._matches_any_phrase(text, SESSION_APPROVAL_WORDS)
+            or self._matches_any_phrase(text, YES_WORDS)
+            or self._matches_any_phrase(text, NO_WORDS)
+        )
+
+    def pending_action_snapshot(self) -> dict:
+        plan = dict(self.pending_action or {})
+        action_type = str(plan.get("action_type", "") or "").strip()
+        description = str(plan.get("description", "") or "").strip()
+        command = str(plan.get("command", "") or "").strip()
+        return {
+            "action_type": action_type,
+            "description": description[:180],
+            "command": command[:180],
+            "verdict": self.pending_verdict,
+            "source": self.pending_action_source,
+        }
+
+    def cancel_pending_action(self, reason: str = "cancelled") -> None:
+        snapshot = self.pending_action_snapshot()
+        if snapshot.get("action_type") or snapshot.get("description") or snapshot.get("command"):
+            self._audit(f"PENDING_ACTION_{reason.upper()}", self.pending_action, source=self.current_input_source)
+            log_runtime("executor_pending_action_cleared", reason=reason, pending_action=snapshot)
+        self._clear_pending_action()
 
     # ─────────────────────────────────────────────────────────────
     # PERMISSION CHECK: Are we waiting for yes/no?
@@ -1113,15 +1145,41 @@ class ActionExecutor:
         """
         # ── Try direct pattern matching first (fast, reliable) ──
         plan = self._pattern_match(user_input)
+        log_runtime(
+            "executor_plan_pattern",
+            text=str(user_input or "")[:240],
+            matched=bool(plan),
+            action_type=(plan or {}).get("action_type", ""),
+            description=str((plan or {}).get("description", "") or "")[:180],
+            input_source=self.current_input_source,
+        )
 
         # ── Fall back to AI JSON planning if no pattern matched ──
         if not plan:
             plan = self._ai_plan(user_input)
+            log_runtime(
+                "executor_plan_ai",
+                text=str(user_input or "")[:240],
+                matched=bool(plan),
+                action_type=(plan or {}).get("action_type", ""),
+                description=str((plan or {}).get("description", "") or "")[:180],
+                input_source=self.current_input_source,
+            )
 
         if not plan:
+            log_runtime(
+                "executor_plan_failed",
+                text=str(user_input or "")[:240],
+                input_source=self.current_input_source,
+            )
             return "I couldn't figure out how to do that. Could you rephrase it?"
 
         if plan.get("action_type") == "unsupported":
+            log_runtime(
+                "executor_plan_unsupported",
+                text=str(user_input or "")[:240],
+                description=str(plan.get("description", "") or "")[:180],
+            )
             return "I'm not sure how to do that safely. Could you describe it differently?"
 
         # ── Run security assessment ──────────────────────────
@@ -1134,6 +1192,15 @@ class ActionExecutor:
         if chain_warning and verdict == SAFE:
             verdict = WARNING
             security_msg = chain_warning
+        log_runtime(
+            "executor_plan_verdict",
+            action_type=plan.get("action_type", ""),
+            description=str(plan.get("description", "") or "")[:180],
+            verdict=verdict,
+            security_message=str(security_msg or "")[:220],
+            approval_level=self._approval_level(plan, verdict),
+            input_source=self.current_input_source,
+        )
         header = self.security.format_security_header(verdict)
 
         if verdict == BLOCKED:
@@ -1177,6 +1244,14 @@ class ActionExecutor:
             security_reason=security_msg,
         )
         permission_msg = self._build_permission_request(plan)
+        log_runtime(
+            "executor_permission_requested",
+            action_type=plan.get("action_type", ""),
+            verdict=verdict,
+            description=str(plan.get("description", "") or "")[:180],
+            message=permission_msg[:220],
+            input_source=self.current_input_source,
+        )
 
         if verdict in (WARNING, NEED_ADMIN):
             return f"{header}\n{security_msg}\n\n{permission_msg}"
@@ -1487,7 +1562,10 @@ class ActionExecutor:
                     "is_dangerous": False,
                 }
 
-        if re.search(r"^(?:what(?:'s| is)|which)\s+(?:window|app)\s+is\s+active\??$|^active window\??$", text):
+        if re.search(
+            r"^(?:what(?:'s| is)\s+(?:the\s+)?active\s+(?:window|app)|what\s+(?:window|app)\s+is\s+active|which\s+(?:window|app)\s+is\s+active|what\s+app\s+am\s+i\s+in|which\s+app\s+am\s+i\s+in)\??$|^active window\??$",
+            text,
+        ):
             return {
                 "action_type": "active_window",
                 "description": "report the active desktop window",
@@ -1731,6 +1809,36 @@ class ActionExecutor:
                 "description": f"play {query or 'music'}",
                 "search_query": query or "popular music",
                 "is_dangerous": False
+            }
+
+        incognito_match = re.search(
+            r"^(?:open|launch|start)\s+(.+?)\s+in\s+incognito$",
+            raw,
+            re.IGNORECASE,
+        )
+        if incognito_match:
+            target = incognito_match.group(1).strip(" \"'")
+            target_lower = target.lower()
+            if target_lower in {"this", "that", "it", "current page", "current tab"}:
+                return {
+                    "action_type": "open_app",
+                    "description": "open a new incognito browser window",
+                    "app_name": "chrome",
+                    "command": 'start "" chrome --incognito',
+                    "is_dangerous": False,
+                }
+            looks_like_url = bool(re.match(r"^(?:https?://|www\.)", target, re.IGNORECASE)) or "." in target
+            if looks_like_url:
+                url = target if re.match(r"^https?://", target, re.IGNORECASE) else f"https://{target}"
+            else:
+                url = f"https://www.google.com/search?q={quote_plus(target)}"
+            return {
+                "action_type": "open_app",
+                "description": f"open '{target}' in an incognito browser window",
+                "app_name": "chrome",
+                "command": f'start "" chrome --incognito "{url}"',
+                "url": url,
+                "is_dangerous": False,
             }
 
         # ── Open app ──────────────────────────────────────────
@@ -2008,6 +2116,14 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
 
         # ── Execute and verify ────────────────────────────────
         result, success = self._execute_with_verify(plan)
+        log_runtime(
+            "executor_execute_result",
+            action_type=plan.get("action_type", ""),
+            verdict=verdict,
+            success=bool(success),
+            result=str(result or "")[:240],
+            input_source=source,
+        )
 
         if success:
             self._record_executed_action(plan, verdict)
