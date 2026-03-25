@@ -47,6 +47,8 @@ class SystemIntel:
             ("battery", self._is_battery_query, self._answer_battery_query),
             ("storage", self._is_storage_query, lambda: self._answer_storage_query(query)),
             ("memory", self._is_memory_query, self._answer_memory_query),
+            ("cpu", self._is_cpu_query, self._answer_cpu_query),
+            ("performance", self._is_performance_query, self._answer_performance_query),
             ("hostname", self._is_hostname_query, self._answer_hostname_query),
             ("os", self._is_os_query, self._answer_os_query),
             ("network", self._is_network_query, lambda: self._answer_network_query(query)),
@@ -88,6 +90,35 @@ class SystemIntel:
         return any(
             phrase in lowered
             for phrase in ["computer name", "hostname", "device name", "machine name"]
+        )
+
+    def _is_cpu_query(self, lowered: str) -> bool:
+        return any(
+            phrase in lowered
+            for phrase in [
+                "cpu usage",
+                "processor usage",
+                "cpu load",
+                "processor load",
+                "what's using my cpu",
+                "what is using my cpu",
+                "using my processor",
+                "cpu right now",
+            ]
+        )
+
+    def _is_performance_query(self, lowered: str) -> bool:
+        return any(
+            phrase in lowered
+            for phrase in [
+                "why is my computer slow",
+                "why is my pc slow",
+                "why is my laptop slow",
+                "what's slowing down my computer",
+                "what is slowing down my computer",
+                "why is this machine slow",
+                "why is the system slow",
+            ]
         )
 
     def _is_os_query(self, lowered: str) -> bool:
@@ -166,6 +197,42 @@ Get-CimInstance Win32_OperatingSystem |
             f"{free_gb:.1f} GB free out of {total_gb:.1f} GB."
         )
 
+    def _answer_cpu_query(self) -> str:
+        payload = self._read_performance_snapshot()
+        if not payload:
+            return "I couldn't read current CPU usage from the local system right now."
+
+        cpu_percent = self._safe_float(payload.get("CpuPercent"))
+        top = self._format_top_processes(payload.get("TopCpu"))
+        if cpu_percent is None:
+            return "I couldn't read current CPU usage from the local system right now."
+
+        message = f"CPU usage is about {cpu_percent:.0f}% right now."
+        if top:
+            message += f" Top CPU activity: {top}."
+        return message
+
+    def _answer_performance_query(self) -> str:
+        payload = self._read_performance_snapshot()
+        if not payload:
+            return "I couldn't read local performance counters right now."
+
+        cpu_percent = self._safe_float(payload.get("CpuPercent"))
+        free_gb, total_gb, used_percent = self._memory_summary_from_payload(payload)
+        top = self._format_top_processes(payload.get("TopCpu"))
+
+        bits = []
+        if cpu_percent is not None:
+            bits.append(f"CPU is around {cpu_percent:.0f}%")
+        if used_percent is not None and free_gb is not None and total_gb is not None:
+            bits.append(f"memory is about {used_percent:.0f}% used with {free_gb:.1f} GB free out of {total_gb:.1f} GB")
+        if top:
+            bits.append(f"top CPU activity looks like {top}")
+
+        if not bits:
+            return "I couldn't find a clear local performance bottleneck right now."
+        return "Right now, " + "; ".join(bits) + "."
+
     def _answer_hostname_query(self) -> str:
         name = os.getenv("COMPUTERNAME") or platform.node() or "unknown"
         return f"This machine is named {name}."
@@ -205,6 +272,53 @@ Get-NetConnectionProfile |
                 f"IPv4 status {ipv4}, local IP {local_ip}."
             )
         return f"Network looks {online_text}. Connected to {name} ({category}), IPv4 status {ipv4}."
+
+    def _read_performance_snapshot(self) -> Optional[dict[str, Any]]:
+        return self._run_powershell_json(
+            r"""
+$cpu = (Get-Counter '\Processor(_Total)\% Processor Time').CounterSamples |
+  Select-Object -First 1
+$topCpu = (Get-Counter '\Process(*)\% Processor Time').CounterSamples |
+  Where-Object { $_.InstanceName -and $_.InstanceName -notmatch '^(idle|_total)$' } |
+  Sort-Object CookedValue -Descending |
+  Select-Object -First 5 @{Name='Name';Expression={$_.InstanceName}}, @{Name='CpuPercent';Expression={[math]::Round($_.CookedValue / [Environment]::ProcessorCount, 1)}}
+$memory = Get-CimInstance Win32_OperatingSystem |
+  Select-Object FreePhysicalMemory, TotalVisibleMemorySize
+
+[PSCustomObject]@{
+  CpuPercent = [math]::Round($cpu.CookedValue, 1)
+  TopCpu = $topCpu
+  FreePhysicalMemory = $memory.FreePhysicalMemory
+  TotalVisibleMemorySize = $memory.TotalVisibleMemorySize
+} | ConvertTo-Json -Compress -Depth 4
+"""
+        )
+
+    def _memory_summary_from_payload(self, payload: dict[str, Any]) -> tuple[Optional[float], Optional[float], Optional[float]]:
+        free_kb = self._safe_float(payload.get("FreePhysicalMemory"))
+        total_kb = self._safe_float(payload.get("TotalVisibleMemorySize"))
+        if free_kb is None or total_kb is None or total_kb <= 0:
+            return None, None, None
+        free_gb = free_kb / (1024 ** 2)
+        total_gb = total_kb / (1024 ** 2)
+        used_percent = ((total_kb - free_kb) / total_kb) * 100
+        return free_gb, total_gb, used_percent
+
+    def _format_top_processes(self, value: Any) -> str:
+        if not isinstance(value, list):
+            return ""
+
+        entries: list[str] = []
+        for item in value[:3]:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("Name") or "").strip()
+            cpu_percent = self._safe_float(item.get("CpuPercent"))
+            if not name or cpu_percent is None or cpu_percent <= 0:
+                continue
+            clean_name = re.sub(r"#\d+$", "", name)
+            entries.append(f"{clean_name} at {cpu_percent:.0f}%")
+        return ", ".join(entries)
 
     def _run_powershell_json(self, script: str) -> Optional[dict[str, Any]]:
         try:
@@ -253,6 +367,12 @@ Get-NetConnectionProfile |
         if anchor:
             return anchor
         return os.getenv("SystemDrive", "C:") + "\\"
+
+    def _safe_float(self, value: Any) -> Optional[float]:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
     def _cache_get(self, key: str) -> Optional[str]:
         cached = self._cache.get(key)

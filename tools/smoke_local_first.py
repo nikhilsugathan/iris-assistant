@@ -19,6 +19,7 @@ if str(WORKSPACE) not in sys.path:
 from config import Config
 import core.brain as brain_module
 from core.engine import IRISEngine
+from core.system_intel import SystemIntel
 from core.voice import TranscriptCandidate, Voice
 
 
@@ -355,6 +356,44 @@ def test_local_tts_engine_reuse() -> None:
             pass
 
 
+def test_system_performance_queries() -> None:
+    intel = SystemIntel()
+    original_reader = intel._read_performance_snapshot
+    intel._read_performance_snapshot = lambda: {  # type: ignore[method-assign]
+        "CpuPercent": 76.2,
+        "TopCpu": [
+            {"Name": "chrome#1", "CpuPercent": 32.4},
+            {"Name": "Code", "CpuPercent": 18.8},
+            {"Name": "ollama", "CpuPercent": 9.1},
+        ],
+        "FreePhysicalMemory": 6 * 1024 * 1024,
+        "TotalVisibleMemorySize": 16 * 1024 * 1024,
+    }
+
+    try:
+        cpu_answer = intel.answer_query("what's using my cpu right now")
+        assert_true(
+            "CPU usage is about 76%" in cpu_answer,
+            "CPU query did not report the local CPU percentage.",
+        )
+        assert_true(
+            "chrome at 32%" in cpu_answer.lower(),
+            "CPU query did not include the top local CPU process summary.",
+        )
+
+        slow_answer = intel.answer_query("why is my computer slow")
+        assert_true(
+            "cpu is around 76%" in slow_answer.lower(),
+            "Performance query did not surface the local CPU bottleneck summary.",
+        )
+        assert_true(
+            "memory is about 62% used" in slow_answer.lower(),
+            "Performance query did not include the local memory summary.",
+        )
+    finally:
+        intel._read_performance_snapshot = original_reader  # type: ignore[method-assign]
+
+
 def test_ollama_stream_chunk_parsing() -> None:
     engine = IRISEngine(text_mode=True)
     original_post = brain_module.requests.post
@@ -395,6 +434,7 @@ def main() -> None:
     test_voice_preferences()
     test_background_speech_cancellation()
     test_local_tts_engine_reuse()
+    test_system_performance_queries()
     test_ollama_stream_chunk_parsing()
     print("PASS: IRIS local-first smoke test completed.")
 
