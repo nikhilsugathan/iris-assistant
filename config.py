@@ -4,6 +4,7 @@ IRIS Configuration
 """
 
 import os
+import sys
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -146,3 +147,55 @@ Bad examples:
 - "What do you need help with?"
 - "I'd be happy to assist."
 - long multi-sentence explanations."""
+
+    # ───────────────────────────────────────────────────────────
+    # STARTUP VALIDATION
+    # ───────────────────────────────────────────────────────────
+    @classmethod
+    def validate(cls):
+        """Check configuration at startup and warn about problems."""
+        warnings = []
+        errors = []
+
+        # At least one LLM provider must be configured
+        has_cloud_key = any([
+            cls.GROQ_API_KEY,
+            cls.GEMINI_API_KEY,
+            cls.CLAUDE_API_KEY,
+            cls.PERPLEXITY_API_KEY,
+        ])
+
+        if not has_cloud_key:
+            warnings.append(
+                "No cloud API keys set. IRIS will only work if Ollama is running locally. "
+                "Set at least GROQ_API_KEY in your .env file for cloud fallback."
+            )
+
+        # Groq is needed for STT (Whisper)
+        if not cls.GROQ_API_KEY:
+            warnings.append(
+                "GROQ_API_KEY is empty. Voice commands will fall back to Google STT "
+                "(slower, less accurate). Groq Whisper is the recommended STT provider."
+            )
+
+        # Check .env file exists
+        if not os.path.exists(".env"):
+            warnings.append(
+                "No .env file found. Copy .env.example to .env and fill in your keys: "
+                "cp .env.example .env"
+            )
+
+        # Print results
+        if errors:
+            for e in errors:
+                print(f"  [FATAL] {e}")
+            sys.exit(1)
+
+        if warnings:
+            print("  ── Config Warnings ──")
+            for w in warnings:
+                print(f"  [!] {w}")
+            print()
+
+        return len(warnings) == 0
+
