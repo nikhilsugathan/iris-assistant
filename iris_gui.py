@@ -4,6 +4,7 @@ import html
 import math
 import os
 import sys
+import time
 from pathlib import Path
 
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -331,10 +332,14 @@ class EngineWorker(QtCore.QThread):
                     )
                     return
                 ack_token = self.engine.begin_slow_voice_ack(captured, enabled=True)
+                result = None
                 try:
                     result = self.engine.process_user_input(captured, speak_response=False, input_source="voice")
                 finally:
-                    self.engine.finish_slow_voice_ack(ack_token, stop_audio=True)
+                    self.engine.finish_slow_voice_ack(
+                        ack_token,
+                        stop_audio=not bool(getattr(result, "speech_started", False)),
+                    )
                 self.completed.emit({"captured": captured, "result": result, "mode": "listen"})
                 return
 
@@ -640,7 +645,36 @@ class IrisWindow(QtWidgets.QMainWindow):
             return
 
         delay_ms = max(0, int(getattr(Config, "STARTUP_LISTEN_AFTER_GREETING_MS", 180)))
-        QtCore.QTimer.singleShot(delay_ms, self._start_voice_standby)
+        max_wait_ms = 6000
+        poll_ms = 120
+        if started_wait_at is None:
+            started_wait_at = time.monotonic()
+
+        waited_ms = int((time.monotonic() - started_wait_at) * 1000)
+        if waited_ms < delay_ms:
+            remaining_ms = max(1, delay_ms - waited_ms)
+            QtCore.QTimer.singleShot(
+                remaining_ms,
+                lambda: self._start_voice_standby_after_greeting(greeting_thread, started_wait_at),
+            )
+            return
+
+        greeting_alive = False
+        is_alive = getattr(greeting_thread, "is_alive", None)
+        if callable(is_alive):
+            try:
+                greeting_alive = bool(is_alive())
+            except Exception:
+                greeting_alive = False
+
+        if waited_ms < max_wait_ms and (greeting_alive or self.engine.voice.current_state == "speaking"):
+            QtCore.QTimer.singleShot(
+                poll_ms,
+                lambda: self._start_voice_standby_after_greeting(greeting_thread, started_wait_at),
+            )
+            return
+
+        self._start_voice_standby()
 
     def _stop_voice_standby(self):
         if not self.wake_worker:
@@ -993,7 +1027,7 @@ class IrisWindow(QtWidgets.QMainWindow):
         self.append_message(result.label, result.response, kind)
         self._set_mode_banner(f"{result.mode.upper()} MODE")
         self.refresh_status()
-        if speak and not getattr(result, "exit_immediately", False):
+        if speak and not getattr(result, "exit_immediately", False) and not getattr(result, "speech_started", False):
             self.engine.voice.speak_background(result.response)
         if self.tray and not self.isVisible():
             snippet = result.response if len(result.response) < 180 else result.response[:177] + "..."

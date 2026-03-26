@@ -44,6 +44,9 @@ class FakeVoice:
         self.sync_spoken: list[str] = []
         self.background_spoken: list[str] = []
         self.command_interrupt_flags: list[bool] = []
+        self.stop_calls = 0
+        self.sequence_chunks: list[tuple[int, str, bool]] = []
+        self._sequence_id = 0
 
     def set_state_callback(self, callback) -> None:
         self._state_callback = callback
@@ -88,10 +91,25 @@ class FakeVoice:
         return self.speak_background(text)
 
     def stop_speaking(self) -> None:
+        self.stop_calls += 1
         self._emit_state("idle")
 
     def stop(self) -> None:
         self.stop_speaking()
+
+    def begin_background_speech_sequence(self, cancel_pending: bool = True) -> int:
+        self._sequence_id += 1
+        return self._sequence_id
+
+    def queue_background_speech(
+        self,
+        text: str,
+        generation_id: int,
+        backend_priority: str | None = None,
+        interrupt_current: bool = False,
+    ):
+        self.sequence_chunks.append((generation_id, text, bool(interrupt_current)))
+        return None
 
     def describe_last_listen_feedback(self) -> str:
         return "Voice standby feedback."
@@ -109,6 +127,7 @@ def main() -> None:
     engine = IRISEngine(text_mode=True)
     normal_engine = None
     repeat_engine = None
+    stream_engine = None
     fake_voice = FakeVoice()
     engine.voice = fake_voice
 
@@ -229,6 +248,52 @@ def main() -> None:
             "Voice-repeat handling should capture one follow-up command without requiring a new wake phrase.",
         )
 
+        stream_engine = IRISEngine(text_mode=True)
+        stream_voice = FakeVoice()
+        stream_engine.voice = stream_voice
+        stream_engine.autocorrect.correct_input = lambda text: (text, 1.0)  # type: ignore[method-assign]
+        stream_engine.dialog_manager.analyze = lambda *args, **kwargs: EngineResult(  # type: ignore[method-assign]
+            label=Config.PUBLIC_NAME,
+            response="",
+            mode="chat",
+        )
+        stream_engine.council.deliberate = lambda *args, **kwargs: type(  # type: ignore[method-assign]
+            "Packet",
+            (),
+            {
+                "roles": [],
+                "preferred_apis": [],
+                "extra_system": "",
+                "allow_long_response": False,
+            },
+        )()
+        stream_engine.self_model.observe_user_input = lambda *args, **kwargs: None  # type: ignore[method-assign]
+        stream_engine.self_model.apply_council = lambda *args, **kwargs: None  # type: ignore[method-assign]
+        stream_engine.self_model.note_response = lambda *args, **kwargs: None  # type: ignore[method-assign]
+        stream_engine.self_model.note_success = lambda *args, **kwargs: None  # type: ignore[method-assign]
+        stream_engine.self_model.note_failure = lambda *args, **kwargs: None  # type: ignore[method-assign]
+
+        def fake_streaming_think(user_input: str, council_packet=None, stream_callback=None) -> str:
+            if stream_callback:
+                stream_callback("First streamed sentence.")
+            return "First streamed sentence."
+
+        stream_engine.brain.think_with_stream = fake_streaming_think  # type: ignore[method-assign]
+        streamed_result = stream_engine.process_voice_turn(
+            "what is recursion?",
+            input_source="voice",
+            enable_slow_ack=True,
+        )
+        assert_true(streamed_result.speech_started, "Streamed voice responses should mark speech as already started.")
+        assert_true(
+            stream_voice.sequence_chunks == [(1, "First streamed sentence.", True)],
+            "Streamed voice responses should queue the first spoken chunk once.",
+        )
+        assert_true(
+            stream_voice.stop_calls == 1,
+            "Voice processing should not stop the streamed reply after queuing it.",
+        )
+
         print("PASS: IRIS voice standby smoke test completed.")
     finally:
         engine.shutdown()
@@ -240,6 +305,11 @@ def main() -> None:
         try:
             if repeat_engine is not None:
                 repeat_engine.shutdown()
+        except Exception:
+            pass
+        try:
+            if stream_engine is not None:
+                stream_engine.shutdown()
         except Exception:
             pass
         if owns_app:

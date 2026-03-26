@@ -18,7 +18,7 @@ if str(WORKSPACE) not in sys.path:
 from PySide6 import QtGui, QtTest, QtWidgets
 
 from config import Config
-from core.engine import IRISEngine
+from core.engine import EngineResult, IRISEngine
 from core.runtime_log import get_runtime_log_path
 from core.visual_identity import create_app_icon
 from iris_gui import IrisWindow
@@ -32,6 +32,14 @@ def assert_true(condition: bool, message: str) -> None:
 class FakeRunningWorker:
     def isRunning(self) -> bool:
         return True
+
+
+class FakeGreetingThread:
+    def __init__(self, alive: bool = True) -> None:
+        self.alive = alive
+
+    def is_alive(self) -> bool:
+        return self.alive
 
 
 def configure_app(app: QtWidgets.QApplication) -> None:
@@ -145,6 +153,59 @@ def main() -> None:
         window.on_voice_state("thinking")
         app.processEvents()
         assert_true(window.state_pill.text() == "THINKING", "Voice-state updates did not reach the dashboard.")
+
+        original_listen_after = Config.STARTUP_LISTEN_AFTER_GREETING_MS
+        original_start_voice_standby = window._start_voice_standby
+        original_start_enabled = window._start_voice_standby_enabled
+        try:
+            Config.STARTUP_LISTEN_AFTER_GREETING_MS = 0
+            window._start_voice_standby_enabled = True
+            startup_calls: list[str] = []
+            fake_greeting_thread = FakeGreetingThread(alive=True)
+            window._start_voice_standby = lambda: startup_calls.append("started")  # type: ignore[method-assign]
+            engine.voice.current_state = "speaking"
+            window._start_voice_standby_after_greeting(fake_greeting_thread)
+            QtTest.QTest.qWait(40)
+            app.processEvents()
+            assert_true(
+                startup_calls == [],
+                "Startup standby should wait for the greeting speech to finish.",
+            )
+            fake_greeting_thread.alive = False
+            engine.voice.current_state = "idle"
+            QtTest.QTest.qWait(180)
+            app.processEvents()
+            assert_true(
+                startup_calls == ["started"],
+                "Startup standby should begin after the greeting speech finishes.",
+            )
+        finally:
+            Config.STARTUP_LISTEN_AFTER_GREETING_MS = original_listen_after
+            window._start_voice_standby_enabled = original_start_enabled
+            window._start_voice_standby = original_start_voice_standby  # type: ignore[method-assign]
+
+        spoken_results: list[str] = []
+        original_speak_background = engine.voice.speak_background
+        engine.voice.speak_background = lambda text: spoken_results.append(text)  # type: ignore[method-assign]
+        window.on_worker_completed(
+            {
+                "captured": "streamed question",
+                "result": EngineResult(
+                    label=Config.PUBLIC_NAME,
+                    response="Already streamed.",
+                    should_exit=False,
+                    mode="chat",
+                    speech_started=True,
+                ),
+                "mode": "listen",
+            }
+        )
+        app.processEvents()
+        assert_true(
+            spoken_results == [],
+            "GUI listen handling should not replay a response that already started streaming.",
+        )
+        engine.voice.speak_background = original_speak_background  # type: ignore[method-assign]
 
         window.toggle_overdrive()
         app.processEvents()

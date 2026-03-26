@@ -600,10 +600,15 @@ class IRISEngine:
         enable_slow_ack: bool = True,
     ) -> EngineResult:
         ack_token = self.begin_slow_voice_ack(command_text, enabled=enable_slow_ack)
+        result = None
         try:
-            return self.process_user_input(command_text, speak_response=False, input_source=input_source)
+            result = self.process_user_input(command_text, speak_response=False, input_source=input_source)
+            return result
         finally:
-            self.finish_slow_voice_ack(ack_token, stop_audio=True)
+            self.finish_slow_voice_ack(
+                ack_token,
+                stop_audio=not bool(getattr(result, "speech_started", False)),
+            )
 
     def _make_voice_stream_state(self, input_source: str, speak_response: bool, allow_long_response: bool) -> dict:
         state = {"started": False, "callback": None}

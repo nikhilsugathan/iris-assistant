@@ -152,6 +152,30 @@ def main() -> None:
             "Accepted local command transcripts should update the recent command language cache.",
         )
 
+        Config.STT_PRIORITY = "system_only"
+        system_only_calls: list[str] = []
+        voice._transcribe_faster_whisper_candidate = lambda audio: system_only_calls.append("faster_whisper") or TranscriptCandidate(  # type: ignore[method-assign]
+            backend="faster_whisper",
+            text="from whisper",
+            confidence=0.99,
+            language="en",
+        )
+        voice._transcribe_windows_candidate = lambda audio: system_only_calls.append("system") or TranscriptCandidate(  # type: ignore[method-assign]
+            backend="system",
+            text="from system",
+            confidence=0.99,
+            language="en-US",
+        )
+        voice._transcribe_groq_candidate = lambda audio: system_only_calls.append("groq") or TranscriptCandidate(backend="groq")  # type: ignore[method-assign]
+        voice._transcribe_google_candidate = lambda audio: system_only_calls.append("google") or TranscriptCandidate(backend="google")  # type: ignore[method-assign]
+        text = voice._transcribe_command(short_audio)
+        assert_true(text == "from system", "System-only STT should return the Windows recognizer result.")
+        assert_true(
+            system_only_calls == ["system"],
+            "System-only STT should not consult faster-whisper or cloud backends.",
+        )
+        Config.STT_PRIORITY = "adaptive"
+
         local_whisper_calls["count"] = 0
         voice._transcribe_faster_whisper_candidate = lambda audio: TranscriptCandidate(backend="faster_whisper", text="")  # type: ignore[method-assign]
         voice._transcribe_windows_candidate = lambda audio: TranscriptCandidate(  # type: ignore[method-assign]
