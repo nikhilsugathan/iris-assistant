@@ -1,18 +1,51 @@
-﻿# API keys and secrets — NEVER commit these
-.env
+# ═══════════════════════════════════════════════════════════
+# IRIS .gitignore
+# ═══════════════════════════════════════════════════════════
 
-# Python cache
+# ── Secrets — NEVER commit these ─────────────────────────
+.env
+.env.*
+.env.local
+.env.production
+.env.staging
+
+# ── Python cache ─────────────────────────────────────────
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
 
-# Memory and logs — personal data
+# ── Virtual environments ─────────────────────────────────
+venv/
+.venv/
+env/
+
+# ── Distribution / build ─────────────────────────────────
+dist/
+build/
+*.egg-info/
+
+# ── IRIS runtime data (personal) ─────────────────────────
 iris_memory.json
 iris_actions.log
+*.log
 
-# VS Code
+# ── TTS temp artifacts ───────────────────────────────────
+# Edge TTS writes MP3s to temp; leaked files end up here
+tts_temp/
+*.tmp
+
+# ── IDEs ─────────────────────────────────────────────────
 .vscode/
+.idea/
+*.swp
+*.swo
+*~
 
-# Windows
+# ── OS files ─────────────────────────────────────────────
 Thumbs.db
 desktop.ini
+.DS_Store
+
+# ── Playwright / browser state ───────────────────────────
+browser_data/
