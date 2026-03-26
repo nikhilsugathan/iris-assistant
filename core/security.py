@@ -1,5 +1,5 @@
 """
-JARVIS Security Guard
+IRIS Security Guard
 ======================
 Every single action passes through here before execution.
 No exceptions.
@@ -135,7 +135,7 @@ class SecurityGuard:
         # ── Layer 1: Hard blocks (no override ever) ────────────
         blocked, reason = self._check_hard_blocks(command)
         if blocked:
-            return BLOCKED, f"Can't do that — {reason}. Say 'override' to force it."
+            return BLOCKED, f"Can't do that — {reason}. This is a hard security block."
 
         # ── Layer 2: Admin rights check ────────────────────────
         needs_admin, admin_reason = self._check_admin_required(command)
@@ -335,9 +335,9 @@ Rules:
     def format_security_header(self, verdict: str) -> str:
         """Return a spoken/printed header for security messages."""
         headers = {
-            BLOCKED:    "🔴 JARVIS Security — BLOCKED",
-            WARNING:    "🟡 JARVIS Security — WARNING",
-            NEED_ADMIN: "🔵 JARVIS Security — ADMIN REQUIRED",
+            BLOCKED:    "🔴 IRIS Security — BLOCKED",
+            WARNING:    "🟡 IRIS Security — WARNING",
+            NEED_ADMIN: "🔵 IRIS Security — ADMIN REQUIRED",
             SAFE:       "",
         }
         return headers.get(verdict, "")
