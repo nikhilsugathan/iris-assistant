@@ -184,19 +184,29 @@ class ActionExecutor:
     def handle_permission_response(self, user_input: str) -> str:
         """
         User responded to a permission or security request.
-        No filtering — you're the admin, your word is final.
-        Say 'override' to bypass any security warning or block.
+        Override is allowed for WARNING and NEED_ADMIN verdicts only.
+        BLOCKED verdicts cannot be overridden — they are hard security limits.
         """
         text = user_input.lower().strip()
 
-        # ── Admin override — bypasses everything including hard blocks ──
+        # ── Admin override — only for WARNING and NEED_ADMIN, never BLOCKED ──
         if "override" in text:
+            if self.pending_verdict == BLOCKED:
+                self._log(f"OVERRIDE DENIED (BLOCKED): {self.pending_action.get('command', '?')}")
+                self.pending_action = None
+                self.pending_verdict = None
+                return (
+                    "That action is hard-blocked for security reasons. "
+                    "Override is not available for blocked commands. Cancelled."
+                )
             cmd = self.pending_action.get("command") or self.pending_action.get("description", "?")
-            self._log(f"ADMIN OVERRIDE: {cmd}")
+            self._log(f"ADMIN OVERRIDE [{self.pending_verdict}]: {cmd}")
             return self._execute_pending()
 
-        # ── Yes — proceed ──
+        # ── Yes — proceed (but not for BLOCKED) ──
         if any(word in text for word in YES_WORDS):
+            if self.pending_verdict == BLOCKED:
+                return "That action is blocked. Say 'cancel' to dismiss."
             return self._execute_pending()
 
         # ── No — cancel ──
@@ -218,18 +228,20 @@ class ActionExecutor:
 
     SIMPLE_ACTIONS = [
         "create_file", "create_folder", "open_app",
-        "search_web", "write_to_file"
+        "search_web", "write_to_file", "play_music"
     ]
 
     def _is_simple_task(self, plan: dict, verdict: str) -> bool:
         """
-        Everything that isn't a security/ethical issue executes automatically.
-        JARVIS thinks and acts like a human assistant — no permission needed
-        for normal tasks. Only BLOCKED, WARNING, NEED_ADMIN stop for auth.
+        Only actions in SIMPLE_ACTIONS auto-execute when verdict is SAFE.
+        run_command and install_package always ask for permission first,
+        even when the security check passes — because those actions run
+        shell commands that could come from AI-generated plans.
         """
         if verdict in (BLOCKED, WARNING, NEED_ADMIN):
             return False
-        return True  # SAFE verdict = just do it
+        action_type = plan.get("action_type", "")
+        return action_type in self.SIMPLE_ACTIONS
 
     # ─────────────────────────────────────────────────────────────
     # COGNITIVE FILE NAMING: auto-rename if file already exists
@@ -284,9 +296,9 @@ class ActionExecutor:
 
         if verdict == BLOCKED:
             self._log(f"BLOCKED: {plan.get('command','?')} — {security_msg}")
-            self.pending_action  = plan
-            self.pending_verdict = verdict
-            return f"{header}\n{security_msg}\n\nSay 'override' to run it anyway, or 'cancel' to drop it."
+            self.pending_action  = None
+            self.pending_verdict = None
+            return f"{header}\n{security_msg}\n\nThis action has been blocked and cannot be executed."
 
         # ── Simple safe task — execute with verification ─────
         if self._is_simple_task(plan, verdict):
@@ -530,9 +542,6 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
         except Exception:
             return None
 
-        # SAFE — just ask
-        return permission_msg
-
     def _build_permission_request(self, plan: dict) -> str:
         """Direct, no-nonsense permission request."""
         description = plan.get("description", "perform this action")
@@ -722,20 +731,38 @@ Respond with ONLY the JSON. No explanation."""
             return None
 
     def _run_command(self, plan: dict) -> str:
-        """Run a shell command with cognitive thinking."""
+        """Run a shell command with defense-in-depth security re-check."""
         command = plan.get("command", "")
         if not command:
             return "No command to run."
 
+        # ── Defense in depth: re-check blocked patterns before execution ──
+        # This catches cases where override, improv, or AI retry bypassed
+        # the initial security gate.
+        from core.security import BLOCKED_COMMANDS
+        cmd_lower = command.lower()
+        for pattern in BLOCKED_COMMANDS:
+            if re.search(pattern, cmd_lower, re.IGNORECASE):
+                self._log(f"EXECUTION BLOCKED (defense-in-depth): {command} matched '{pattern}'")
+                return "Blocked — this command matches a hard security rule and cannot run."
+
         self._log(f"RUN: {command}")
 
-        result = subprocess.run(
-            command,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=120
-        )
+        try:
+            result = subprocess.run(
+                command,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                creationflags=subprocess.CREATE_NO_WINDOW if self.is_windows else 0,
+            )
+        except subprocess.TimeoutExpired:
+            self._log(f"TIMEOUT: {command} (exceeded 120s)")
+            return "That command timed out after 2 minutes. It may still be running in the background."
+        except Exception as e:
+            self._log(f"EXCEPTION running command: {command} — {e}")
+            return f"Couldn't run that command: {str(e)[:150]}"
 
         if result.returncode == 0:
             output = result.stdout.strip()
@@ -747,7 +774,6 @@ Respond with ONLY the JSON. No explanation."""
         else:
             err = result.stderr.strip()
             self._log(f"FAILED: {command} — {err}")
-            # Cognitive thinking — try to suggest a fix
             fix = self._think_of_fix(command, err)
             return f"That didn't work. {fix}"
 
