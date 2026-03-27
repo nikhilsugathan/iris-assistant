@@ -1,0 +1,42 @@
+name: Smoke Test
+
+on:
+  pull_request:
+  push:
+    branches:
+      - fixes/brain-safety
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install ruff
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Lint (ruff)
+        run: ruff check core/brain.py
+
+      - name: Smoke — import Brain
+        run: python -c "from core.brain import Brain; print('import OK')"
+
+      - name: Smoke — instantiate Brain with Memory stub
+        run: |
+          python -c "
+          from core.brain import Brain
+          from core.memory import Memory
+          b = Brain(Memory(':memory:'))
+          print('backends:', b.available_apis)
+          "
