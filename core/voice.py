@@ -38,6 +38,17 @@ class Voice:
         self._init_audio()
         self._init_mic()
 
+    @property
+    def io_disabled(self) -> bool:
+        """True when voice I/O (mic + audio) is intentionally disabled.
+
+        This is the case when the instance was created in text mode or when
+        the ``IRIS_DISABLE_VOICE_IO`` environment variable is set to a
+        truthy value (e.g. in CI).
+        """
+        env_flag = os.environ.get("IRIS_DISABLE_VOICE_IO", "").lower()
+        return self.text_mode or env_flag in {"1", "true", "yes"}
+
     # ─────────────────────────────────────────────────────────────
     # INIT
     # ─────────────────────────────────────────────────────────────

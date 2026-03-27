@@ -1,35 +1,144 @@
 """
-IRIS Self-Diagnostics
-=====================
-Provides a runtime-aware health report when the user asks
-why IRIS is not working as expected.
+IRIS Integrated Diagnostics Suite (Engineering Polish)
+======================================================
+Consolidated suite for proactive auto-healing, reactive status reports,
+and CI/CD validation. Fully hardened for Windows and cross-platform use.
 """
 
 from __future__ import annotations
 
+import dataclasses
+import importlib
 import os
-from typing import List
+import shutil
+import subprocess
+import time
+from collections import deque
+from typing import Any, Dict, List  # Removed unused Optional
 
+import requests
 from config import Config
+from core.logger import get_logger
 
+# Guarded Import: Prevents startup crash if the notifications module is missing
+try:
+    from core.notifications import SystemNotifier
+except Exception:
+    SystemNotifier = None
+
+logger = get_logger("Diagnostics")
+
+if SystemNotifier is None:
+    logger.warning("core.notifications module unavailable; desktop alerts disabled.")
+
+@dataclasses.dataclass
+class DiagnosticResult:
+    name: str
+    ok: bool
+    severity: str = "warning"  # info, warning, error, critical
+    message: str = ""
+    details: Dict[str, Any] = dataclasses.field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return dataclasses.asdict(self)
+
+# ─────────────────────────────────────────────────────────────
+# 1. BOOT DIAGNOSTICS (Proactive / Auto-Healing)
+# ─────────────────────────────────────────────────────────────
+
+class BootDiagnostics:
+    def __init__(self):
+        self.notifier = SystemNotifier() if SystemNotifier is not None else None
+        # Dynamic project root for cross-platform portability
+        self.project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def check_ollama(self) -> bool:
+        """Pings local Ollama; attempts auto-start with re-probe if offline."""
+        ollama_url = getattr(Config, "OLLAMA_BASE_URL", "http://localhost:11434")
+        try:
+            resp = requests.get(f"{ollama_url}/api/tags", timeout=2)
+            resp.raise_for_status()
+            return True
+        except requests.exceptions.RequestException:
+            # Use deferred formatting for logging performance
+            logger.warning("Ollama probe failed at %s. Attempting auto-heal...", ollama_url)
+            
+            if self.notifier:
+                self.notifier.send_toast(
+                    "System Warning", 
+                    "Ollama is offline. Starting local model service...", 
+                    "warning"
+                )
+            
+            try:
+                # Windows-specific: Use process groups to ensure easier cleanup
+                creation_flags = 0
+                if os.name == 'nt':
+                    creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP
+
+                subprocess.Popen(
+                    ["ollama", "serve"], 
+                    shell=False, 
+                    stdout=subprocess.DEVNULL, 
+                    stderr=subprocess.DEVNULL,
+                    creationflags=creation_flags
+                )
+                
+                # Give the service time to bind to the port
+                time.sleep(1.5)
+                try:
+                    retry_resp = requests.get(f"{ollama_url}/api/tags", timeout=2)
+                    retry_resp.raise_for_status()
+                    return True
+                except requests.exceptions.RequestException:
+                    logger.exception("Ollama did not respond after starting 'ollama serve'.")
+                    return False
+            except Exception:
+                logger.exception("Failed to launch 'ollama serve' subprocess.")
+                return False
+
+    def run_preflight(self):
+        """Standard check run by launch_iris.bat with robust drive detection."""
+        # Robust cross-platform drive detection
+        drive, _ = os.path.splitdrive(self.project_root)
+        if not drive:
+            drive = os.path.abspath(os.sep)
+
+        try:
+            free_gb = shutil.disk_usage(drive).free / (1024**3)
+            storage_ok = free_gb > 1.0
+        except Exception:
+            logger.exception("Failed to check disk usage for %s", drive)
+            storage_ok = False
+
+        status = {
+            "Ollama": self.check_ollama(),
+            "Workspace": os.path.exists(self.project_root),
+            "Storage": storage_ok
+        }
+
+        if all(status.values()):
+            if self.notifier:
+                # Safe attribute access for dynamic codenames
+                codename = getattr(Config, "INNER_CODENAME", "<unknown>")
+                self.notifier.send_toast(
+                    "IRIS Online", 
+                    f"Core {codename} active. All systems nominal.", 
+                    "info"
+                )
+        else:
+            logger.error("Pre-flight failures detected: %s", status)
+        return status
+
+# ─────────────────────────────────────────────────────────────
+# 2. SELF-DIAGNOSTICS (Reactive / User-Facing)
+# ─────────────────────────────────────────────────────────────
 
 class SelfDiagnostics:
     TRIGGERS = [
-        "self diagnostic",
-        "self-diagnostic",
-        "diagnose yourself",
-        "health check",
-        "status report",
-        "what's wrong with you",
-        "what is wrong with you",
-        "why are you not working",
-        "why aren't you working",
-        "why are you not working as expected",
-        "why is this not working",
-        "why is this not working as expected",
-        "debug yourself",
-        "inspect yourself",
-        "what problem do you have",
+        "self diagnostic", "health check", "status report", 
+        "what's wrong with you", "what is wrong with you", 
+        "why are you not working", "diagnostics"
     ]
 
     def should_handle(self, text: str) -> bool:
@@ -38,104 +147,54 @@ class SelfDiagnostics:
 
     def run(self, user_input: str, brain, voice, executor, copilot, memory, self_model=None) -> str:
         findings: List[str] = []
-        observations: List[str] = []
-        lowered = (user_input or "").lower()
-
         available = list(getattr(brain, "available_apis", []))
-        primary = getattr(Config, "PRIMARY_BRAIN", "unknown")
-        fallback = getattr(Config, "FALLBACK_BRAIN", "unknown")
-
+        primary = getattr(Config, "PRIMARY_BRAIN", "<unset>")
+        
         if not available:
-            findings.append("No language model backends are available, so I cannot reason reliably right now.")
+            findings.append("No active AI backends detected.")
         else:
-            observations.append(
-                f"My active brain routing is {primary} with {fallback} as fallback, and I currently see {', '.join(available)}."
-            )
-            if primary not in available:
-                findings.append(
-                    f"My configured primary brain is {primary}, but it is not currently available. I am relying on fallback routing."
-                )
+            findings.append(f"Connected to {len(available)} APIs (Primary: {primary}).")
 
         if not getattr(voice, "audio_ready", False):
-            findings.append("My audio output is not ready, so speech playback is currently unavailable.")
+            findings.append("Audio output system is offline.")
+        
+        # Precise, line-by-line log scanning
+        action_log = os.path.join(os.path.dirname(os.path.dirname(__file__)), "iris_actions.log")
+        if os.path.exists(action_log):
+            try:
+                with open(action_log, "r", encoding="utf-8") as f:
+                    last_lines = deque(f, maxlen=15)
+                    # Check lines individually to avoid boundary false-positives
+                    if any(tag in line for line in last_lines for tag in ["FAILED:", "EXCEPTION:"]):
+                        findings.append("Recent execution failures detected in logs.")
+            except Exception:
+                logger.exception("Error reading action log during self-test.")
 
-        if not getattr(voice, "mic_ready", False):
-            mic_error = getattr(voice, "mic_error", "") or "the microphone did not initialize cleanly"
-            findings.append(f"My microphone path is degraded: {mic_error}.")
+        return " | ".join(findings) if findings else "All systems nominal."
 
-        if getattr(executor, "waiting_for_permission", lambda: False)():
-            findings.append("I am paused waiting for permission on an action, which can make me seem stuck until you answer.")
-        elif getattr(executor, "waiting_for_clarification", lambda: False)():
-            findings.append("I am waiting for a clarification reply, so the conversation is currently mid-action.")
-        elif getattr(executor, "waiting_for_plan_choice", lambda: False)():
-            findings.append("I generated fallback plans after a failed action and I am waiting for you to choose one.")
+# ─────────────────────────────────────────────────────────────
+# 3. SMOKE TESTS (CI / Validation)
+# ─────────────────────────────────────────────────────────────
 
-        if getattr(copilot, "active", False):
-            observations.append("Co-Pilot mode is active, so I am answering as a guided step-by-step assistant right now.")
-
-        if getattr(Config, "USE_ENSEMBLE", False):
-            findings.append("Ensemble mode is enabled, which improves answer quality sometimes but slows live conversation.")
-
-        if "audio" in lowered or "voice" in lowered or "silent" in lowered or "latency" in lowered:
-            findings.extend(self._voice_findings(voice))
-
-        action_findings = self._recent_action_findings()
-        findings.extend(action_findings)
-
-        turns = len(getattr(memory, "conversation", []))
-        observations.append(f"My memory file is {Config.MEMORY_FILE} and I currently have {turns} stored conversation entries.")
-        if self_model is not None:
-            observations.append(f"My current self-model is {self_model.summary()}.")
-
-        if not findings:
-            findings.append("I do not see a hard failure in my current runtime state. The most likely issues are timing-related voice latency, model availability shifts, or a task-specific failure outside the core loop.")
-
-        top_findings = findings[:4]
-        top_observations = observations[:2]
-
-        lines = [f"Self-diagnostic report from {Config.INNER_CODENAME}:"]
-        for item in top_findings:
-            lines.append(f"- {item}")
-        for item in top_observations:
-            lines.append(f"- {item}")
-
-        return "\n".join(lines)
-
-    def _voice_findings(self, voice) -> List[str]:
-        findings: List[str] = []
-        buffer_size = getattr(Config, "AUDIO_BUFFER_SIZE", 512)
-        chunk_sentences = getattr(Config, "TTS_CHUNK_SENTENCES", 1)
-        poll = getattr(Config, "PLAYBACK_POLL_SECONDS", 0.03)
-
-        findings.append(
-            f"My speech path is using sentence chunking with {chunk_sentences} sentence per chunk, mixer buffer {buffer_size}, and playback poll {poll:.2f}s."
-        )
-
-        if buffer_size > 1024:
-            findings.append("My audio buffer is relatively large, which can increase perceived speech lag.")
-
-        if not getattr(voice, "audio_ready", False):
-            findings.append("That directly explains missing speech output.")
-        else:
-            findings.append("If the first word is still getting clipped, the likely cause is the local audio device or pygame playback starting late rather than the language model itself.")
-
-        return findings
-
-    def _recent_action_findings(self) -> List[str]:
-        log_path = "iris_actions.log"
-        if not os.path.exists(log_path):
-            return []
-
+def run_smoke_tests() -> List[DiagnosticResult]:
+    """CI suite that treats notifications as an optional component."""
+    results = []
+    required = ["core.brain", "core.voice", "core.memory"]
+    optional = ["core.notifications"]
+    
+    for mod in required + optional:
         try:
-            with open(log_path, "r", encoding="utf-8") as f:
-                lines = [line.strip() for line in f.readlines() if line.strip()]
-        except Exception:
-            return []
-
-        recent = lines[-20:]
-        failures = [line for line in recent if any(tag in line for tag in ["FAILED:", "BLOCKED:", "EXCEPTION:"])]
-        if not failures:
-            return []
-
-        latest = failures[-1]
-        return [f"My recent action log shows a failure path: {latest}"]
+            importlib.import_module(mod)
+            results.append(DiagnosticResult(name=f"import:{mod}", ok=True, severity="info"))
+        except Exception as e:
+            severity = "warning" if mod in optional else "critical"
+            results.append(DiagnosticResult(
+                name=f"import:{mod}", ok=False, 
+                severity=severity,
+                message=str(e)
+            ))
+            
+    if not getattr(Config, "INNER_CODENAME", None):
+        results.append(DiagnosticResult("config:codename", False, "error", "INNER_CODENAME missing"))
+        
+    return results
