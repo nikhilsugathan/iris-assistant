@@ -31,7 +31,7 @@ jobs:
         shell: powershell
         run: |
           python -m compileall -q .
-          python -c "import config; import core.brain; import core.engine; import main; print('IMPORTS_OK')"
+          python -c "import config; import core.brain; import core.executor; import main; print('IMPORTS_OK')"
           python -c "from core.voice import Voice; v=Voice(text_mode=True); assert v.io_disabled, 'Voice IO must be disabled in CI'; print('VOICE_IO_DISABLED_OK')"
 
       - name: Run lightweight smoke scripts
