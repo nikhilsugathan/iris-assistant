@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 from rich.console import Console
@@ -102,7 +102,7 @@ class Brain:
         if not self.available_apis:
             logger.warning("No intelligence backends detected (local or cloud)")
 
-    def _compute_priority(self) -> (str, str):
+    def _compute_priority(self) -> Tuple[str, str]:
         """Compute primary and fallback from Config.BRAIN_PRIORITY and detected apis."""
         priority = list(getattr(Config, "BRAIN_PRIORITY", ["groq", "gemini", "claude"]))
         primary = getattr(Config, "PRIMARY_BRAIN", "")
@@ -455,7 +455,7 @@ Return only the improved response."""
             else:
                 text = self._safe_extract(payload, ["choices", "0", "message", "content"])
             if text:
-                text = re.sub(r"^(Iris:|Assistant:)\\s*", "", str(text)).strip()
+                text = re.sub(r"^(Iris:|Assistant:)\s*", "", str(text)).strip()
                 return text or None
         except Exception:
             logger.exception("Ollama call failed for %s", model)

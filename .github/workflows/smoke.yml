@@ -9,6 +9,8 @@ on:
 jobs:
   smoke:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -33,12 +35,14 @@ jobs:
 
       - name: Instantiate Brain with Memory (if available)
         run: |
-          python -c "from core.brain import Brain; import importlib; \
-          try: \
-            from core.memory import Memory; \
-            m=Memory(':memory:'); \
-            b=Brain(m); \
-            print('backends:', getattr(b, 'available_apis', None)); \
-          except Exception as e: \
-            print('Memory import or instantiation failed, skipping instantiation:', e); \
-            exit 0"
+          python3 -c "
+from core.brain import Brain
+import importlib
+try:
+    from core.memory import Memory
+    m=Memory(':memory:')
+    b=Brain(m)
+    print('backends:', getattr(b, 'available_apis', None))
+except Exception as e:
+    print('Memory import or instantiation failed, skipping instantiation:', e)
+" || exit 0
