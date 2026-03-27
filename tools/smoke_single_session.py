@@ -6,7 +6,11 @@ routing, and dialog management — without making any real network calls.
 Intended for CI use only.
 """
 
+import os
 import sys
+
+# Ensure project root is on sys.path when run as `python tools/smoke_single_session.py`
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # ── Imports ───────────────────────────────────────────────────────────
 try:

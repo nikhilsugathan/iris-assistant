@@ -6,7 +6,11 @@ imported and instantiated without errors.  Intended for CI use only —
 no network calls are made and no interactive input is required.
 """
 
+import os
 import sys
+
+# Ensure project root is on sys.path when run as `python tools/smoke_terminal_entry.py`
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # ── Imports ───────────────────────────────────────────────────────────
 try:
