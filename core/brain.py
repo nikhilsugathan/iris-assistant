@@ -156,7 +156,7 @@ class Brain:
                 return str(current).strip()
             return None
         except (ValueError, IndexError, KeyError, TypeError) as e:
-            logger.debug("safe_extract path error %s for path %s; data head: %s", e, path, repr(str(data)[:200]))
+            logger.debug("safe_extract path error %s for path %s; data head: %s", e, path, str(data)[:200])
             return None
         except Exception:
             logger.exception("Unexpected error in safe_extract")
@@ -527,7 +527,7 @@ Return only the improved response."""
             if use_memory:
                 for item in self._memory_context(getattr(Config, "MAX_MEMORY_TURNS", 8)):
                     role = "user" if item.get("role") == "user" else "model"
-                    messages.append({"role": role, "parts": [{"text": item.get("content", "")}]} )
+                    messages.append({"role": role, "parts": [{"text": item.get("content", "")}]})
             messages.append({"role": "user", "parts": [{"text": prompt}]})
             response = client.models.generate_content(model=Config.GEMINI_MODEL, contents=messages, config=types.GenerateContentConfig(system_instruction=self._persona_text(extra_system) if use_persona else None, max_output_tokens=getattr(Config, "GEMINI_MAX_TOKENS", 500), temperature=0.4))
             return getattr(response, "text", None)
