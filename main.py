@@ -1,7 +1,7 @@
 """
 IRIS Main Entry Point
 =====================
-Voice standby mode with tighter wake-word handling.
+Voice standby mode with tighter wake-word handling and proactive boot diagnostics.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from core.brain import Brain
 from core.council import Council
 from core.copilot import CoPilot
 from core.dialog_manager import DialogManager
-from core.diagnostics import SelfDiagnostics
+from core.diagnostics import SelfDiagnostics, BootDiagnostics
 from core.executor import ActionExecutor
 from core.memory import Memory
 from core.self_model import SelfModel
@@ -80,11 +80,9 @@ def contains_wake_word(text: str) -> bool:
     text_l = (text or "").lower().strip()
     wake_words = [w.lower() for w in Config.WAKE_WORDS]
 
-    # exact contains first
     if any(w in text_l for w in wake_words):
         return True
 
-    # tighter fuzzy match on short chunks only
     words = text_l.split()
     chunks = []
     for i in range(len(words)):
@@ -232,6 +230,15 @@ def handle_user_input(
 
 
 def main() -> None:
+    # ── PROACTIVE BOOT DIAGNOSTICS ───────────────────────────────
+    # Run pre-flight checks and auto-heal Ollama before init
+    try:
+        boot_check = BootDiagnostics()
+        boot_check.run_preflight()
+    except Exception as e:
+        console.print(f"[bold yellow]Warning:[/bold yellow] Boot diagnostics failed: {e}")
+    # ─────────────────────────────────────────────────────────────
+
     parser = argparse.ArgumentParser(description="IRIS AI Assistant")
     parser.add_argument("--text", action="store_true", help="Keyboard input mode")
     args = parser.parse_args()
@@ -257,7 +264,6 @@ def main() -> None:
         console.print("[dim]Standby mode active. Call Iris when you need her.[/dim]")
         console.print(f"[dim]Wake words: {', '.join(Config.WAKE_WORDS)}[/dim]\n")
 
-    # How many follow-up turns Iris listens for after being woken
     CONVERSATION_TURNS = 5
 
     while True:
@@ -272,7 +278,6 @@ def main() -> None:
                     break
                 continue
 
-            # ── Standby: wait for wake word ──────────────────────
             heard_text = voice.listen_for_wake()
             if not heard_text:
                 continue
@@ -282,7 +287,6 @@ def main() -> None:
 
             stripped = strip_wake_word(heard_text)
 
-            # Wake word + command in one phrase (e.g. "Iris open notepad")
             if stripped:
                 console.print(f"[green]Wake detected:[/green] {heard_text}")
                 _, should_exit = handle_user_input(
@@ -292,7 +296,6 @@ def main() -> None:
                 if should_exit:
                     break
             else:
-                # Wake word only — acknowledge and listen for command
                 ack = getattr(Config, "WAKE_ACKNOWLEDGEMENT", "Yes?")
                 print_response("IRIS", ack)
                 voice.speak(ack)
@@ -308,18 +311,14 @@ def main() -> None:
                 if should_exit:
                     break
 
-            # ── Conversation mode: keep listening for follow-ups ──
-            # No need to say "Iris" again for CONVERSATION_TURNS turns
             for _ in range(CONVERSATION_TURNS):
                 console.print("[dim]  (follow-up listening...)[/dim]")
                 follow_up = voice.listen_for_command()
 
                 if not follow_up:
-                    # Silence — go back to standby
                     console.print("[dim]  → Back to standby[/dim]")
                     break
 
-                # If they say "stop", "bye", "goodbye" — end conversation
                 if any(w in follow_up.lower() for w in ["stop", "bye", "goodbye", "that's all", "thanks iris"]):
                     console.print("[dim]  → Conversation ended[/dim]")
                     break
