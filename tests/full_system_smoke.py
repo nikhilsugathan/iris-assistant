@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import sys
 import traceback
+import unittest.mock
 
 # ── Disable hardware voice I/O before any IRIS import ────────────────────────
 os.environ.setdefault("IRIS_DISABLE_VOICE_IO", "1")
@@ -219,18 +220,19 @@ if all(x is not None for x in [voice, executor, copilot, brain, self_model, dial
         # back to a simple greeting that Brain can always respond to.
         test_input = strip_wake_word(heard_text) or "hello"
 
-        response, should_exit = handle_user_input(
-            test_input,
-            voice,
-            autocorrect,
-            executor,
-            copilot,
-            brain,
-            self_model,
-            dialog_manager,
-            council,
-            diagnostics,
-        )
+        with unittest.mock.patch.object(brain, "think", return_value="I'm here."):
+            response, should_exit = handle_user_input(
+                test_input,
+                voice,
+                autocorrect,
+                executor,
+                copilot,
+                brain,
+                self_model,
+                dialog_manager,
+                council,
+                diagnostics,
+            )
 
         check("handle_user_input returns a response", isinstance(response, str) and len(response) > 0)
         check("handle_user_input does not request exit", should_exit is False)

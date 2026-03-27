@@ -268,6 +268,7 @@ def main() -> None:
 
     while True:
         try:
+            should_exit = False  # guard: prevents UnboundLocalError if command is empty
             if args.text:
                 user_input = voice.listen_text()
                 _, should_exit = handle_user_input(
