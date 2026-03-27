@@ -69,7 +69,7 @@ class ActionExecutor:
         self.voice   = voice
         self.brain   = brain
         self.security = SecurityGuard(brain)
-        self.log_file    = "iris_actions.log"
+        self.log_file    = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "iris_actions.log")
         self.is_windows  = platform.system() == "Windows"
         self.pending_action         = None
         self.pending_verdict        = None
@@ -999,6 +999,6 @@ Be specific and practical. No preamble."""
         """Log every action to file for transparency."""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if not getattr(self, "log_file", None):
-            self.log_file = "iris_actions.log"
+            self.log_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "iris_actions.log")
         with open(self.log_file, "a", encoding="utf-8") as f:
             f.write(f"[{timestamp}] {message}\n")

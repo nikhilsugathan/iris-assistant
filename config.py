@@ -5,12 +5,15 @@ IRIS Configuration
 
 import os
 import sys
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
 
 
 class Config:
+    PROJECT_ROOT = Path(__file__).resolve().parent
+
     PUBLIC_NAME = os.getenv("IRIS_PUBLIC_NAME", "Iris")
     SYSTEM_NAME = os.getenv("IRIS_SYSTEM_NAME", "IRIS")
     INNER_CODENAME = os.getenv("IRIS_INNER_CODENAME", "Aletheia")
@@ -49,7 +52,7 @@ class Config:
     VOICE_MAX_SENTENCES = 1
     MAX_MEMORY_TURNS = 8
     MAX_CONTEXT_TOKENS = 2000
-    MEMORY_FILE = "iris_memory.json"
+    MEMORY_FILE = str(PROJECT_ROOT / "iris_memory.json")
 
     WAKE_WORDS = ["iris"]
     WAKE_ACKNOWLEDGEMENT = "Yes?"
@@ -71,7 +74,8 @@ class Config:
     MIC_TIMEOUT = 6
     MIC_PHRASE_LIMIT = 10
     MIC_CALIBRATION_SECONDS = 2.0
-    MIC_ENERGY_THRESHOLD = 60
+    MIC_ENERGY_THRESHOLD = 4500
+    MIC_MAX_ENERGY_THRESHOLD = 4500
     MIC_PAUSE_THRESHOLD = 0.5
     MIC_PHRASE_THRESHOLD = 0.2
     MIC_NON_SPEAKING_DURATION = 0.3

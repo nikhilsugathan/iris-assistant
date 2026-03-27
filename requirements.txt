@@ -8,3 +8,5 @@ edge-tts
 pygame
 SpeechRecognition
 PyAudio
+winotify; sys_platform == "win32"
+pyttsx3

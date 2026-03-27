@@ -6,7 +6,13 @@ imported and instantiated without errors.  Intended for CI use only —
 no network calls are made and no interactive input is required.
 """
 
+import os
 import sys
+
+# Ensure the project root is on sys.path regardless of where we're invoked from
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
 
 # ── Imports ───────────────────────────────────────────────────────────
 try:

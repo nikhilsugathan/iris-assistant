@@ -230,6 +230,9 @@ class Voice:
             )
             return (transcription or "").strip()
 
+        except ImportError:
+            console.print("[yellow]⚠ Groq SDK not installed — falling back to Google STT[/yellow]")
+            return ""
         except Exception:
             return ""
 
