@@ -650,9 +650,36 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
         action_type = plan.get("action_type")
 
         try:
+            # --- BEGIN PATCH - robust command verification ---
             if action_type in ("install_package", "run_command"):
-                result = self._run_command(plan)
-                success = "didn't work" not in result.lower() and "error" not in result.lower()
+                # _run_command may return a string, or a tuple (stdout, stderr).
+                raw = self._run_command(plan)
+                # Normalize result into a single string for inspection
+                if isinstance(raw, tuple) and len(raw) >= 2:
+                    stdout, stderr = raw[0] or "", raw[1] or ""
+                    combined = (stdout + "\n" + stderr).strip()
+                elif isinstance(raw, dict):
+                    # Some implementations may return a dict like {'stdout': ..., 'stderr': ...}
+                    stdout = raw.get("stdout", "")
+                    stderr = raw.get("stderr", "")
+                    combined = (stdout + "\n" + stderr).strip()
+                else:
+                    combined = (raw or "").strip()
+
+                # Consider these tokens as indicative of failure (case-insensitive)
+                fail_indicators = re.compile(
+                    r"\b(error|failed|failure|exception|traceback|couldn't|could not|didn't work|not found|permission denied)\b",
+                    re.I,
+                )
+
+                # Empty output is suspicious — treat as failure/uncertain so the improv path can run
+                if not combined:
+                    result = raw if isinstance(raw, str) else combined
+                    success = False
+                else:
+                    result = combined
+                    success = not bool(fail_indicators.search(combined))
+            # --- END PATCH ---
 
             elif action_type == "create_file":
                 result  = self._create_file(plan)
