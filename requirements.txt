@@ -1,10 +1,10 @@
-google-generativeai
-groq
-anthropic
+ollama
 requests
-python-dotenv
+pyttsx3
+winotify
 rich
-edge-tts
+python-dotenv
 pygame
 SpeechRecognition
 PyAudio
+playwright

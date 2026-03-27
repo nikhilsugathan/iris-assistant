@@ -1,20 +1,12 @@
 """
-IRIS Core Package
-=================
-Initializes the shared logger and Rich console so that any submodule (or
-external caller) can do:
-
-    from core import logger, console
+IRIS Core Package Marker
+========================
+Exposes the logger and console for system-wide access.
 """
-
-from __future__ import annotations
-
+from .logger import logger
 from rich.console import Console
-from core.logger import get_logger
 
-# Package-level singletons — import these everywhere instead of
-# creating new instances scattered across modules.
-logger = get_logger("IRIS")
+# Initialize the global terminal tool
 console = Console()
 
-__all__ = ["logger", "console", "get_logger"]
+__all__ = ['logger', 'console']
