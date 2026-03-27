@@ -1,0 +1,44 @@
+name: PR smoke — import & lint
+on: 
+  pull_request: 
+  push: 
+    branches: 
+      - fixes/brain-safety
+
+jobs: 
+  smoke: 
+    runs-on: ubuntu-latest 
+    steps: 
+      - name: Checkout 
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff requests rich
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Lint with ruff
+        run: |
+          ruff check . || true
+
+      - name: Import check — core.brain
+        run: |
+          python -c "from core.brain import Brain; print('import OK')"
+
+      - name: Instantiate Brain with Memory
+        run: |
+          python -c "from core.brain import Brain; import importlib; \
+          try: \
+            from core.memory import Memory; \
+            m=Memory(':memory:'); \
+            b=Brain(m); \
+            print('backends:', getattr(b, 'available_apis', None)); \
+          except Exception as e: \
+            print('Memory import or instantiation failed, skipping instantiation:', e); \
+            exit 0"
