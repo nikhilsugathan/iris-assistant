@@ -1,10 +1,6 @@
-"""
-IRIS Self-Diagnostics (Version 2 - Tolerant)
-===========================================
-"""
-
 from __future__ import annotations
 import os
+import re
 from typing import List, Optional
 from collections import deque
 from config import Config
@@ -16,7 +12,6 @@ class SelfDiagnostics:
         lowered = (text or "").lower().strip()
         return any(trigger in lowered for trigger in self.TRIGGERS)
 
-    # Helper: tolerant accessor for available APIs across rename variants
     def _get_available_apis(self, brain) -> List[str]:
         candidates = ("available_apis", "available", "apis", "detected_apis")
         for attr in candidates:
@@ -25,14 +20,24 @@ class SelfDiagnostics:
                 return list(val)
         return []
 
-    # Helper: tolerant audio-ready evaluation (supports audio_ready or inverse io_disabled)
     def _audio_ready(self, voice) -> bool:
         if voice is None: return False
         if hasattr(voice, "audio_ready"):
             return bool(getattr(voice, "audio_ready"))
         if hasattr(voice, "io_disabled"):
-            return not bool(getattr(voice, "io_disabled")) # Inversion Logic
+            return not bool(getattr(voice, "io_disabled")) # Inversion for CI
         return False
+
+    def _voice_findings(self, voice) -> List[str]:
+        findings = []
+        if not getattr(voice, "mic_ready", False):
+            findings.append("Microphone initialization failed.")
+        return findings
+
+    def _recent_action_findings(self, executor) -> List[str]:
+        log_path = getattr(executor, "log_file", "iris_actions.log")
+        lines = self._tail_log(log_path, lines=5)
+        return [f"Log Trace: {l}" for l in lines] if lines else ["No recent logs found."]
 
     def _tail_log(self, path: str, lines: int = 15) -> List[str]:
         if not path or not os.path.exists(path): return []
@@ -49,11 +54,12 @@ class SelfDiagnostics:
         observations: List[str] = []
         
         available = self._get_available_apis(brain)
-        if not available:
-            findings.append("No language model backends are available.")
+        observations.append(f"Active APIs: {', '.join(available) if available else 'None'}")
         
         if not self._audio_ready(voice):
-            findings.append("My audio output is not ready (I/O might be disabled).")
+            findings.append("Audio output is currently disabled (CI mode or manual).")
 
-        # ... (rest of the diagnostic logic)
-        return "\n".join(findings + observations) if findings or observations else "All systems nominal."
+        findings.extend(self._voice_findings(voice))
+        findings.extend(self._recent_action_findings(executor))
+
+        return "\n".join(observations + findings)
