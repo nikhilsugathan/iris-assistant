@@ -7,6 +7,9 @@ no network calls are made and no interactive input is required.
 """
 
 import sys
+import os
+# Ensure the repo root is on sys.path when this script is invoked directly.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # ── Imports ───────────────────────────────────────────────────────────
 try:
