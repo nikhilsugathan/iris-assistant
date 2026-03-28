@@ -3,7 +3,7 @@ IRIS Tool Registry
 ==================
 Central definition of executable tools (actions) with schemas and descriptions.
 
-This is the first step toward a real Jarvis-like "skills" framework:
+This is the first step toward a real IRIS-like "skills" framework:
 - a discoverable list of tools
 - consistent schemas for planning + validation
 - a single place to add new capabilities safely
