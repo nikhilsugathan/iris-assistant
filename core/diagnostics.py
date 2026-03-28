@@ -179,7 +179,7 @@ class SelfDiagnostics:
 def run_smoke_tests() -> List[DiagnosticResult]:
     """CI suite that treats notifications as an optional component."""
     results = []
-    required = ["core.brain", "core.voice", "core.memory"]
+    required = ["core.brain", "core.voice", "core.memory", "core.executor", "core.dialog_manager"]
     optional = ["core.notifications"]
     
     for mod in required + optional:

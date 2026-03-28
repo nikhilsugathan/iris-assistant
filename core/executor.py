@@ -131,7 +131,10 @@ class ActionExecutor:
             if action == "open_file":
                 path = followup.get("path", "")
                 try:
-                    os.startfile(path)
+                    if platform.system() == "Windows":
+                        os.startfile(path)
+                    else:
+                        subprocess.Popen(["xdg-open", path])
                     return f"Opened '{os.path.basename(path)}'."
                 except Exception as e:
                     return f"Couldn't open it: {e}"
