@@ -35,6 +35,7 @@ BEYOND BASELINE (requires YOUR explicit permission):
 import re
 import json
 from typing import Tuple
+from urllib.parse import urlparse
 from config import Config
 
 
@@ -52,17 +53,51 @@ BLOCKED_COMMANDS = [
     # Exploit / attack tools
     r"metasploit", r"msfconsole", r"msfvenom",
     r"netcat.*-e", r"nc\.exe.*-e",
+
     # Credential dumping
     r"mimikatz", r"pwdump", r"hashdump",
+
     # Mass destruction
     r"rm\s+-rf\s+/", r"del\s+/[sf].*\*",
     r"format\s+c:", r"format\s+[a-z]:\s*/",
+
     # Ransomware-like patterns
     r"encrypt.*all", r"cipher\s+/w",
+
     # UAC bypass techniques
     r"fodhelper", r"eventvwr.*bypass", r"cmstp",
+
     # Fork bomb
     r":\(\)\{.*\|.*&\}", r"%0\|%0",
+
+    # ── Windows LolBins & scripting host bypasses ──────────────
+    # These are commonly used to execute code while evading detection.
+    # Block them as shell commands (they are still accessible as
+    # approved apps via the app_map / open_app path, but not as
+    # raw shell commands in run_command / install_package).
+
+    # PowerShell variants — catch aliased and full-path invocations
+    r"\bpwsh\b",                          # PowerShell 7 binary
+    r"\bpowershell\.exe\b",               # Explicit .exe invocation
+    r"WindowsPowerShell",                 # Full path fragment
+
+    # Environment variable bypasses (%WINDIR%\system32\cmd.exe etc.)
+    r"%systemroot%",
+    r"%windir%",
+    r"%comspec%",
+
+    # Scripting hosts — used for dropper/stager execution
+    r"\bmshta\b",                         # HTML Application host
+    r"\bwscript\b",                       # Windows Script Host (GUI)
+    r"\bcscript\b",                       # Windows Script Host (CLI)
+
+    # certutil — commonly abused for base64 decode / download
+    r"\bcertutil\b",
+
+    # Inline PowerShell execution via .ps1 or IEX
+    r"\.ps1\b",                           # Any .ps1 script reference
+    r"iex\s*\(",                          # Invoke-Expression (in-memory execution)
+    r"invoke-expression",                 # Full form of IEX
 ]
 
 BLOCKED_DOMAINS = [
@@ -193,11 +228,35 @@ class SecurityGuard:
     # LAYER 3: URL safety
     # ─────────────────────────────────────────────────────────────
 
+    def _is_trusted_domain(self, url: str) -> bool:
+        """
+        Check whether a URL's netloc exactly matches a trusted domain
+        or is a direct subdomain of one.
+
+        Uses urllib.parse for proper netloc extraction — prevents
+        substring spoofing attacks like 'notgithub.com' or
+        'github.com.evil.io' from passing as trusted.
+        """
+        try:
+            netloc = urlparse(url).netloc.lower()
+            # Strip port number if present (e.g. "python.org:443" → "python.org")
+            netloc = netloc.split(":")[0]
+        except Exception:
+            return False
+
+        if not netloc:
+            return False
+
+        return any(
+            netloc == domain or netloc.endswith("." + domain)
+            for domain in SAFE_DOWNLOAD_DOMAINS
+        )
+
     def _check_url(self, url: str) -> Tuple[str, str]:
         url_lower = url.lower()
 
-        # Check against known safe domains
-        is_trusted = any(domain in url_lower for domain in SAFE_DOWNLOAD_DOMAINS)
+        # HARDENED: use proper netloc parsing, not substring match
+        is_trusted = self._is_trusted_domain(url)
 
         # Check against known suspicious domains
         for domain in BLOCKED_DOMAINS:
@@ -236,15 +295,16 @@ class SecurityGuard:
 
     # ─────────────────────────────────────────────────────────────
     # LAYER 4: Download safety
-    # ─────────────────────────────────────────────────────────────
+    # ────────────────────────────────────��────────────────────────
 
     def _check_download(self, command: str, url: str) -> Tuple[str, str]:
         cmd_lower = command.lower()
 
         # Executable downloaded from unverified source
+        # HARDENED: uses _is_trusted_domain for the source check
         for ext in [".exe", ".msi", ".bat", ".cmd", ".ps1", ".vbs"]:
             if ext in cmd_lower:
-                if not any(domain in (url or "").lower() for domain in SAFE_DOWNLOAD_DOMAINS):
+                if not self._is_trusted_domain(url or ""):
                     return WARNING, (
                         f"This downloads a '{ext}' file from an unverified source. "
                         f"Executable files from unknown sources can contain malware. "

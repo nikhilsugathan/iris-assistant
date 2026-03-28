@@ -1,5 +1,5 @@
 """
-JARVIS Co-Pilot Mode
+IRIS Co-Pilot Mode
 =====================
 ONLY activates when you explicitly ask to be walked through something.
 
@@ -213,3 +213,4 @@ Example:
             "stop", "cancel", "quit", "exit", "pause",
             "never mind", "nevermind", "forget it"
         ])
+

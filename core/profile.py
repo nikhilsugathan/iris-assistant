@@ -6,7 +6,7 @@ Stores durable, user-approved memory separate from transcript:
 - facts the user asked to remember ("my laptop is called ...")
 - goals ("I'm training for a marathon")
 
-This is intentionally simple (JSON file) as a first step toward Jarvis-like continuity.
+This is intentionally simple (JSON file) as a first step toward IRIS-like continuity.
 """
 
 from __future__ import annotations
@@ -146,4 +146,5 @@ class UserProfile:
                     return ProfileUpdate(message="Done. I'll remember that.", changed=True)
 
         return ProfileUpdate(message="If you want me to remember something, say 'remember ...' or 'forget ...'.", changed=False)
+
 
