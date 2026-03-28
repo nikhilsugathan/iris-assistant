@@ -31,11 +31,15 @@ class Memory:
 
     def _save(self):
         """Persist memory to disk."""
-        with open(self.memory_file, "w") as f:
-            json.dump({
-                "last_updated": datetime.now().isoformat(),
-                "conversation": self.conversation
-            }, f, indent=2)
+        try:
+            with open(self.memory_file, "w") as f:
+                json.dump({
+                    "last_updated": datetime.now().isoformat(),
+                    "conversation": self.conversation
+                }, f, indent=2)
+        except OSError as e:
+            import sys
+            print(f"[Memory] Warning: could not save memory to '{self.memory_file}': {e}", file=sys.stderr)
 
     def add(self, role: str, content: str, source: str = None):
         """
