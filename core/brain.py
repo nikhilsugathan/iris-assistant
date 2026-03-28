@@ -85,11 +85,18 @@ class Brain:
                 Config.PRIMARY_BRAIN = api
                 break
 
-        Config.FALLBACK_BRAIN = Config.PRIMARY_BRAIN
+        # Only set FALLBACK_BRAIN to a genuinely different API.
+        # If no secondary API is available, keep FALLBACK_BRAIN equal to PRIMARY_BRAIN
+        # so existing failover guards (fallback != api) still work correctly.
+        fallback_found = False
         for api in priority:
             if api in self.available_apis and api != Config.PRIMARY_BRAIN:
                 Config.FALLBACK_BRAIN = api
+                fallback_found = True
                 break
+
+        if not fallback_found:
+            Config.FALLBACK_BRAIN = Config.PRIMARY_BRAIN
 
     # ─────────────────────────────────────────────────────────────
     # MAIN ENTRY
