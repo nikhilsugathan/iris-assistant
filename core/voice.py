@@ -1,9 +1,9 @@
 """
-IRIS Voice Module v4
-====================
-STT  : Groq Whisper API (fast, accurate, free with your Groq key)
-       Falls back to Google STT if Groq unavailable
-TTS  : Edge TTS with immediate single-chunk playback (no lag)
+IRIS Voice Module v4.7 (Sliding Window Edition)
+===============================================
+- SlidingWindowCapture (Immune to background noise deadlocks)
+- 16000Hz Pygame audio pipeline
+- Safe Groq BytesIO Tuple upload
 """
 
 import asyncio
@@ -14,12 +14,13 @@ import tempfile
 import threading
 import time
 import wave
+import numpy as np
 
 from rich.console import Console
 from config import Config
+from core.wake_engine import SlidingWindowCapture, build_wav_bytes
 
 console = Console()
-
 
 class Voice:
     def __init__(self, text_mode: bool = False):
@@ -28,368 +29,175 @@ class Voice:
         self._stop_flag      = threading.Event()
         self.audio_ready     = False
         self.mic_ready       = False
-        self.mic_error       = None
-        self.calibrated      = False
-        self.selected_mic_name  = "Default"
-        self.selected_mic_index = None
-        self.recognizer      = None
-        self.microphone      = None
+        self.privacy_mode    = False 
+        
+        # New Sliding Window State
+        self.engine          = None
+        self._latest_window  = None
+        self._window_ready   = threading.Event()
 
         self._init_audio()
         self._init_mic()
 
     @property
     def io_disabled(self) -> bool:
-        """True when voice I/O (mic + audio) is intentionally disabled.
-
-        This is the case when the instance was created in text mode or when
-        the ``IRIS_DISABLE_VOICE_IO`` environment variable is set to a
-        truthy value (e.g. in CI).
-        """
         env_flag = os.environ.get("IRIS_DISABLE_VOICE_IO", "").lower()
         return self.text_mode or env_flag in {"1", "true", "yes"}
-
-    # ─────────────────────────────────────────────────────────────
-    # INIT
-    # ─────────────────────────────────────────────────────────────
 
     def _init_audio(self):
         try:
             import pygame
-            pygame.mixer.pre_init(
-                frequency=getattr(Config, "AUDIO_SAMPLE_RATE", 24000),
-                size=-16,
-                channels=getattr(Config, "AUDIO_CHANNELS", 2),
-                buffer=getattr(Config, "AUDIO_BUFFER_SIZE", 512),
-            )
+            pygame.mixer.pre_init(frequency=16000, size=-16, channels=1, buffer=512)
             pygame.mixer.init()
-            self._prime_audio_output()
             self.audio_ready = True
-            console.print("[green]✓ Audio playback ready[/green]")
         except Exception as e:
             console.print(f"[red]Audio init failed:[/red] {e}")
 
+    def _on_new_window(self, window: np.ndarray):
+        """Callback for the SlidingWindowCapture."""
+        self._latest_window = window
+        self._window_ready.set()
+
     def _init_mic(self):
-        if self.text_mode:
-            return
+        if self.text_mode: return
         try:
-            import speech_recognition as sr
-            self.recognizer = sr.Recognizer()
-            self.recognizer.dynamic_energy_threshold = False
-            self.recognizer.energy_threshold         = getattr(Config, "MIC_ENERGY_THRESHOLD", 50)
-            self.recognizer.pause_threshold          = getattr(Config, "MIC_PAUSE_THRESHOLD", 0.6)
-            self.recognizer.phrase_threshold         = getattr(Config, "MIC_PHRASE_THRESHOLD", 0.2)
-            self.recognizer.non_speaking_duration    = getattr(Config, "MIC_NON_SPEAKING_DURATION", 0.3)
-
-            mic_names = sr.Microphone.list_microphone_names()
-            preferred = getattr(Config, "PREFERRED_MIC_NAME", "").strip()
-            mic_index = None
-            mic_name  = "Default Windows microphone"
-
-            if preferred:
-                for i, name in enumerate(mic_names):
-                    if preferred.lower() in name.lower():
-                        mic_index = i
-                        mic_name  = name
-                        break
-
-            self.microphone = sr.Microphone(
-                device_index=mic_index,
-                sample_rate=getattr(Config, "MIC_SAMPLE_RATE", 16000),
-                chunk_size=getattr(Config, "MIC_CHUNK_SIZE", 1024),
-            )
-            self.selected_mic_index = mic_index
-            self.selected_mic_name  = mic_name
-            self.mic_ready          = True
-
-            console.print(f"[green]✓ Microphone ready[/green] [dim]({mic_name})[/dim]")
-
-            if mic_names:
-                console.print("[dim]Available microphones:[/dim]")
-                for i, name in enumerate(mic_names):
-                    console.print(f"[dim]  {i}: {name}[/dim]")
-
-            self._calibrate()
-
+            # Start the sliding window continuous capture
+            self.engine = SlidingWindowCapture(on_window=self._on_new_window)
+            self.engine.start()
+            self.mic_ready  = True
         except Exception as e:
-            self.mic_error = str(e)
-            console.print(f"[red]Microphone init failed:[/red] {e}")
+            console.print(f"[red]Microphone engine failed to start:[/red] {e}")
 
-    def _calibrate(self):
-        if not self.mic_ready or self.calibrated:
-            return
-        try:
-            with self.microphone as source:
-                console.print("[dim]Calibrating microphone... stay quiet.[/dim]")
-                self.recognizer.adjust_for_ambient_noise(
-                    source,
-                    duration=getattr(Config, "MIC_CALIBRATION_SECONDS", 2.0)
-                )
-            self.calibrated = True
-            console.print(
-                f"[green]✓ Calibration complete[/green] "
-                f"[dim](energy={self.recognizer.energy_threshold:.0f})[/dim]"
-            )
-        except Exception as e:
-            console.print(f"[yellow]Calibration warning:[/yellow] {e}")
-
-    # ─────────────────────────────────────────────────────────────
-    # LISTEN
-    # ─────────────────────────────────────────────────────────────
-
-    def listen_text(self) -> str:
-        return input("You: ")
-
-    def listen_for_wake(self) -> str:
-        # Wake detection uses fast Google STT, not Groq Whisper
-        if self.text_mode:
-            return self.listen_text()
-        time.sleep(0.2)   # Brief cooldown to avoid TTS echo
-        return self._listen(
-            timeout=getattr(Config, "WAKE_TIMEOUT", 8),
-            phrase_time_limit=getattr(Config, "WAKE_PHRASE_LIMIT", 10),
-            wake_mode=True,
-        )
-
-    def listen_for_command(self) -> str:
-        if self.text_mode:
-            return self.listen_text()
-        # Stop Iris speaking if she is — user interrupted
-        self.stop_speaking()
-        return self._listen(
-            timeout=getattr(Config, "MIC_TIMEOUT", 6),
-            phrase_time_limit=getattr(Config, "MIC_PHRASE_LIMIT", 12),
-            wake_mode=False,
-        )
-
-    def _listen(self, timeout: int, phrase_time_limit: int, wake_mode: bool) -> str:
-        import speech_recognition as sr
-
-        if not self.mic_ready or self.microphone is None:
-            time.sleep(1)
-            return ""
-
-        try:
-            with self.microphone as source:
-                if not wake_mode:
-                    console.print("[dim]Listening...[/dim]")
-                audio = self.recognizer.listen(
-                    source,
-                    timeout=timeout,
-                    phrase_time_limit=phrase_time_limit,
-                )
-        except sr.WaitTimeoutError:
-            return ""
-        except Exception as e:
-            if not wake_mode:
-                console.print(f"[red]Mic error:[/red] {e}")
-            return ""
-
-        # Wake mode: use fast Google STT only (Groq adds 1-2s latency)
-        # Command mode: use accurate Groq Whisper, fall back to Google
-        if wake_mode:
-            text = self._transcribe_google(audio)
+    def toggle_privacy(self) -> bool:
+        self.privacy_mode = not self.privacy_mode
+        if self.privacy_mode:
+            console.print("[bold red]  🔒 Privacy Mode: ON[/bold red]")
         else:
-            text = self._transcribe_groq(audio)
-            if not text:
-                text = self._transcribe_google(audio)
+            console.print("[bold green]  🔓 Privacy Mode: OFF[/bold green]")
+        return self.privacy_mode
 
-        if text:
-            if wake_mode and getattr(Config, "SHOW_WAKE_DEBUG", True):
-                console.print(f"[dim]Wake heard:[/dim] {text}")
-            elif not wake_mode:
-                console.print(f"[green]You:[/green] {text}")
-
-        elif not wake_mode:
-            console.print("[dim]Heard audio but couldn't transcribe it.[/dim]")
-
-        return text or ""
-
-    def _transcribe_groq(self, audio) -> str:
-        """Use Groq Whisper API — fastest and most accurate."""
+    def _transcribe_groq_bytes(self, wav_bytes: bytes, prompt="") -> str:
+        """Uploads raw bytes to Groq securely."""
         try:
-            import speech_recognition as sr
-
-            # Export audio to WAV bytes
-            wav_data = io.BytesIO()
-            with wave.open(wav_data, "wb") as wf:
-                wf.setnchannels(1)
-                wf.setsampwidth(audio.sample_width)
-                wf.setframerate(audio.sample_rate)
-                wf.writeframes(audio.frame_data)
-            wav_data.seek(0)
-
             from groq import Groq
             client = Groq(api_key=Config.GROQ_API_KEY)
-
-            transcription = client.audio.transcriptions.create(
-                file=("audio.wav", wav_data, "audio/wav"),
+            
+            # API FIX: Use tuple format to bypass SDK corruption
+            res = client.audio.transcriptions.create(
+                file=("wake.wav", wav_bytes, "audio/wav"),
                 model="whisper-large-v3-turbo",
-                language="en",
+                prompt=prompt, 
                 response_format="text",
+                temperature=0.0
             )
-            return (transcription or "").strip()
-
-        except Exception:
+            return (res or "").strip()
+        except Exception as e:
+            console.print(f"[bold red][DEBUG] Groq Failed:[/bold red] {e}")
             return ""
 
-    def _transcribe_google(self, audio) -> str:
-        """Fallback: Google STT."""
+    def listen_for_wake(self) -> str:
+        if self.text_mode: return input("You: ")
+        if not self.mic_ready: return ""
+
+        # Wait up to 0.5s for the next 2-second audio window
+        if not self._window_ready.wait(timeout=0.5):
+            return ""
+        
+        self._window_ready.clear()
+        window = self._latest_window
+
+        # Phase 1: RMS Gate
+        rms = float(np.sqrt(np.mean(window.astype(np.float32) ** 2)))
+        rms_threshold = getattr(Config, "WAKE_RMS_THRESHOLD", 500)
+        if self.privacy_mode: rms_threshold += 2500
+
+        # --- X-RAY DEBUG PRINT ---
+        console.print(f"[dim]  (Mic Check -> Current RMS: {rms:.0f} | Target: {rms_threshold})[/dim]", end="\r")
+            
+        if rms < rms_threshold:
+            return ""
+
+        # Phase 2: Whisper Transcription
+        console.print(f"\n[cyan]  (Volume passed! Sending to Groq...)[/cyan]")
+        wav_bytes = build_wav_bytes(window)
+        
+        result = self._transcribe_groq_bytes(wav_bytes, prompt="iris")
+        console.print(f"[cyan]  (Groq returned: '{result}')[/cyan]")
+        
+        return result
+
+    def listen_for_command(self) -> str:
+        """Temporarily uses the old sr.Recognizer for the long command capture."""
+        if self.text_mode: return input("You: ")
+        self.stop_speaking()
+        if not self.mic_ready: return ""
+        
+        # Suspend the sliding window temporarily
+        self.engine.stop()
+        
+        import speech_recognition as sr
+        r = sr.Recognizer()
+        r.energy_threshold = getattr(Config, "MIC_ENERGY_THRESHOLD", 400)
+        r.pause_threshold = getattr(Config, "MIC_PAUSE_THRESHOLD", 0.8)
+        
         try:
-            import speech_recognition as sr
-            text = self.recognizer.recognize_google(
-                audio,
-                language=getattr(Config, "STT_LANGUAGE", "en-US"),
-            ).strip()
-            return text
-        except Exception:
+            with sr.Microphone() as source:
+                console.print("[dim]Listening...[/dim]")
+                audio = r.listen(source, timeout=10, phrase_time_limit=30)
+                
+            import random
+            acks = getattr(Config, "THINKING_ACKS", ["On it."])
+            console.print(f"[italic cyan]  → {random.choice(acks)}[/italic cyan]")
+            
+            wav_bytes = audio.get_wav_data(convert_rate=16000, convert_width=2)
+            result = self._transcribe_groq_bytes(wav_bytes)
+            
+            # Restart the sliding window
+            self.engine.start()
+            return result
+            
+        except:
+            self.engine.start()
             return ""
-
-    # ─────────────────────────────────────────────────────────────
-    # SPEAK — Edge TTS, immediate playback, no chunking lag
-    # ─────────────────────────────────────────────────────────────
 
     def speak(self, text: str):
-        if not text:
-            return
-        if self.text_mode and not getattr(Config, "SPEAK_IN_TEXT_MODE", False):
-            return
-        if not self.audio_ready:
-            return
-
-        clean = self._clean(text)
-        if not clean:
-            return
-
+        if not text or self.io_disabled: return
+        clean = re.sub(r"[*_`#→|]", "", text)
         with self._tts_lock:
             self.stop_speaking()
             self._stop_flag.clear()
-            self._speak_blocking(clean)
-
-    def _speak_blocking(self, text: str):
-        """Blocking speak — runs in thread."""
-        try:
-            asyncio.run(self._speak_async(text))
-        except Exception as e:
-            console.print(f"[red]TTS error:[/red] {e}")
+            asyncio.run(self._speak_async(clean))
 
     async def _speak_async(self, text: str):
-        import edge_tts
-        import pygame
-
-        chunks = self._chunk_text(text)
-        if not chunks:
-            return
-
+        import edge_tts, pygame
+        chunks = [text] if len(text) < 1000 else [s.strip() for s in re.split(r"\n\n", text) if s.strip()]
+        
         for chunk in chunks:
-            if self._stop_flag.is_set():
-                break
-
+            if self._stop_flag.is_set(): break
             with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
                 tmp = f.name
-
             try:
-                communicate = edge_tts.Communicate(
-                    text=chunk,
-                    voice=getattr(Config, "VOICE_NAME", "en-GB-SoniaNeural"),
-                    rate=getattr(Config, "VOICE_RATE", "+8%"),
-                )
-                await communicate.save(tmp)
-
+                comm = edge_tts.Communicate(text=chunk, voice=Config.VOICE_NAME, rate=Config.VOICE_RATE)
+                await comm.save(tmp)
                 pygame.mixer.music.load(tmp)
-                pygame.mixer.music.set_volume(1.0)
                 pygame.mixer.music.play()
-
+                
                 while pygame.mixer.music.get_busy():
-                    if self._stop_flag.is_set():
+                    if self._stop_flag.is_set(): 
                         pygame.mixer.music.stop()
                         break
-                    await asyncio.sleep(getattr(Config, "PLAYBACK_POLL_SECONDS", 0.03))
-
-                try:
-                    pygame.mixer.music.unload()
-                except Exception:
-                    pass
+                    await asyncio.sleep(0.05)
             finally:
-                try:
+                try: 
+                    pygame.mixer.music.unload()
                     os.unlink(tmp)
-                except Exception:
-                    pass
+                except: pass
+
+        # Cooldown so the mic doesn't hear the end of the TTS
+        time.sleep(0.6)
+        self._window_ready.clear()
 
     def stop_speaking(self):
         self._stop_flag.set()
-        try:
-            import pygame
-            pygame.mixer.music.stop()
-        except Exception:
-            pass
-
-    def stop(self):
-        self.stop_speaking()
-
-    def _prime_audio_output(self):
-        """Warm the output device once so the first spoken word is not clipped."""
-        try:
-            import pygame
-
-            duration_ms = max(20, int(getattr(Config, "AUDIO_WARMUP_MS", 120)))
-            sample_rate = int(getattr(Config, "AUDIO_SAMPLE_RATE", 24000))
-            channels = int(getattr(Config, "AUDIO_CHANNELS", 2))
-            frames = max(1, int(sample_rate * duration_ms / 1000))
-
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as f:
-                tmp = f.name
-
-            try:
-                silence_frame = (b"\x00\x00" * channels)
-                with wave.open(tmp, "wb") as wf:
-                    wf.setnchannels(channels)
-                    wf.setsampwidth(2)
-                    wf.setframerate(sample_rate)
-                    wf.writeframes(silence_frame * frames)
-
-                sound = pygame.mixer.Sound(tmp)
-                channel = sound.play()
-                if channel is not None:
-                    while channel.get_busy():
-                        time.sleep(0.01)
-            finally:
-                try:
-                    os.unlink(tmp)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-    def _clean(self, text: str) -> str:
-        text = re.sub(r"```[\s\S]*?```", "code block", text)
-        text = re.sub(r"[*_`#→|]", "", text)
-        text = re.sub(r"https?://\S+", "link", text)
-        text = re.sub(r"\s+", " ", text).strip()
-        if len(text) > 600:
-            text = text[:600] + "..."
-        return text
-
-    def _chunk_text(self, text: str) -> list[str]:
-        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s.strip()]
-        if not sentences:
-            return []
-
-        max_sentences = max(1, int(getattr(Config, "TTS_CHUNK_SENTENCES", 1)))
-        max_chars = max(80, int(getattr(Config, "TTS_MAX_CHARS_PER_CHUNK", 220)))
-
-        chunks = []
-        current = []
-
-        for sentence in sentences:
-            candidate = " ".join(current + [sentence]).strip()
-            if current and (len(current) >= max_sentences or len(candidate) > max_chars):
-                chunks.append(" ".join(current).strip())
-                current = [sentence]
-            else:
-                current.append(sentence)
-
-        if current:
-            chunks.append(" ".join(current).strip())
-
-        return chunks
+        try: import pygame; pygame.mixer.music.stop()
+        except: pass

@@ -35,11 +35,11 @@ class Config:
         "claude",
         "gemini",
     ]
-    PRIMARY_BRAIN = "ollama_fast"
+    PRIMARY_BRAIN = "GROQ"
     FALLBACK_BRAIN = "ollama_smart"
 
     GEMINI_MODEL = "gemini-2.0-flash"
-    GROQ_MODEL = "llama-3.3-70b-versatile"
+    GROQ_MODEL = "llama-3.1-8b-instant"
     PERPLEXITY_MODEL = "llama-3.1-sonar-large-128k-online"
     CLAUDE_MODEL = "claude-3-5-sonnet-20241022"
 
@@ -51,10 +51,16 @@ class Config:
     MAX_CONTEXT_TOKENS = 2000
     MEMORY_FILE = "iris_memory.json"
 
-    WAKE_WORDS = ["iris"]
+    WAKE_WORDS = [
+        "iris", "irish", "ira's", "virus", "cyrus", 
+        "hey iris", "hi iris", "ok iris", 
+        "here it is", "hey it is", "hear it is",
+        "æyres", "ayres", "eyres", "aires", "ares"
+    ]
     WAKE_ACKNOWLEDGEMENT = "Yes?"
     WAKE_FUZZY_THRESHOLD = 0.75
     SHOW_WAKE_DEBUG = True
+    WAKE_RMS_THRESHOLD = 150
 
     # Leave blank to use default Windows input device.
     # Example:
@@ -68,11 +74,11 @@ class Config:
     WAKE_TIMEOUT = 8
     WAKE_PHRASE_LIMIT = 10
 
-    MIC_TIMEOUT = 6
-    MIC_PHRASE_LIMIT = 10
+    MIC_TIMEOUT = 10
+    MIC_PHRASE_LIMIT = 30
     MIC_CALIBRATION_SECONDS = 2.0
-    MIC_ENERGY_THRESHOLD = 60
-    MIC_PAUSE_THRESHOLD = 0.5
+    MIC_ENERGY_THRESHOLD = 4900
+    MIC_PAUSE_THRESHOLD = 0.8
     MIC_PHRASE_THRESHOLD = 0.2
     MIC_NON_SPEAKING_DURATION = 0.3
     MIC_SAMPLE_RATE = 16000
