@@ -4,6 +4,7 @@ IRIS Voice Module v4.7 (Sliding Window Edition)
 - SlidingWindowCapture (Immune to background noise deadlocks)
 - 16000Hz Pygame audio pipeline
 - Safe Groq BytesIO Tuple upload
+- Hallucination Gate (Prevents silence-induced AI hallucinations)
 """
 
 import asyncio
@@ -76,6 +77,15 @@ class Voice:
             console.print("[bold green]  🔓 Privacy Mode: OFF[/bold green]")
         return self.privacy_mode
 
+    def _audio_to_rms(self, audio) -> float:
+        """Helper to calculate RMS volume from a SpeechRecognition AudioData object."""
+        try:
+            raw = audio.get_raw_data(convert_rate=16000, convert_width=2)
+            samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
+            if len(samples) == 0: return 0.0
+            return float(np.sqrt(np.mean(samples ** 2)))
+        except: return 0.0
+
     def _transcribe_groq_bytes(self, wav_bytes: bytes, prompt="") -> str:
         """Uploads raw bytes to Groq securely."""
         try:
@@ -137,13 +147,19 @@ class Voice:
         
         import speech_recognition as sr
         r = sr.Recognizer()
-        r.energy_threshold = getattr(Config, "MIC_ENERGY_THRESHOLD", 400)
+        r.energy_threshold = getattr(Config, "MIC_ENERGY_THRESHOLD", 150)
         r.pause_threshold = getattr(Config, "MIC_PAUSE_THRESHOLD", 0.8)
         
         try:
             with sr.Microphone() as source:
                 console.print("[dim]Listening...[/dim]")
                 audio = r.listen(source, timeout=10, phrase_time_limit=30)
+            
+            # --- HALLUCINATION GATE ---
+            # Rejects audio that doesn't clear the volume threshold
+            if self._audio_to_rms(audio) < getattr(Config, "WAKE_RMS_THRESHOLD", 150):
+                self.engine.start()
+                return ""
                 
             import random
             acks = getattr(Config, "THINKING_ACKS", ["On it."])

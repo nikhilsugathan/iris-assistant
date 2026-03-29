@@ -1,9 +1,9 @@
 """
-IRIS Memory Module v4.6
+IRIS Memory Module v4.7
 =======================
 Features: 
 - Automatic Role Normalization (iris -> assistant)
-- Content De-duplication (Removes system-stat bloat)
+- Real-time Content De-duplication (Removes system-stat bloat)
 - Standardized persistent JSON storage
 """
 
@@ -50,10 +50,10 @@ class Memory:
             print(f"[Memory] OSError: could not save to '{self.memory_file}': {e}", file=sys.stderr)
 
     def _self_clean(self):
-        """DE-DUPLICATION: Removes repeated system stats to save context."""
+        """DE-DUPLICATION: Removes repeated system stats to save context window space."""
         seen_content = set()
         cleaned = []
-        # We work backwards to keep only the LATEST unique status updates
+        # Work backwards to keep only the LATEST unique status updates
         for entry in reversed(self.conversation):
             content = entry.get("content", "")
             # Only deduplicate short system-local responses (battery, name, etc.)
@@ -67,7 +67,7 @@ class Memory:
         self.conversation = list(reversed(cleaned))
 
     def add(self, role: str, content: str, source: str = None):
-        """Adds a turn and triggers a save."""
+        """Adds a turn, cleans duplicates, and triggers a save."""
         # Ensure role is always 'user' or 'assistant' for API compatibility
         normalized_role = "assistant" if role in ["assistant", "iris"] else "user"
         
@@ -79,6 +79,10 @@ class Memory:
         if source: entry["source"] = source
 
         self.conversation.append(entry)
+        
+        # Real-time de-duplication integrated here
+        self._self_clean() 
+        
         self._save()
 
     def get_context(self, max_turns: int = 20) -> List[Dict]:
