@@ -49,3 +49,5 @@ desktop.ini
 
 # ── Playwright / browser state ───────────────────────────
 browser_data/
+history/
+knowledge_base.json
