@@ -1,12 +1,24 @@
+# ── IRIS Core & Brain ──
 google-generativeai==0.8.3
 groq==0.12.0
 anthropic==0.40.0
-requests==2.32.3
 python-dotenv==1.0.1
+requests==2.32.3
+
+# ── IRIS Terminal UI ──
 rich==13.9.4
+
+# ── IRIS Voice & Audio Engine ──
 edge-tts==6.1.12
 pygame==2.6.1
 SpeechRecognition==3.11.0
 PyAudio==0.2.14
+
+# ── IRIS Hardware & VRAM Monitor ──
 numpy==1.26.4
 nvidia-ml-py==12.535.133
+
+# ── IRIS v5.0 Ironclad Additions ──
+duckduckgo-search>=5.0.0    # Required for tools/researcher.py (The Eyes)
+psutil>=5.9.8               # Required for system/disk pre-flight checks
+playwright>=1.42.0          # Required for core/browser.py automation

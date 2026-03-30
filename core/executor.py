@@ -328,9 +328,9 @@ class ActionExecutor:
         text = user_input.lower().strip()
 
         # ── Create file ───────────────────────────────────────
-        # "create a file called X in Y" / "create file named X in Y" / "make a file X"
         file_match = re.search(
-            r"(?:create|make|new)\s+(?:a\s+)?file\s+(?:called|named|as|named as)?\s*['"]?([^'\"\s][^'\"]*?)['"]?\n            r"(?:\s+(?:in|on|at|inside)\s+(?:my\s+)?(.+))?",
+            r"(?:create|make|new)\s+(?:a\s+)?file\s+(?:called|named|as|named as)?\s*['\"]?([^'\"\s][^'\"]*?)['\"]?"
+            r"(?:\s+(?:in|on|at|inside)\s+(?:my\s+)?(.+))?",
             text
         )
         if file_match:
@@ -348,7 +348,8 @@ class ActionExecutor:
         # ── Create subfolder inside existing folder ───────────
         subfolder_match = re.search(
             r"(?:create|make)\s+(?:a\s+)?sub.?folder\s+"
-            r"(?:called|named|as)?\s*['"]?([^'\"]+)['"]?\n            r"(?:\s+(?:in|inside|within|under)\s+(.+))?",
+            r"(?:called|named|as)?\s*['\"]?([^'\"\s][^'\"]*?)['\"]?"
+            r"(?:\s+(?:in|inside|within|under)\s+(.+))?",
             text
         )
         if subfolder_match:
