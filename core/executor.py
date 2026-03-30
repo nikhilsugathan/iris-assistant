@@ -544,7 +544,7 @@ Rules:
 - Windows paths use backslashes
 - For installs use winget (apps) or pip (python packages)
 - is_dangerous only true for delete/format/uninstall
-- For rename: use command like: ren "full\path\oldname" "newname"
+- For rename: use command like: ren "full\\path\\oldname" "newname"
 - Return unsupported only if truly impossible to determine
 
 Respond with ONLY the JSON object. No markdown, no explanation."""
