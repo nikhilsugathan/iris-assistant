@@ -22,7 +22,7 @@ class Brain:
         self.memory = memory
         self.available_apis = self._detect_apis()
         self._update_priority()
-        if "ollama_fast" in self.available_apis or "ollama_smart" in self.available_apis:
+        if any(k in self.available_apis for k in ("ollama_fast", "ollama_smart", "ollama_deep")):
             threading.Thread(target=self._warmup_ollama, daemon=True).start()
 
     # ─────────────────────────────────────────────────────────────
@@ -36,7 +36,11 @@ class Brain:
             resp = requests.get(f"{ollama_base}/api/tags", timeout=2)
             if resp.status_code == 200:
                 models = [m["name"] for m in resp.json().get("models", [])]
-                for key, cfg_key in [("ollama_fast", "OLLAMA_MODEL_FAST"), ("ollama_smart", "OLLAMA_MODEL_SMART")]:
+                for key, cfg_key in [
+                    ("ollama_fast",  "OLLAMA_MODEL_FAST"),
+                    ("ollama_smart", "OLLAMA_MODEL_SMART"),
+                    ("ollama_deep",  "OLLAMA_MODEL_DEEP"),
+                ]:
                     model_val = getattr(Config, cfg_key, "phi3.5")
                     if any(model_val.split(":")[0] in m for m in models):
                         available.append(key)
@@ -150,7 +154,12 @@ class Brain:
         return resp.json()["choices"][0]["message"]["content"].strip()
 
     def _call_ollama(self, api_key, prompt) -> str:
-        model = getattr(Config, "OLLAMA_MODEL_FAST" if api_key == "ollama_fast" else "OLLAMA_MODEL_SMART", "phi3.5")
+        _MODEL_MAP = {
+            "ollama_fast":  "OLLAMA_MODEL_FAST",
+            "ollama_smart": "OLLAMA_MODEL_SMART",
+            "ollama_deep":  "OLLAMA_MODEL_DEEP",
+        }
+        model = getattr(Config, _MODEL_MAP.get(api_key, "OLLAMA_MODEL_SMART"), "phi3.5")
         payload = {"model": model, "prompt": f"User: {prompt}\nIris:", "stream": False}
         resp = requests.post(f"{Config.OLLAMA_BASE_URL}/api/generate", json=payload, timeout=10)
         return resp.json().get("response", "").strip()

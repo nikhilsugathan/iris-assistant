@@ -88,6 +88,10 @@ def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, 
     # --- ROUTING LOGIC ---
     if decision.mode == "diagnostics":
         response = diagnostics.run(user_input, brain, voice, executor, copilot, brain.memory, self_model)
+    elif decision.mode == "copilot":
+        # FIX: copilot mode had no handler — fell silently to brain.think()
+        with console.status("[bold blue]Copilot thinking...[/bold blue]", spinner="dots"):
+            response = copilot.respond(user_input) if hasattr(copilot, "respond") else brain.think(user_input)
     elif decision.mode == "action":
         # Spinner for when she is figuring out HOW to do the task
         with console.status("[bold yellow]Formulating action plan...[/bold yellow]", spinner="dots"):
@@ -111,12 +115,13 @@ def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, 
                 response = "Action state cleared."
     elif decision.analytical or decision.depth == "deep":
         # ── Deep reasoning path — route through Chain-of-Thought engine ──
-        context = brain.memory.get_context() if hasattr(brain, "memory") and hasattr(brain.memory, "get_context") else ""
+        raw_ctx = brain.memory.get_context(6) if hasattr(brain, "memory") and hasattr(brain.memory, "get_context") else []
+        context = "\n".join(f"{e['role']}: {e['content']}" for e in raw_ctx) if raw_ctx else ""
         with console.status("[bold magenta]Reasoning...[/bold magenta]", spinner="dots"):
             response = logic_engine.reason(user_input, context=context)
     else:
         packet = council.deliberate(user_input, decision, self_model)
-        with console.status("[cyan]Thinking...[/cyan]:"): 
+        with console.status("[cyan]Thinking...[/cyan]"):
             response = brain.think(user_input, council_packet=packet)
 
     # Update self-model and log IRIS turn

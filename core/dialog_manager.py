@@ -51,6 +51,15 @@ class DialogManager:
         "reflect", "deeper", "meaning",
     ]
 
+    # FIX: Web-search keywords — must be checked BEFORE action triggers,
+    # because executor.ACTION_TRIGGERS previously hijacked "search for" / "look up"
+    # as OS-level actions, making the Researcher permanently unreachable.
+    WEB_SEARCH_KEYWORDS = [
+        "search for", "look up", "google", "find out", "what is the latest",
+        "current news", "what happened to", "who is", "when did",
+        "how much does", "what does", "define ", "wiki",
+    ]
+
     def analyze(self, text: str, executor, copilot, diagnostics, self_model) -> DialogueDecision:
         lowered = (text or "").lower().strip()
 
@@ -106,7 +115,22 @@ class DialogManager:
                 reflective=reflective,
             )
 
-        # 4. Action Initialization
+        # 4. Web Search — checked BEFORE action so "search for X" goes to
+        # Researcher, not the OS-level ActionExecutor.
+        if any(kw in lowered for kw in self.WEB_SEARCH_KEYWORDS):
+            return DialogueDecision(
+                mode="search",
+                depth="shallow",
+                tone="direct",
+                reason="user wants live web data",
+                high_stakes=high_stakes,
+                emotionally_weighted=emotionally_weighted,
+                analytical=False,
+                creative=False,
+                reflective=False,
+            )
+
+        # 5. Action Initialization
         if executor.should_handle(lowered):
             return DialogueDecision(
                 mode="action",
@@ -120,7 +144,7 @@ class DialogManager:
                 reflective=reflective,
             )
 
-        # 5. Reflection
+        # 6. Reflection
         if reflective:
             return DialogueDecision(
                 mode="reflection",
@@ -133,7 +157,7 @@ class DialogManager:
                 reflective=True,
             )
 
-        # 6. Analysis
+        # 7. Analysis
         if analytical or high_stakes:
             return DialogueDecision(
                 mode="analysis",
@@ -147,7 +171,7 @@ class DialogManager:
                 reflective=reflective,
             )
 
-        # 7. Creative
+        # 8. Creative
         if creative:
             return DialogueDecision(
                 mode="creative",
@@ -161,7 +185,7 @@ class DialogManager:
                 reflective=reflective,
             )
 
-        # 8. Chat Fallback
+        # 9. Chat Fallback
         tone = "warm" if emotionally_weighted or self_model.emotional_load > 0.55 else "direct"
         return DialogueDecision(
             mode="chat",

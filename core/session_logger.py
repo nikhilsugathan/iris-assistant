@@ -5,27 +5,30 @@ Handles persistent Markdown logging for Aletheia production sessions.
 """
 
 import os
+import pathlib
 from datetime import datetime
 from config import Config
+
+# Always resolve relative to the repo root, never the CWD.
+_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 class SessionLogger:
     def __init__(self):
         """Initializes the session log and ensures the history directory exists."""
-        self.history_dir = "history"
+        self.history_dir = str(_ROOT / "history")
         self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.filename = f"{self.history_dir}/session_{self.session_id}.md"
-        
+        self.filename = str(_ROOT / "history" / f"session_{self.session_id}.md")
+
         # Ensure the history directory exists to prevent FileNotFoundError
-        if not os.path.exists(self.history_dir):
-            os.makedirs(self.history_dir)
-            
+        os.makedirs(self.history_dir, exist_ok=True)
+
         self._write_header()
 
     def _write_header(self):
         """Writes the session metadata header to the Markdown file."""
         header = (
             f"# IRIS Session Log: {self.session_id}\n"
-            f"- **System**: {Config.SYSTEM_NAME} v4.8.3\n"
+            f"- **System**: {Config.SYSTEM_NAME} v5.0\n"
             f"- **Codename**: {Config.INNER_CODENAME}\n"
             f"- **Motto**: {Config.SYSTEM_MOTTO}\n"
             f"- **VRAM Target**: RTX 5050 (8GB)\n"
