@@ -1,10 +1,11 @@
 """
-IRIS Configuration v4.8.3
-=========================
+IRIS Configuration v5.0
+========================
 Hardened for Production: 
 - Explicit Codename: Aletheia
 - Dynamic RMS Gates (Wake: 400, Command: 550)
 - Optimized for 8GB VRAM (RTX 5050 Profile)
+- C++ Engine paths for llama-cpp-python and Piper TTS
 """
 
 import os
@@ -38,6 +39,18 @@ class Config:
     OLLAMA_MODEL_FAST = os.getenv("OLLAMA_MODEL_FAST", "llama3.2:3b")
     OLLAMA_MODEL_SMART = os.getenv("OLLAMA_MODEL_SMART", "qwen2.5:7b")
     OLLAMA_MODEL_DEEP = os.getenv("OLLAMA_MODEL_DEEP", "deepseek-r1:8b")
+
+    # ───────────────────────────────────────────────────────────
+    # C++ ENGINE PATHS (Phase 1 & 1.5)
+    # ───────────────────────────────────────────────────────────
+    # Phase 1: Path to local GGUF model file for llama-cpp-python
+    # Example: "C:/Users/nikhil/models/deepseek-r1-8b.Q4_K_M.gguf"
+    LOCAL_MODEL_PATH = os.getenv("LOCAL_MODEL_PATH", "")
+
+    # Phase 1.5: Path to Piper TTS model and executable
+    # Download models from: https://github.com/rhasspy/piper/releases
+    PIPER_MODEL_PATH = os.getenv("PIPER_MODEL_PATH", "")
+    PIPER_EXE_PATH = os.getenv("PIPER_EXE_PATH", "piper")
 
     BRAIN_PRIORITY = ["ollama_fast", "ollama_smart", "ollama_deep", "groq", "claude", "gemini"]
     PRIMARY_BRAIN = "GROQ"
@@ -145,6 +158,9 @@ If the user is vague, ask one tight follow-up."""
             warnings.append("GROQ_API_KEY empty. Voice commands will use slower fallback STT.")
         if not os.path.exists(".env"):
             warnings.append("No .env file found. Copy .env.example to .env.")
+        local_model = cls.LOCAL_MODEL_PATH
+        if local_model and not os.path.exists(local_model):
+            warnings.append(f"LOCAL_MODEL_PATH set but file not found: {local_model}")
 
         if warnings:
             print("  ── Config Warnings ──")

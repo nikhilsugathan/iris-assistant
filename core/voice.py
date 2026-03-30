@@ -82,6 +82,21 @@ class Voice:
             self._speech_thread.start()
 
     def _speak_async(self, text):
+        """Internal worker: tries Piper TTS first, falls back to edge-tts + pygame."""
+        piper_model = Config.PIPER_MODEL_PATH
+        piper_exe = Config.PIPER_EXE_PATH
+        if piper_model and os.path.exists(piper_model):
+            try:
+                from core.piper_tts import PiperTTSEngine
+                engine = PiperTTSEngine(model_path=piper_model, piper_exe=piper_exe)
+                engine.speak(text)
+                return  # Success — skip the old pipeline
+            except Exception as e:
+                from rich.console import Console as _Console
+                _Console().print(f"[yellow]Piper TTS failed, falling back: {e}[/yellow]")
+        self._speak_edge_tts(text)
+
+    def _speak_edge_tts(self, text):
         """Internal worker for edge-tts generation with hardened file validation."""
         temp_file = "temp_speech.mp3"
         try:

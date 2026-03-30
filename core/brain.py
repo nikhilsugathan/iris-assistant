@@ -1,12 +1,14 @@
 """
-IRIS Brain v4.6 (Ironclad Edition)
-==================================
+IRIS Brain v5.0 (C++ Engine Edition)
+=====================================
 - Parallel Ensemble (Zero-latency consensus)
 - Hardened Web-Routing (Fixes live-data blindness)
 - Standardized Memory Identity (Assistant = IRIS)
+- C++ LLM Engine via llama-cpp-python (replaces Ollama HTTP middleman)
 """
 
 from __future__ import annotations
+import os
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -20,27 +22,49 @@ console = Console()
 class Brain:
     def __init__(self, memory):
         self.memory = memory
+        self.llm = None
         self.available_apis = self._detect_apis()
         self._update_priority()
-        if "ollama_fast" in self.available_apis or "ollama_smart" in self.available_apis:
-            threading.Thread(target=self._warmup_ollama, daemon=True).start()
+        local_model = Config.LOCAL_MODEL_PATH
+        if local_model and os.path.exists(local_model):
+            threading.Thread(target=self._load_llm, daemon=True).start()
 
     # ─────────────────────────────────────────────────────────────
     # API DETECTION & PRIORITY
     # ─────────────────────────────────────────────────────────────
 
+    def _load_llm(self):
+        try:
+            from llama_cpp import Llama
+            console.print("[dim cyan]Spinning up C++ LLM Engine...[/dim cyan]")
+            self.llm = Llama(
+                model_path=Config.LOCAL_MODEL_PATH,
+                n_gpu_layers=-1,    # Full RTX 5050 offload
+                n_ctx=8192,
+                chat_format="chatml",  # Required for DeepSeek-R1
+                verbose=False
+            )
+            console.print("[bold green]✓ C++ Engine Ready[/bold green]")
+        except Exception as e:
+            console.print(f"[red]C++ Engine failed: {e}[/red]")
+            self.llm = None
+
     def _detect_apis(self) -> List[str]:
         available = []
-        ollama_base = getattr(Config, "OLLAMA_BASE_URL", "http://localhost:11434")
-        try:
-            resp = requests.get(f"{ollama_base}/api/tags", timeout=2)
-            if resp.status_code == 200:
-                models = [m["name"] for m in resp.json().get("models", [])]
-                for key, cfg_key in [("ollama_fast", "OLLAMA_MODEL_FAST"), ("ollama_smart", "OLLAMA_MODEL_SMART")]:
-                    model_val = getattr(Config, cfg_key, "phi3.5")
-                    if any(model_val.split(":")[0] in m for m in models):
-                        available.append(key)
-        except Exception: pass
+        local_model = Config.LOCAL_MODEL_PATH
+        if local_model and os.path.exists(local_model):
+            available.append("llama_cpp")
+        else:
+            ollama_base = getattr(Config, "OLLAMA_BASE_URL", "http://localhost:11434")
+            try:
+                resp = requests.get(f"{ollama_base}/api/tags", timeout=2)
+                if resp.status_code == 200:
+                    models = [m["name"] for m in resp.json().get("models", [])]
+                    for key, cfg_key in [("ollama_fast", "OLLAMA_MODEL_FAST"), ("ollama_smart", "OLLAMA_MODEL_SMART")]:
+                        model_val = getattr(Config, cfg_key, "phi3.5")
+                        if any(model_val.split(":")[0] in m for m in models):
+                            available.append(key)
+            except Exception: pass
 
         for api in ["gemini", "groq", "claude", "perplexity"]:
             if getattr(Config, f"{api.upper()}_API_KEY", ""):
@@ -48,7 +72,7 @@ class Brain:
         return available
 
     def _update_priority(self) -> None:
-        priority = list(getattr(Config, "BRAIN_PRIORITY", ["groq", "gemini", "claude"]))
+        priority = ["llama_cpp"] + list(getattr(Config, "BRAIN_PRIORITY", ["groq", "gemini", "claude"]))
         for api in priority:
             if api in self.available_apis:
                 Config.PRIMARY_BRAIN = api
@@ -124,6 +148,7 @@ class Brain:
             if api == "claude": return self._call_claude(prompt)
             if api == "gemini": return self._call_gemini(prompt)
             if api == "perplexity": return self._call_perplexity(prompt)
+            if api == "llama_cpp": return self._call_ollama("llama_cpp", prompt)
             if "ollama" in api: return self._call_ollama(api, prompt)
         except Exception: pass
         return None
@@ -150,6 +175,16 @@ class Brain:
         return resp.json()["choices"][0]["message"]["content"].strip()
 
     def _call_ollama(self, api_key, prompt) -> str:
+        if api_key == "llama_cpp":
+            if self.llm is None:
+                raise RuntimeError("C++ engine not loaded yet")
+            messages = self._build_msgs(prompt)
+            response = self.llm.create_chat_completion(
+                messages=messages,
+                max_tokens=1024,
+                temperature=0.6,
+            )
+            return response["choices"][0]["message"]["content"].strip()
         model = getattr(Config, "OLLAMA_MODEL_FAST" if api_key == "ollama_fast" else "OLLAMA_MODEL_SMART", "phi3.5")
         payload = {"model": model, "prompt": f"User: {prompt}\nIris:", "stream": False}
         resp = requests.post(f"{Config.OLLAMA_BASE_URL}/api/generate", json=payload, timeout=10)
@@ -187,7 +222,3 @@ class Brain:
         if "how are you" in t: return "Operational. Ready."
         if t in ["hi", "hello", "iris"]: return "I'm here."
         return ""
-
-    def _warmup_ollama(self):
-        try: requests.post(f"{Config.OLLAMA_BASE_URL}/api/generate", json={"model": Config.OLLAMA_MODEL_FAST, "prompt": ""}, timeout=5)
-        except Exception: pass
