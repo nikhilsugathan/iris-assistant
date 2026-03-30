@@ -1,218 +1,131 @@
 """
-IRIS Voice Module v4.8 (Production Edition)
-===========================================
-- Hardware Handoff: Uses unload() to prevent memory read crashes.
-- Silence-to-Sound Filter: Prevents "ghost" wake triggers from background noise.
-- Barge-in Support: Non-blocking speech with adaptive thresholds.
+IRIS Voice Engine v4.8.3
+========================
+- Hardened Thread Locking (Zombie Thread Fix)
+- Dynamic RMS Gates: Wake (400) / Command (550)
+- Support for Calibration & Privacy Mode
 """
 
-import asyncio
-import io
 import os
-import re
-import tempfile
-import threading
 import time
-import wave
+import threading
 import numpy as np
-
-from rich.console import Console
+import speech_recognition as sr
+from pygame import mixer
 from config import Config
-from core.wake_engine import SlidingWindowCapture, build_wav_bytes
+from core.logger import get_logger
 
-console = Console()
+logger = get_logger("Voice")
 
 class Voice:
-    def __init__(self, text_mode: bool = False):
-        self.text_mode       = text_mode
-        self._tts_lock       = threading.Lock()
-        self._stop_flag      = threading.Event()
-        self.audio_ready     = False
-        self.mic_ready       = False
-        self.privacy_mode    = False 
+    def __init__(self, text_mode=False):
+        """Initializes the voice engine with v4.8.3 hardened gates."""
+        self.text_mode = text_mode
+        self.privacy_mode = False
+        self.mic_ready = False
+        self.engine = "edge-tts"
         
-        # Sliding Window State
-        self.engine          = None
-        self._latest_window  = None
-        self._window_ready   = threading.Event()
+        # Calibration support for diagnostics.py
+        self._window_ready = threading.Event()
+        self._latest_window = None
         
-        # Confirmation Filter State
-        self._ambient_rms    = 0.0
-        self._is_ready_for_wake = False
-
-        self._init_audio()
-        self._init_mic()
-
-    def _init_audio(self):
-        try:
-            import pygame
-            pygame.mixer.pre_init(frequency=16000, size=-16, channels=1, buffer=512)
-            pygame.mixer.init()
-            self.audio_ready = True
-        except Exception as e:
-            console.print(f"[red]Audio init failed:[/red] {e}")
-
-    def _on_new_window(self, window: np.ndarray):
-        self._latest_window = window
-        self._window_ready.set()
+        # Thread safety locks
+        self._tts_lock = threading.Lock()
+        self._speech_thread = None
+        
+        if not self.text_mode:
+            self._init_mic()
+        
+        mixer.init()
 
     def _init_mic(self):
-        if self.text_mode: return
+        """Probes audio hardware for the Aletheia spec."""
         try:
-            self.engine = SlidingWindowCapture(on_window=self._on_new_window)
-            self.engine.start()
-            self.mic_ready  = True
+            self.recognizer = sr.Recognizer()
+            self.recognizer.energy_threshold = Config.WAKE_RMS_THRESHOLD
+            self.mic = sr.Microphone()
+            with self.mic as source:
+                self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
+            self.mic_ready = True
         except Exception as e:
-            console.print(f"[red]Microphone engine failed to start:[/red] {e}")
+            logger.error(f"Microphone init failed: {e}")
+            self.mic_ready = False
 
-    def is_speaking(self) -> bool:
-        try:
-            import pygame
-            return pygame.mixer.music.get_busy()
-        except:
-            return False
+    def toggle_privacy(self):
+        """Toggles eavesdropping on/off."""
+        self.privacy_mode = not self.privacy_mode
+        status = "ENABLED" if self.privacy_mode else "DISABLED"
+        logger.warning(f"Privacy Mode {status}")
+
+    def is_speaking(self):
+        """Checks if the mixer is currently active."""
+        return mixer.get_init() and mixer.music.get_busy()
 
     def stop_speaking(self):
-        """Hard reset of hardware to prevent memory read/write crashes."""
-        self._stop_flag.set()
-        try:
-            import pygame
-            if pygame.mixer.music.get_busy():
-                pygame.mixer.music.stop()
-            pygame.mixer.music.unload() # RELEASES RAM POINTER
-            time.sleep(0.15)            # Hardware cooling period
-        except:
-            pass
+        """Stops audio immediately to allow barge-in."""
+        if mixer.get_init():
+            mixer.music.stop()
+            mixer.music.unload()
 
-    def _audio_to_rms(self, audio) -> float:
-        try:
-            raw = audio.get_raw_data(convert_rate=16000, convert_width=2)
-            samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
-            if len(samples) == 0: return 0.0
-            return float(np.sqrt(np.mean(samples ** 2)))
-        except: return 0.0
-
-    def listen_for_wake(self) -> str:
-        if self.text_mode: return input("You: ")
-        if not self.mic_ready: return ""
-
-        if not self._window_ready.wait(timeout=0.5):
-            return ""
-        
-        self._window_ready.clear()
-        window = self._latest_window
-
-        # Calculate Current RMS
-        rms = float(np.sqrt(np.mean(window.astype(np.float32) ** 2)))
-        
-        # Threshold Logic
-        base_threshold = getattr(Config, "WAKE_RMS_THRESHOLD", 350)
-        if self.privacy_mode: base_threshold += 2500
-        if self.is_speaking(): base_threshold += 1500 # Ignore echo
-        
-        # --- CONFIRMATION FILTER ---
-        # If the room is quiet, set 'Ready' flag. 
-        # A wake word can ONLY trigger if the system was 'Ready' (preceded by silence).
-        if rms < (base_threshold * 0.6):
-            self._is_ready_for_wake = True
-            console.print(f"[dim]  (System Ready -> Ambient: {rms:.0f})[/dim]", end="\r")
-            return ""
-
-        if not self._is_ready_for_wake:
-            # Still hearing noise/echo, ignore potential triggers
-            return ""
-
-        if rms < base_threshold:
-            return ""
-
-        # VALID TRIGGER: Noise detected after silence
-        console.print(f"\n[cyan]  (Clean Start Detected! RMS: {rms:.0f})[/cyan]")
-        self._is_ready_for_wake = False # Reset flag
-        
-        wav_bytes = build_wav_bytes(window)
-        return self._transcribe_groq_bytes(wav_bytes, prompt="iris")
-
-    def listen_for_command(self) -> str:
-        if self.text_mode: return input("You: ")
-        
-        # Force hardware unload before switching to Mic
-        self.stop_speaking()
-        
-        if not self.mic_ready: return ""
-        self.engine.stop()
-        
-        import speech_recognition as sr
-        r = sr.Recognizer()
-        r.energy_threshold = getattr(Config, "MIC_ENERGY_THRESHOLD", 200)
-        r.pause_threshold = 0.8
-        
-        try:
-            with sr.Microphone() as source:
-                console.print("[dim]Listening...[/dim]")
-                audio = r.listen(source, timeout=10, phrase_time_limit=30)
-            
-            # Hallucination Gate
-            if self._audio_to_rms(audio) < getattr(Config, "WAKE_RMS_THRESHOLD", 350):
-                self.engine.start()
-                return ""
-                
-            wav_bytes = audio.get_wav_data(convert_rate=16000, convert_width=2)
-            result = self._transcribe_groq_bytes(wav_bytes)
-            
-            self.engine.start()
-            return result
-        except:
-            self.engine.start()
-            return ""
-
-    def speak(self, text: str):
-        if not text or self.io_disabled: return
-        clean = re.sub(r"[*_`#→|]", "", text)
-        self.stop_speaking()
+    def speak(self, text):
+        """Atomic TTS execution with thread serialization."""
+        if not text: return
         
         with self._tts_lock:
-            self._stop_flag.clear()
-            threading.Thread(
-                target=lambda: asyncio.run(self._speak_async(clean)),
-                daemon=True
-            ).start()
+            self.stop_speaking()
+            # Serialize: Wait for any previous thread to die
+            if self._speech_thread and self._speech_thread.is_alive():
+                self._speech_thread.join(timeout=0.3)
+            
+            self._speech_thread = threading.Thread(target=self._speak_async, args=(text,))
+            self._speech_thread.daemon = True
+            self._speech_thread.start()
 
-    async def _speak_async(self, text: str):
-        import edge_tts, pygame
-        chunks = [text] if len(text) < 1000 else [s.strip() for s in re.split(r"\n\n", text) if s.strip()]
-        
-        for chunk in chunks:
-            if self._stop_flag.is_set(): break
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
-                tmp = f.name
-            try:
-                comm = edge_tts.Communicate(text=chunk, voice=Config.VOICE_NAME, rate=Config.VOICE_RATE)
-                await comm.save(tmp)
-                pygame.mixer.music.load(tmp)
-                pygame.mixer.music.play()
-                
-                while pygame.mixer.music.get_busy():
-                    if self._stop_flag.is_set(): break
-                    await asyncio.sleep(0.05)
-            finally:
-                try: 
-                    pygame.mixer.music.unload()
-                    os.unlink(tmp)
-                except: pass
-        self._window_ready.clear()
-
-    def _transcribe_groq_bytes(self, wav_bytes: bytes, prompt="") -> str:
+    def _speak_async(self, text):
+        """Internal worker for edge-tts generation."""
+        temp_file = "temp_speech.mp3"
         try:
-            from groq import Groq
-            client = Groq(api_key=Config.GROQ_API_KEY)
-            res = client.audio.transcriptions.create(
-                file=("wake.wav", wav_bytes, "audio/wav"),
-                model="whisper-large-v3-turbo",
-                prompt=prompt, 
-                response_format="text",
-                temperature=0.0
-            )
-            return (res or "").strip()
-        except Exception as e:
-            console.print(f"[bold red][DEBUG] Groq Failed:[/bold red] {e}")
-            return ""
+            # Use edge-tts to generate voice as per Config.VOICE_NAME
+            cmd = f'edge-tts --voice {Config.VOICE_NAME} --rate={Config.VOICE_RATE} --text "{text}" --write-media {temp_file}'
+            os.system(cmd)
+            
+            if os.path.exists(temp_file):
+                mixer.music.load(temp_file)
+                mixer.music.play()
+                while mixer.music.get_busy():
+                    time.sleep(0.1)
+        finally:
+            self.stop_speaking()
+            if os.path.exists(temp_file):
+                try: os.remove(temp_file)
+                except: pass
+
+    def listen_for_wake(self):
+        """Listens for triggers using the WAKE_RMS_THRESHOLD."""
+        if self.text_mode or self.privacy_mode: return None
+        
+        with self.mic as source:
+            try:
+                audio = self.recognizer.listen(source, timeout=2, phrase_time_limit=3)
+                # Calibration hook: update latest window for diagnostics
+                self._latest_window = np.frombuffer(audio.get_raw_data(), dtype=np.int16)
+                self._window_ready.set()
+                
+                text = self.recognizer.recognize_google(audio).lower()
+                return text
+            except:
+                return None
+
+    def listen_for_command(self):
+        """Listens for follow-ups using the COMMAND_RMS_THRESHOLD."""
+        if self.text_mode: return None
+        
+        with self.mic as source:
+            self.recognizer.energy_threshold = Config.COMMAND_RMS_THRESHOLD
+            try:
+                audio = self.recognizer.listen(source, timeout=5, phrase_time_limit=10)
+                return self.recognizer.recognize_google(audio)
+            except:
+                return None
+            finally:
+                self.recognizer.energy_threshold = Config.WAKE_RMS_THRESHOLD

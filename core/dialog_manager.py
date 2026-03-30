@@ -6,9 +6,7 @@ how deeply to think and which cognitive roles to activate.
 """
 
 from __future__ import annotations
-
 from dataclasses import dataclass
-
 
 @dataclass
 class DialogueDecision:
@@ -21,7 +19,6 @@ class DialogueDecision:
     analytical: bool = False
     creative: bool = False
     reflective: bool = False
-
 
 class DialogManager:
     HIGH_STAKES_KEYWORDS = [
@@ -63,6 +60,27 @@ class DialogManager:
         creative = any(word in lowered for word in self.CREATIVE_KEYWORDS)
         reflective = any(word in lowered for word in self.REFLECTIVE_KEYWORDS)
 
+        # 1. State Interception: Is the Action Executor waiting for a response?
+        is_waiting = False
+        for state_check in ["waiting_for_permission", "waiting_for_followup", "waiting_for_clarification", "waiting_for_plan_choice"]:
+            if hasattr(executor, state_check) and getattr(executor, state_check)():
+                is_waiting = True
+                break
+
+        if is_waiting:
+            return DialogueDecision(
+                mode="action_pending",
+                depth="shallow",
+                tone="direct",
+                reason="routing user response back to waiting action executor",
+                high_stakes=high_stakes,
+                emotionally_weighted=False,
+                analytical=False,
+                creative=False,
+                reflective=False
+            )
+
+        # 2. Diagnostics
         if diagnostics.should_handle(lowered):
             return DialogueDecision(
                 mode="diagnostics",
@@ -75,6 +93,7 @@ class DialogManager:
                 reflective=True,
             )
 
+        # 3. Copilot
         if getattr(copilot, "active", False) or copilot.should_activate(lowered):
             return DialogueDecision(
                 mode="copilot",
@@ -87,6 +106,7 @@ class DialogManager:
                 reflective=reflective,
             )
 
+        # 4. Action Initialization
         if executor.should_handle(lowered):
             return DialogueDecision(
                 mode="action",
@@ -100,6 +120,7 @@ class DialogManager:
                 reflective=reflective,
             )
 
+        # 5. Reflection
         if reflective:
             return DialogueDecision(
                 mode="reflection",
@@ -112,6 +133,7 @@ class DialogManager:
                 reflective=True,
             )
 
+        # 6. Analysis
         if analytical or high_stakes:
             return DialogueDecision(
                 mode="analysis",
@@ -125,6 +147,7 @@ class DialogManager:
                 reflective=reflective,
             )
 
+        # 7. Creative
         if creative:
             return DialogueDecision(
                 mode="creative",
@@ -138,6 +161,7 @@ class DialogManager:
                 reflective=reflective,
             )
 
+        # 8. Chat Fallback
         tone = "warm" if emotionally_weighted or self_model.emotional_load > 0.55 else "direct"
         return DialogueDecision(
             mode="chat",

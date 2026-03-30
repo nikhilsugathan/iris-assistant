@@ -1,17 +1,16 @@
 """
-IRIS Main Entry Point v4.7
-==========================
-- Hardened Voice Standby & Privacy Mode
-- Continuous Conversation Momentum
-- Auto-Sanitizing Memory Shutdown
-- Barge-in Support (Interrupt while speaking)
+IRIS Main Entry Point v4.8.3
+============================
+- Hardened for RTX 5050 (8GB VRAM)
+- Integrated Session Logging & VRAM Safety Monitor
+- Production Gates: Wake (400) / Command (550)
 """
 
 from __future__ import annotations
-
 import argparse
 import time
 import sys
+import os
 
 from rich.console import Console
 from rich.panel import Panel
@@ -22,16 +21,12 @@ from core.brain import Brain
 from core.council import Council
 from core.copilot import CoPilot
 from core.dialog_manager import DialogManager
-from core.diagnostics import SelfDiagnostics, BootDiagnostics
+from core.diagnostics import SelfDiagnostics, BootDiagnostics, get_vram_status
 from core.executor import ActionExecutor
 from core.memory import Memory
 from core.self_model import SelfModel
 from core.voice import Voice
-
-try:
-    from core.runtime_log import log_runtime
-except ImportError:
-    def log_runtime(t, m, l="INFO"): pass
+from core.session_logger import SessionLogger # New Module Required
 
 console = Console()
 
@@ -45,37 +40,31 @@ BANNER = f"""
   {Config.SYSTEM_MOTTO}
 """
 
-def show_status(memory: Memory, text_mode: bool, voice: Voice, self_model: SelfModel) -> None:
+def show_status(voice: Voice, self_model: SelfModel) -> None:
+    """Displays hardware and logic gates for the Aletheia spec."""
+    v_p, _ = get_vram_status()
     mic_status = "Ready" if getattr(voice, "mic_ready", False) else "Unavailable"
-    if getattr(voice, "engine", None):
-        base_threshold = getattr(Config, "WAKE_RMS_THRESHOLD", 500)
-        threshold = base_threshold + 2500 if getattr(voice, "privacy_mode", False) else base_threshold
-    else:
-        threshold = "N/A"
     
     console.print(
         Panel(
-            f"[bold green]Online[/bold green] | [bold red]{'PRIVACY' if getattr(voice, 'privacy_mode', False) else 'NORMAL'}[/bold red]\n"
+            f"[bold green]Online[/bold green] | [bold red]{'PRIVACY' if getattr(voice, 'privacy_mode', False) else 'NORMAL'}[/bold red] | [bold yellow]VRAM: {v_p:.1f}%[/bold yellow]\n"
+            f"[white]Codename       :[/white] [cyan]{Config.INNER_CODENAME}[/cyan]\n"
             f"[white]Primary Brain  :[/white] [cyan]{Config.PRIMARY_BRAIN}[/cyan]\n"
-            f"[white]Input Mode     :[/white] [cyan]{'Keyboard' if text_mode else 'Voice Standby'}[/cyan]\n"
-            f"[white]Microphone     :[/white] [cyan]{mic_status} (RMS Gate: {threshold})[/cyan]\n"
+            f"[white]Microphone     :[/white] [cyan]{mic_status} (W: {Config.WAKE_RMS_THRESHOLD} / C: {Config.COMMAND_RMS_THRESHOLD})[/cyan]\n"
             f"[white]Self Model     :[/white] [cyan]{self_model.summary()}[/cyan]\n",
-            title=f"[bold cyan]{Config.SYSTEM_NAME}[/bold cyan]",
+            title=f"[bold cyan]{Config.SYSTEM_NAME} v4.8.3[/bold cyan]",
             border_style="cyan",
         )
     )
 
-def update_self_model_logic(self_model: SelfModel, response: str, source: str) -> None:
-    lowered = (response or "").lower()
-    if any(token in lowered for token in ["failed", "error", "couldn't"]):
-        self_model.note_failure(response)
-        return
-    self_model.note_response(response, source=source)
-
-def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, self_model, dialog_manager, council, diagnostics):
+def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, self_model, dialog_manager, council, diagnostics, logger):
+    """Processes input and records turns to the session log."""
     user_input = (user_input or "").strip()
     if not user_input: return None, False
 
+    # Log user turn
+    logger.log_turn("User", user_input)
+    
     lowered = user_input.lower()
     if any(cmd in lowered for cmd in ["terminate", "shutdown", "exit system"]):
         return "EXIT", True
@@ -89,21 +78,39 @@ def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, 
 
     decision = dialog_manager.analyze(user_input, executor, copilot, diagnostics, self_model)
     
+    # --- ROUTING LOGIC ---
     if decision.mode == "diagnostics":
         response = diagnostics.run(user_input, brain, voice, executor, copilot, brain.memory, self_model)
     elif decision.mode == "action":
         response = executor.plan_action(user_input)
+    elif decision.mode == "action_pending":
+        # Handshake: Route the Yes/No back to the specific waiting state
+        if getattr(executor, "waiting_for_permission", lambda: False)():
+            response = executor.handle_permission_response(user_input)
+        elif getattr(executor, "waiting_for_followup", lambda: False)():
+            response = executor.handle_followup_response(user_input)
+        elif getattr(executor, "waiting_for_clarification", lambda: False)():
+            response = executor.handle_clarification_response(user_input)
+        elif getattr(executor, "waiting_for_plan_choice", lambda: False)():
+            response = executor.handle_plan_choice(user_input)
+        else:
+            response = "Action state cleared."
     else:
         packet = council.deliberate(user_input, decision, self_model)
         with console.status("[cyan]Thinking...[/cyan]"):
             response = brain.think(user_input, council_packet=packet)
 
-    update_self_model_logic(self_model, response, decision.mode)
+    # Update self-model and log IRIS turn
+    self_model.note_response(response, source=decision.mode)
     console.print(f"\n[bold cyan]IRIS:[/bold cyan] {response}\n")
+    logger.log_turn("IRIS", response)
+    
     voice.speak(response)
     return response, False
 
 def main() -> None:
+    # 1. Pre-flight & Config Validation
+    Config.validate()
     try:
         BootDiagnostics().run_preflight()
     except Exception: pass
@@ -112,22 +119,29 @@ def main() -> None:
     parser.add_argument("--text", action="store_true")
     args = parser.parse_args()
 
+    # 2. Module Initialization
     memory = Memory(Config.MEMORY_FILE)
+    logger = SessionLogger() # New: Persistent Markdown Logging
     brain, voice = Brain(memory), Voice(text_mode=args.text)
     copilot, executor = CoPilot(brain, voice, memory), ActionExecutor(voice, brain)
     autocorrect, self_model = AutoCorrector(brain), SelfModel()
     dialog_manager, council, diagnostics = DialogManager(), Council(), SelfDiagnostics()
 
     console.print(BANNER, style="bold cyan")
-    show_status(memory, args.text, voice, self_model)
+    show_status(voice, self_model)
 
     CONVERSATION_TURNS = 5 
 
     while True:
         try:
+            # 3. VRAM Safety Guard for RTX 5050
+            v_p, v_f = get_vram_status()
+            if v_p > 96:
+                voice.speak("VRAM is critically over-extended. Close background processes to avoid a crash.")
+
             if args.text:
                 user_input = input("You: ")
-                _, should_exit = handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, self_model, dialog_manager, council, diagnostics)
+                _, should_exit = handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, self_model, dialog_manager, council, diagnostics, logger)
                 if should_exit: break
                 continue
 
@@ -141,22 +155,19 @@ def main() -> None:
                     voice.stop_speaking()
                     console.print("[bold yellow]  (Interrupt detected! Stopping speech...)[/bold yellow]")
                 
-                console.print(f"[dim]  (Wake STT heard: '{heard_text}')[/dim]")
-                
                 cleaned = heard_text
                 for w in Config.WAKE_WORDS: 
                     cleaned = cleaned.lower().replace(w.lower(), "").strip()
                 
-                _, should_exit = handle_user_input(cleaned or "Yes?", voice, autocorrect, executor, copilot, brain, self_model, dialog_manager, council, diagnostics)
+                _, should_exit = handle_user_input(cleaned or "Yes?", voice, autocorrect, executor, copilot, brain, self_model, dialog_manager, council, diagnostics, logger)
                 if should_exit: break
 
                 # MOMENTUM LOOP
                 for _ in range(CONVERSATION_TURNS):
-                    console.print("[dim]  (listening...)[/dim]")
                     follow_up = voice.listen_for_command()
                     if not follow_up or any(w in follow_up.lower() for w in ["stop", "thanks", "bye"]):
                         break
-                    _, should_exit = handle_user_input(follow_up, voice, autocorrect, executor, copilot, brain, self_model, dialog_manager, council, diagnostics)
+                    _, should_exit = handle_user_input(follow_up, voice, autocorrect, executor, copilot, brain, self_model, dialog_manager, council, diagnostics, logger)
                     if should_exit: break
                 
                 if should_exit: break
@@ -166,13 +177,14 @@ def main() -> None:
             console.print(f"[red]System Error:[/red] {e}")
             time.sleep(1)
 
+    # 4. Shutdown & Finalization
     console.print("\n[bold cyan]IRIS:[/bold cyan] Terminating. Sanitizing memory...")
+    logger.finalize() # New: Close session log safely
+    
     try:
         from tools.cleaner import sanitize_memory
         sanitize_memory(Config.MEMORY_FILE)
-        console.print("[bold green]✓ Cleanup complete. Goodbye.[/bold green]")
-    except Exception as e:
-        console.print(f"[bold yellow]Warning:[/bold yellow] Memory cleanup skipped: {e}")
+    except Exception: pass
     
     sys.exit()
 

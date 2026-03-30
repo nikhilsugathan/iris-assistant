@@ -1,0 +1,25 @@
+2026-03-27 21:25:02 [ERROR] iris.IRIS: Brain Error: 1 validation error for ChatRequest
+model
+  Input should be a valid string [type=string_type, input_value=<core.memory.Memory object at 0x000001FC9CDD4650>, input_type=Memory]
+    For further information visit https://errors.pydantic.dev/2.12/v/string_type
+2026-03-27 22:03:12 [ERROR] iris.IRIS: Hardware Access Failure on Index 1: listening timed out while waiting for phrase to start
+2026-03-27 22:03:17 [ERROR] iris.IRIS: Hardware Access Failure on Index 1: listening timed out while waiting for phrase to start
+2026-03-27 22:03:21 [ERROR] iris.IRIS: Hardware Access Failure on Index 1: listening timed out while waiting for phrase to start
+2026-03-27 22:03:28 [ERROR] iris.IRIS: Hardware Access Failure on Index 1: 
+2026-03-27 22:03:32 [ERROR] iris.IRIS: Hardware Access Failure on Index 1: listening timed out while waiting for phrase to start
+2026-03-27 22:03:37 [ERROR] iris.IRIS: Hardware Access Failure on Index 1: listening timed out while waiting for phrase to start
+2026-03-27 22:03:41 [ERROR] iris.IRIS: Hardware Access Failure on Index 1: listening timed out while waiting for phrase to start
+2026-03-27 22:03:46 [ERROR] iris.IRIS: Hardware Access Failure on Index 1: listening timed out while waiting for phrase to start
+2026-03-27 22:03:51 [ERROR] iris.IRIS: Hardware Access Failure on Index 1: listening timed out while waiting for phrase to start
+2026-03-27 22:03:56 [ERROR] iris.IRIS: Hardware Access Failure on Index 1: listening timed out while waiting for phrase to start
+2026-03-27 22:04:02 [ERROR] iris.IRIS: Hardware Access Failure on Index 1: 
+2026-03-27 22:04:06 [ERROR] iris.IRIS: Hardware Access Failure on Index 1: listening timed out while waiting for phrase to start
+2026-03-27 22:04:11 [ERROR] iris.IRIS: Hardware Access Failure on Index 1: listening timed out while waiting for phrase to start
+2026-03-27 22:04:16 [ERROR] iris.IRIS: Hardware Access Failure on Index 1: listening timed out while waiting for phrase to start
+2026-03-27 22:04:21 [ERROR] iris.IRIS: Hardware Access Failure on Index 1: 
+2026-03-27 22:04:25 [ERROR] iris.IRIS: Hardware Access Failure on Index 1: listening timed out while waiting for phrase to start
+2026-03-27 22:04:30 [ERROR] iris.IRIS: Hardware Access Failure on Index 1: listening timed out while waiting for phrase to start
+2026-03-27 22:04:35 [ERROR] iris.IRIS: Hardware Access Failure on Index 1: listening timed out while waiting for phrase to start
+2026-03-27 22:04:40 [ERROR] iris.IRIS: Hardware Access Failure on Index 1: 
+2026-03-27 22:04:44 [ERROR] iris.IRIS: Hardware Access Failure on Index 1: listening timed out while waiting for phrase to start
+2026-03-27 22:04:49 [ERROR] iris.IRIS: Hardware Access Failure on Index 1: listening timed out while waiting for phrase to start

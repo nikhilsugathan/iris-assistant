@@ -8,3 +8,5 @@ edge-tts==6.1.12
 pygame==2.6.1
 SpeechRecognition==3.11.0
 PyAudio==0.2.14
+numpy==1.26.4
+nvidia-ml-py==12.535.133
