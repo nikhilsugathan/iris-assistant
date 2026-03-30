@@ -36,6 +36,8 @@ import difflib
 from datetime import datetime
 from typing import Optional, Tuple
 
+from rich.progress import Progress, SpinnerColumn, TextColumn
+
 from config import Config
 from core.security import SecurityGuard, SAFE, WARNING, BLOCKED, NEED_ADMIN
 from core.autocorrect import AutoCorrector
@@ -224,7 +226,6 @@ class ActionExecutor:
     # ─────────────────────────────────────────────────────────────
     # PLAN: Figure out what action to take
     # ─────────────────────────────────────────────────────────────
-
     # ─────────────────────────────────────────────────────────────
     # SIMPLE TASK DETECTION: These run without asking permission
     # ─────────────────────────────────────────────────────────────
@@ -330,7 +331,7 @@ class ActionExecutor:
         # ── Create file ───────────────────────────────────────
         # "create a file called X in Y" / "create file named X in Y" / "make a file X"
         file_match = re.search(
-            r"(?:create|make|new)\s+(?:a\s+)?file\s+(?:called|named|as|named as)?\s*['\"]?([^\s'\"]+)['\"]?"
+            r"(?:create|make|new)\s+(?:a\s+)?file\s+(?:called|named|as|named as)?\s*['\"]?([^"]+?)['\"]?"
             r"(?:\s+(?:in|on|at|inside)\s+(?:my\s+)?(.+))?",
             text
         )
@@ -349,7 +350,7 @@ class ActionExecutor:
         # ── Create subfolder inside existing folder ───────────
         subfolder_match = re.search(
             r"(?:create|make)\s+(?:a\s+)?sub.?folder\s+"
-            r"(?:called|named|as)?\s*['\"]?([^\s'\"]+)['\"]?"
+            r"(?:called|named|as)?\s*['\"]?([^'\"]+)['\"]?"
             r"(?:\s+(?:in|inside|within|under)\s+(.+))?",
             text
         )
@@ -379,7 +380,7 @@ class ActionExecutor:
         folder_match = re.search(
             r"(?:create|make|new)\s+(?:a\s+)?folder\s+"
             r"(?:called|named|as|named as)\s+"
-            r"['\"]?([^\s'\"]+)['\"]?"
+            r"['\"]?([^"]+)['\"]?"
             r"(?:\s+(?:in|on|at|inside)\s+(?:my\s+)?(.+))?",
             text
         )
@@ -622,8 +623,7 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
         return self._execute_pending()
 
     def _execute_pending(self) -> str:
-        """
-        Execute with verification + improv fallback on failure.
+        """Execute with verification + improv fallback on failure.
 
         Flow:
           1. Execute
@@ -663,8 +663,7 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
         return spoken
 
     def _execute_with_verify(self, plan: dict) -> tuple:
-        """
-        Execute an action and verify it actually worked.
+        """Execute an action and verify it actually worked.
         Returns (message, success_bool)
         """
         action_type = plan.get("action_type")
@@ -709,9 +708,7 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
             return f"That didn't work: {str(e)[:100]}", False
 
     def _ai_retry_plan(self, original_plan: dict, error_msg: str) -> dict:
-        """
-        Ask the AI to generate an alternative approach when the first attempt fails.
-        """
+        """Ask the AI to generate an alternative approach when the first attempt fails."""
         prompt = f"""An action failed on Windows. Generate an alternative approach.
 
 Original action: {json.dumps(original_plan, indent=2)}
@@ -749,45 +746,72 @@ Respond with ONLY the JSON. No explanation."""
         except Exception:
             return None
 
+    def _run_with_live_progress(self, command: str) -> str:
+        """Executes a command while streaming live shell output to a rich progress bar."""
+        output_lines = []
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            transient=True,
+        ) as progress:
+            task = progress.add_task(f"[cyan]Starting:[/cyan] {command}", total=None)
+            try:
+                process = subprocess.Popen(
+                    command, shell=True, stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT, text=True, bufsize=1,
+                    creationflags=subprocess.CREATE_NO_WINDOW if self.is_windows else 0,
+                )
+                for line in process.stdout:
+                    clean_line = line.strip()
+                    if clean_line:
+                        output_lines.append(clean_line)
+                        short_line = clean_line[:80] + "..." if len(clean_line) > 80 else clean_line
+                        progress.update(task, description=f"[cyan]Working:[/cyan] [dim]{short_line}[/dim]")
+                process.wait()
+            except Exception as e:
+                self._log(f"EXCEPTION running command: {command} — {e}")
+                return f"Couldn't run that command: {str(e)[:150]}"
+
+        final_output = "\n".join(output_lines[-4:])
+        if process.returncode == 0:
+            self._log(f"SUCCESS: {command}")
+            return "Done. " + final_output
+        else:
+            self._log(f"FAILED: {command} — {final_output}")
+            fix = self._think_of_fix(command, final_output)
+            return f"That didn't work. {fix}"
+
     def _run_command(self, plan: dict) -> str:
         """Run a shell command with defense-in-depth security re-check."""
         command = plan.get("command", "")
-        if not command:
-            return "No command to run."
+        if not command: return "No command to run."
 
-        # ── Defense in depth: re-check blocked patterns before execution ──
-        # This catches cases where override, improv, or AI retry bypassed
-        # the initial security gate.
         from core.security import BLOCKED_COMMANDS
         cmd_lower = command.lower()
         for pattern in BLOCKED_COMMANDS:
             if re.search(pattern, cmd_lower, re.IGNORECASE):
-                self._log(f"EXECUTION BLOCKED (defense-in-depth): {command} matched '{pattern}'")
-                return "Blocked — this command matches a hard security rule and cannot run."
+                self._log(f"EXECUTION BLOCKED: {command}")
+                return "Blocked — this matches a hard security rule."
 
         self._log(f"RUN: {command}")
 
+        is_heavy_task = any(word in cmd_lower for word in ["install", "update", "upgrade", "npm", "pip", "winget"])
+        if is_heavy_task:
+            return self._run_with_live_progress(command)
+
         try:
             result = subprocess.run(
-                command,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=120,
+                command, shell=True, capture_output=True, text=True, timeout=120,
                 creationflags=subprocess.CREATE_NO_WINDOW if self.is_windows else 0,
             )
         except subprocess.TimeoutExpired:
-            self._log(f"TIMEOUT: {command} (exceeded 120s)")
-            return "That command timed out after 2 minutes. It may still be running in the background."
+            return "That command timed out after 2 minutes."
         except Exception as e:
-            self._log(f"EXCEPTION running command: {command} — {e}")
             return f"Couldn't run that command: {str(e)[:150]}"
 
         if result.returncode == 0:
             output = result.stdout.strip()
-            msg = "Done."
-            if output and len(output) < 300:
-                msg += f" {output}"
+            msg = "Done." + (f" {output}" if output and len(output) < 300 else "")
             self._log(f"SUCCESS: {command}")
             return msg
         else:
@@ -892,7 +916,7 @@ Be specific and practical. No preamble."""
             folder = filename
         elif command:
             # Extract path from mkdir command
-            match = re.search(r'mkdir\s+"?([^"]+)"?', command, re.IGNORECASE)
+            match = re.search(r'mkdir\s+"?([^"']+)"?', command, re.IGNORECASE)
             folder = match.group(1).strip() if match else None
         else:
             folder = None
