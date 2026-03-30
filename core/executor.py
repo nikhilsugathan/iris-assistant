@@ -348,7 +348,7 @@ class ActionExecutor:
         # ── Create subfolder inside existing folder ───────────
         subfolder_match = re.search(
             r"(?:create|make)\s+(?:a\s+)?sub.?folder\s+"
-            r"(?:called|named|as)?\s*['\"]?([^'\"\s][^'\"]*?)['\"]?"
+            r"(?:called|named|as)?\s*['\"]?([^'\"]+)['\"]?"
             r"(?:\s+(?:in|inside|within|under)\s+(.+))?",
             text
         )
@@ -787,7 +787,7 @@ Respond with ONLY the JSON. No explanation."""
 
     def _run_command(self, plan: dict) -> str:
         """Run a shell command with defense-in-depth security re-check."""
-        command = plan.get("command", "")
+        command = os.path.expandvars(plan.get("command", ""))  # expand env vars before blocked-commands scan
         if not command: return "No command to run."
 
         from core.security import BLOCKED_COMMANDS
