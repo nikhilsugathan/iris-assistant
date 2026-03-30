@@ -1,16 +1,16 @@
 """
-JARVIS Action Executor
+IRIS Action Executor
 =======================
-When you ask JARVIS to DO something — install, create, delete, run —
+When you ask IRIS to DO something — install, create, delete, run —
 it plans the action, tells you exactly what it's about to do,
 and waits for your voice/text permission before executing.
 
 PERMISSION GATE FLOW:
-  You: "Jarvis, install Python"
-  JARVIS: "I'll run: winget install Python.Python.3 — shall I go ahead?"
+  You: "Iris, install Python"
+  IRIS: "I'll run: winget install Python.Python.3 — shall I go ahead?"
   You: "yes" / "go ahead" / "do it"
-  JARVIS: [runs the command, reports result]
-  JARVIS: "Done. Python installed. Want me to verify it worked?"
+  IRIS: [runs the command, reports result]
+  IRIS: "Done. Python installed. Want me to verify it worked?"
 
 SUPPORTED ACTION TYPES:
   - install_package  : winget / pip / npm install
@@ -22,9 +22,9 @@ SUPPORTED ACTION TYPES:
   - write_to_file    : append/write content to existing file
 
 SAFETY:
-  - JARVIS ALWAYS announces what it will do before doing it
+  - IRIS ALWAYS announces what it will do before doing it
   - Destructive actions (delete, format, rm -rf) require DOUBLE confirmation
-  - Every action and result is logged to jarvis_actions.log
+  - Every action and result is logged to iris_actions.log
 """
 
 import subprocess
@@ -105,7 +105,7 @@ class ActionExecutor:
     ]
 
     def should_handle(self, user_input: str) -> bool:
-        """Detect if user wants JARVIS to take a real action."""
+        """Detect if user wants IRIS to take a real action."""
         text = user_input.lower()
         return any(trigger in text for trigger in self.ACTION_TRIGGERS)
 
