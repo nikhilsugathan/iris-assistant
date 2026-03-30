@@ -82,18 +82,30 @@ class Voice:
             self._speech_thread.start()
 
     def _speak_async(self, text):
-        """Internal worker for edge-tts generation."""
+        """Internal worker for edge-tts generation with hardened file validation."""
         temp_file = "temp_speech.mp3"
         try:
-            # Use edge-tts to generate voice as per Config.VOICE_NAME
+            # 1. Clean up stale files before starting
+            if os.path.exists(temp_file):
+                try: os.remove(temp_file)
+                except: pass
+
+            # 2. Call Edge-TTS
             cmd = f'edge-tts --voice {Config.VOICE_NAME} --rate={Config.VOICE_RATE} --text "{text}" --write-media {temp_file}'
             os.system(cmd)
             
-            if os.path.exists(temp_file):
-                mixer.music.load(temp_file)
-                mixer.music.play()
-                while mixer.music.get_busy():
-                    time.sleep(0.1)
+            # 3. Security Gate: Only load if file exists AND is larger than 0 bytes
+            if os.path.exists(temp_file) and os.path.getsize(temp_file) > 0:
+                try:
+                    mixer.music.load(temp_file)
+                    mixer.music.play()
+                    while mixer.music.get_busy():
+                        time.sleep(0.1)
+                except Exception as e:
+                    logger.error(f"Pygame failed to play audio: {e}")
+            else:
+                logger.error("TTS generation failed. Microsoft API may be down (403 Forbidden).")
+                
         finally:
             self.stop_speaking()
             if os.path.exists(temp_file):
