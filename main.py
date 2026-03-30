@@ -1,9 +1,10 @@
 """
-IRIS Main Entry Point v4.8.3
-============================
+IRIS Main Entry Point v5.0
+==========================
 - Hardened for RTX 5050 (8GB VRAM)
 - Integrated Session Logging & VRAM Safety Monitor
 - Production Gates: Wake (400) / Command (550)
+- v5.0: Researcher + Autonomist integration, fixed shutdown learning loop
 """
 
 from __future__ import annotations
@@ -27,17 +28,19 @@ from core.logic_engine import LogicalEngine
 from core.memory import Memory
 from core.self_model import SelfModel
 from core.voice import Voice
-from core.session_logger import SessionLogger # New Module Required
+from core.session_logger import SessionLogger
+from tools.researcher import Researcher       # FIX: was missing
+from core.autonomist import Autonomist         # FIX: was missing
 
 console = Console()
 
 BANNER = f"""
-  ██╗██████╗ ██╗███████╗
-  ██║██╔══██╗██║██╔════╝
-  ██║██████╔╝██║███████╗
-  ██║██╔══██╗██║╚════██║
-  ██║██║  ██║██║███████║
-  ╚═╝╚═╝  ╚═╝╚═╝╚══════╝
+  ██████████████████████ ████████████████
+  ████▄████▄████████▄████▄████████▄████▄
+  ████▄████████████▄████▄████████▄███████
+  ████▄████▄████▄████████▄████████████▄████
+  ████▄████▄████████████▄████▄████████████
+  ▀▀▀▀▀▀▀▀ ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
   {{Config.SYSTEM_MOTTO}}
 """
 
@@ -53,12 +56,12 @@ def show_status(voice: Voice, self_model: SelfModel) -> None:
             f"[white]Primary Brain  :[/white] [cyan]{{Config.PRIMARY_BRAIN}}[/cyan]\n"
             f"[white]Microphone     :[/white] [cyan]{{mic_status}} (W: {{Config.WAKE_RMS_THRESHOLD}} / C: {{Config.COMMAND_RMS_THRESHOLD}})[/cyan]\n"
             f"[white]Self Model     :[/white] [cyan]{{self_model.summary()}}[/cyan]\n",
-            title=f"[bold cyan]{{Config.SYSTEM_NAME}} v4.8.3[/bold cyan]",
+            title=f"[bold cyan]{{Config.SYSTEM_NAME}} v5.0[/bold cyan]",
             border_style="cyan",
         )
     )
 
-def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, self_model, dialog_manager, council, diagnostics, logger):
+def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, self_model, dialog_manager, council, diagnostics, logger, researcher=None, autonomist=None):
     """Processes input and records turns to the session log."""
     user_input = (user_input or "").strip()
     if not user_input: return None, False
@@ -66,7 +69,7 @@ def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, 
     # Log user turn
     logger.log_turn("User", user_input)
 
-    # ── Initialise the reasoning engine for this turn ──────────────────
+    # ── Initialise the reasoning engine for this turn ──────────────────────
     logic_engine = LogicalEngine(brain)
     
     lowered = user_input.lower()
@@ -89,6 +92,10 @@ def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, 
         # Spinner for when she is figuring out HOW to do the task
         with console.status("[bold yellow]Formulating action plan...[/bold yellow]", spinner="dots"):
             response = executor.plan_action(user_input)
+    elif decision.mode == "search" and researcher:
+        # FIX: was missing entirely — web search was completely dead
+        with console.status("[bold green]Searching the web...[/bold green]", spinner="dots"):
+            response = researcher.search(user_input)
     elif decision.mode == "action_pending":
         # Spinner for when you say "Yes" and she actually executes the command
         with console.status("[bold yellow]Executing system action... Please wait.[/bold yellow]", spinner="dots"):
@@ -109,7 +116,7 @@ def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, 
             response = logic_engine.reason(user_input, context=context)
     else:
         packet = council.deliberate(user_input, decision, self_model)
-        with console.status("[cyan]Thinking...[/cyan]"):
+        with console.status("[cyan]Thinking...[/cyan]:"): 
             response = brain.think(user_input, council_packet=packet)
 
     # Update self-model and log IRIS turn
@@ -133,11 +140,13 @@ def main() -> None:
 
     # 2. Module Initialization
     memory = Memory(Config.MEMORY_FILE)
-    logger = SessionLogger() # New: Persistent Markdown Logging
+    logger = SessionLogger()
     brain, voice = Brain(memory), Voice(text_mode=args.text)
     copilot, executor = CoPilot(brain, voice, memory), ActionExecutor(voice, brain)
     autocorrect, self_model = AutoCorrector(brain), SelfModel()
     dialog_manager, council, diagnostics = DialogManager(), Council(), SelfDiagnostics()
+    researcher  = Researcher(brain)   # FIX: was never instantiated
+    autonomist  = Autonomist(brain)   # FIX: was never instantiated
 
     console.print(BANNER, style="bold cyan")
     show_status(voice, self_model)
@@ -153,7 +162,7 @@ def main() -> None:
 
             if args.text:
                 user_input = input("You: ")
-                _, should_exit = handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, self_model, dialog_manager, council, diagnostics, logger)
+                _, should_exit = handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, self_model, dialog_manager, council, diagnostics, logger, researcher, autonomist)
                 if should_exit: break
                 continue
 
@@ -171,7 +180,7 @@ def main() -> None:
                 for w in Config.WAKE_WORDS: 
                     cleaned = cleaned.lower().replace(w.lower(), "").strip()
                 
-                _, should_exit = handle_user_input(cleaned or "Yes?", voice, autocorrect, executor, copilot, brain, self_model, dialog_manager, council, diagnostics, logger)
+                _, should_exit = handle_user_input(cleaned or "Yes?", voice, autocorrect, executor, copilot, brain, self_model, dialog_manager, council, diagnostics, logger, researcher, autonomist)
                 if should_exit: break
 
                 # MOMENTUM LOOP
@@ -179,7 +188,7 @@ def main() -> None:
                     follow_up = voice.listen_for_command()
                     if not follow_up or any(w in follow_up.lower() for w in ["stop", "thanks", "bye"]):
                         break
-                    _, should_exit = handle_user_input(follow_up, voice, autocorrect, executor, copilot, brain, self_model, dialog_manager, council, diagnostics, logger)
+                    _, should_exit = handle_user_input(follow_up, voice, autocorrect, executor, copilot, brain, self_model, dialog_manager, council, diagnostics, logger, researcher, autonomist)
                     if should_exit: break
                 
                 if should_exit: break
@@ -189,9 +198,15 @@ def main() -> None:
             console.print(f"[red]System Error:[/red] {{e}}")
             time.sleep(1)
 
-    # 4. Shutdown & Finalization
-    console.print("\n[bold cyan]IRIS:[/bold cyan] Terminating. Sanitizing memory...")
-    logger.finalize() # New: Close session log safely
+    # 4. Shutdown & Finalization — FIX: learn BEFORE finalize so file is still open
+    console.print("\n[bold cyan]IRIS:[/bold cyan] Running autonomous learning cycle...")
+    try:
+        autonomist.learn_from_session(logger.filename)
+    except Exception as e:
+        console.print(f"[yellow][!] Learning skipped: {{e}}[/yellow]")
+
+    console.print("[bold cyan]IRIS:[/bold cyan] Terminating. Sanitizing memory...")
+    logger.finalize()
     
     try:
         from tools.cleaner import sanitize_memory
