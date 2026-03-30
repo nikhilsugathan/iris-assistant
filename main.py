@@ -41,7 +41,7 @@ BANNER = f"""
   ████▄████▄████▄████████▄████████████▄████
   ████▄████▄████████████▄████▄████████████
   ▀▀▀▀▀▀▀▀ ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-  {{Config.SYSTEM_MOTTO}}
+  {Config.SYSTEM_MOTTO}
 """
 
 def show_status(voice: Voice, self_model: SelfModel) -> None:
@@ -51,12 +51,12 @@ def show_status(voice: Voice, self_model: SelfModel) -> None:
     
     console.print(
         Panel(
-            f"[bold green]Online[/bold green] | [bold red]{{'PRIVACY' if getattr(voice, 'privacy_mode', False) else 'NORMAL'}}[/bold red] | [bold yellow]VRAM: {{v_p:.1f}}%[/bold yellow]\n"
-            f"[white]Codename       :[/white] [cyan]{{Config.INNER_CODENAME}}[/cyan]\n"
-            f"[white]Primary Brain  :[/white] [cyan]{{Config.PRIMARY_BRAIN}}[/cyan]\n"
-            f"[white]Microphone     :[/white] [cyan]{{mic_status}} (W: {{Config.WAKE_RMS_THRESHOLD}} / C: {{Config.COMMAND_RMS_THRESHOLD}})[/cyan]\n"
-            f"[white]Self Model     :[/white] [cyan]{{self_model.summary()}}[/cyan]\n",
-            title=f"[bold cyan]{{Config.SYSTEM_NAME}} v5.0[/bold cyan]",
+            f"[bold green]Online[/bold green] | [bold red]{'PRIVACY' if getattr(voice, 'privacy_mode', False) else 'NORMAL'}[/bold red] | [bold yellow]VRAM: {v_p:.1f}%[/bold yellow]\n"
+            f"[white]Codename       :[/white] [cyan]{Config.INNER_CODENAME}[/cyan]\n"
+            f"[white]Primary Brain  :[/white] [cyan]{Config.PRIMARY_BRAIN}[/cyan]\n"
+            f"[white]Microphone     :[/white] [cyan]{mic_status} (W: {Config.WAKE_RMS_THRESHOLD} / C: {Config.COMMAND_RMS_THRESHOLD})[/cyan]\n"
+            f"[white]Self Model     :[/white] [cyan]{self_model.summary()}[/cyan]\n",
+            title="[bold cyan]IRIS v5.0[/bold cyan]",
             border_style="cyan",
         )
     )
@@ -121,7 +121,7 @@ def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, 
 
     # Update self-model and log IRIS turn
     self_model.note_response(response, source=decision.mode)
-    console.print(f"\n[bold cyan]IRIS:[/bold cyan] {{response}}\n")
+    console.print(f"\n[bold cyan]IRIS:[/bold cyan] {response}\n")
     logger.log_turn("IRIS", response)
     
     voice.speak(response)
@@ -195,7 +195,7 @@ def main() -> None:
 
         except KeyboardInterrupt: break
         except Exception as e:
-            console.print(f"[red]System Error:[/red] {{e}}")
+            console.print(f"[red]System Error:[/red] {e}")
             time.sleep(1)
 
     # 4. Shutdown & Finalization — FIX: learn BEFORE finalize so file is still open
@@ -203,7 +203,7 @@ def main() -> None:
     try:
         autonomist.learn_from_session(logger.filename)
     except Exception as e:
-        console.print(f"[yellow][!] Learning skipped: {{e}}[/yellow]")
+        console.print(f"[yellow][!] Learning skipped: {e}[/yellow]")
 
     console.print("[bold cyan]IRIS:[/bold cyan] Terminating. Sanitizing memory...")
     logger.finalize()
