@@ -1,10 +1,10 @@
 """
-IRIS Main Entry Point v5.0
-==========================
+IRIS Main Entry Point v5.1 (C++ Engine + Survival Layer)
+=========================================================
 - Hardened for RTX 5050 (8GB VRAM)
 - Integrated Session Logging & VRAM Safety Monitor
 - Production Gates: Wake (400) / Command (550)
-- v5.0: Researcher + Autonomist integration, fixed shutdown learning loop
+- v5.1: C++ LLM Engine (llama-cpp-python) + Piper TTS streaming audio
 """
 
 from __future__ import annotations
