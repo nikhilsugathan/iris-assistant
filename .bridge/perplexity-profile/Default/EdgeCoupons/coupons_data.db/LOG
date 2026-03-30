@@ -1,0 +1,6 @@
+2026/03/26-11:57:45.313 85a0 Reusing MANIFEST D:\IRIS\.bridge\perplexity-profile\Default\EdgeCoupons/coupons_data.db/MANIFEST-000001
+2026/03/26-11:57:45.314 85a0 Recovering log #18
+2026/03/26-11:57:45.314 85a0 Reusing old log D:\IRIS\.bridge\perplexity-profile\Default\EdgeCoupons/coupons_data.db/000018.log 
+2026/03/26-11:57:45.561 56ac Level-0 table #22: started
+2026/03/26-11:57:45.563 56ac Level-0 table #22: 681928 bytes OK
+2026/03/26-11:57:45.563 56ac Delete type=0 #18

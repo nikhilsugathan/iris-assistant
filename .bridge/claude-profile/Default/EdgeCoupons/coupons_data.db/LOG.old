@@ -1,0 +1,6 @@
+2026/03/26-11:56:24.859 7074 Reusing MANIFEST D:\IRIS\.bridge\claude-profile\Default\EdgeCoupons/coupons_data.db/MANIFEST-000001
+2026/03/26-11:56:24.860 7074 Recovering log #13
+2026/03/26-11:56:24.861 7074 Reusing old log D:\IRIS\.bridge\claude-profile\Default\EdgeCoupons/coupons_data.db/000013.log 
+2026/03/26-11:56:25.150 51c8 Level-0 table #18: started
+2026/03/26-11:56:25.152 51c8 Level-0 table #18: 681928 bytes OK
+2026/03/26-11:56:25.153 51c8 Delete type=0 #13

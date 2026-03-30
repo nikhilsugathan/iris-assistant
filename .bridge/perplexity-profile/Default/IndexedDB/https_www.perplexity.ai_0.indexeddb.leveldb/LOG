@@ -1,0 +1,12 @@
+2026/03/26-11:53:50.791 51c8 Reusing MANIFEST D:\IRIS\.bridge\perplexity-profile\Default\IndexedDB\https_www.perplexity.ai_0.indexeddb.leveldb/MANIFEST-000001
+2026/03/26-11:53:50.791 51c8 Recovering log #7
+2026/03/26-11:53:50.802 51c8 Reusing old log D:\IRIS\.bridge\perplexity-profile\Default\IndexedDB\https_www.perplexity.ai_0.indexeddb.leveldb/000007.log 
+2026/03/26-11:53:51.599 a3c0 Level-0 table #12: started
+2026/03/26-11:53:51.613 a3c0 Level-0 table #12: 1455386 bytes OK
+2026/03/26-11:53:51.615 a3c0 Delete type=0 #7
+2026/03/26-11:53:51.623 a3c0 Compacting 1@1 + 1@2 files
+2026/03/26-11:53:51.635 a3c0 Generated table #13@1: 1005 keys, 398401 bytes
+2026/03/26-11:53:51.635 a3c0 Compacted 1@1 + 1@2 files => 398401 bytes
+2026/03/26-11:53:51.635 a3c0 compacted to: files[ 0 0 1 0 0 0 0 ]
+2026/03/26-11:53:51.635 a3c0 Delete type=2 #9
+2026/03/26-11:53:51.635 a3c0 Delete type=2 #12
