@@ -27,7 +27,7 @@ class Autonomist:
         ---
         Extract new facts about the user (Nikhil), the IRIS project, or coding preferences.
         Respond ONLY with a JSON object of key-value pairs. 
-        Example: {"user_preference": "prefers rich panels", "project_goal": "RTX 5050 optimization"}
+        Example: {{"user_preference": "prefers rich panels", "project_goal": "RTX 5050 optimization"}}
         """
 
         # FIX: Use the correct API key "ollama_smart" instead of the raw model

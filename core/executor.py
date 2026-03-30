@@ -329,7 +329,8 @@ class ActionExecutor:
         # ── Create file ───────────────────────────────────────
         # "create a file called X in Y" / "create file named X in Y" / "make a file X"
         file_match = re.search(
-            r"(?:create|make|new)\s+(?:a\s+)?file\s+(?:called|named|as|named as)?\s*['"]?([^'\"\s][^'\"]*?)['"]?\n            r"(?:\s+(?:in|on|at|inside)\s+(?:my\s+)?(.+))?",
+            r"(?:create|make|new)\s+(?:a\s+)?file\s+(?:called|named|as|named as)?\s*['\"']?([^'\"'\s][^'\"']*?)['\"]?"
+            r"(?:\s+(?:in|on|at|inside)\s+(?:my\s+)?(.+))?",
             text
         )
         if file_match:
@@ -347,7 +348,8 @@ class ActionExecutor:
         # ── Create subfolder inside existing folder ───────────
         subfolder_match = re.search(
             r"(?:create|make)\s+(?:a\s+)?sub.?folder\s+"
-            r"(?:called|named|as)?\s*['"]?([^'\"]+)['"]?\n            r"(?:\s+(?:in|inside|within|under)\s+(.+))?",
+            r"(?:called|named|as)?\s*['\"']?([^'\"']+)['\"]?"
+            r"(?:\s+(?:in|inside|within|under)\s+(.+))?",
             text
         )
         if subfolder_match:
@@ -376,7 +378,8 @@ class ActionExecutor:
         folder_match = re.search(
             r"(?:create|make|new)\s+(?:a\s+)?folder\s+"
             r"(?:called|named|as|named as)\s+"
-            r"['"]?([^'\"]+)['"]?\n            r"(?:\s+(?:in|on|at|inside)\s+(?:my\s+)?(.+))?",
+            r"['\"']?([^'\"']+)['\"]?"
+            r"(?:\s+(?:in|on|at|inside)\s+(?:my\s+)?(.+))?",
             text
         )
         if folder_match:
@@ -406,7 +409,10 @@ class ActionExecutor:
                 "is_dangerous": False
             }
         # ── Rename File/Folder (Context-Aware) ────────────────
-        rename_match = re.search(r"rename\s+(?:the\s+)?(?:folder|file\s+)?(?:from\s+)?['"]?([^'\"]+)['"]?\s+(?:to|as)\s+['"]?([^'\"]+)['"]?", text)
+        rename_match = re.search(
+            r"""rename\s+(?:the\s+)?(?:folder|file\s+)?(?:from\s+)?['"]?([^'"]+)['"]?\s+(?:to|as)\s+['"]?([^'"]+)['"]?""",
+            text
+        )
         if rename_match:
             old_name = rename_match.group(1).strip()
             new_name = rename_match.group(2).strip()
