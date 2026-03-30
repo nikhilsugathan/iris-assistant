@@ -375,10 +375,13 @@ class ActionExecutor:
                 "filename": folderpath,
                 "is_dangerous": False
             }
+
+        # ── Create folder ─────────────────────────────────────
         folder_match = re.search(
             r"(?:create|make|new)\s+(?:a\s+)?folder\s+"
             r"(?:called|named|as|named as)\s+"
-            r"['"]?([^'\"]+)['"]?\n            r"(?:\s+(?:in|on|at|inside)\s+(?:my\s+)?(.+))?",
+            r"['\"]?([^'\"]+)['\"]?"
+            r"(?:\s+(?:in|on|at|inside)\s+(?:my\s+)?(.+))?",
             text
         )
         if folder_match:
@@ -407,8 +410,12 @@ class ActionExecutor:
                 "filename": folderpath,
                 "is_dangerous": False
             }
+
         # ── Rename File/Folder (Context-Aware) ────────────────
-        rename_match = re.search(r"rename\s+(?:the\s+)?(?:folder|file\s+)?(?:from\s+)?['"]?([^'\"]+)['"]?\s+(?:to|as)\s+['"]?([^'\"]+)['"]?", text)
+        rename_match = re.search(
+            r"rename\s+(?:the\s+)?(?:folder|file\s+)?(?:from\s+)?['\"]?([^'\"]+)['\"]?\s+(?:to|as)\s+['\"]?([^'\"]+)['\"]?", 
+            text
+        )
         if rename_match:
             old_name = rename_match.group(1).strip()
             new_name = rename_match.group(2).strip()
