@@ -49,3 +49,9 @@ desktop.ini
 
 # ── Playwright / browser state ───────────────────────────
 browser_data/
+
+# ── Gold Master v4.7 additions ────────────────────────────
+OLD_FILES/
+*.spec
+.pytest_cache/
+ai-collab/
