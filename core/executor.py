@@ -226,6 +226,7 @@ class ActionExecutor:
     # ─────────────────────────────────────────────────────────────
     # PLAN: Figure out what action to take
     # ─────────────────────────────────────────────────────────────
+    
     # ─────────────────────────────────────────────────────────────
     # SIMPLE TASK DETECTION: These run without asking permission
     # ─────────────────────────────────────────────────────────────
@@ -276,8 +277,7 @@ class ActionExecutor:
             counter += 1
 
     def plan_action(self, user_input: str) -> str:
-        """
-        Interpret the request, run security assessment.
+        """Interpret the request, run security assessment.
         Simple safe tasks execute immediately.
         Risky tasks ask for permission first.
         """
@@ -322,8 +322,7 @@ class ActionExecutor:
         return permission_msg
 
     def _pattern_match(self, user_input: str) -> Optional[dict]:
-        """
-        Fast pattern-based action detection for common requests.
+        """Fast pattern-based action detection for common requests.
         Handles the most frequent actions without needing AI JSON parsing.
         """
         text = user_input.lower().strip()
@@ -331,8 +330,7 @@ class ActionExecutor:
         # ── Create file ───────────────────────────────────────
         # "create a file called X in Y" / "create file named X in Y" / "make a file X"
         file_match = re.search(
-            r"(?:create|make|new)\s+(?:a\s+)?file\s+(?:called|named|as|named as)?\s*['\"]?([^"]+?)['\"]?"
-            r"(?:\s+(?:in|on|at|inside)\s+(?:my\s+)?(.+))?",
+            r"(?:create|make|new)\s+(?:a\s+)?file\s+(?:called|named|as|named as)?\s*['"]?([^'\"\s][^'\"]*?)['"]?\n            r"(?:\s+(?:in|on|at|inside)\s+(?:my\s+)?(.+))?",
             text
         )
         if file_match:
@@ -350,8 +348,7 @@ class ActionExecutor:
         # ── Create subfolder inside existing folder ───────────
         subfolder_match = re.search(
             r"(?:create|make)\s+(?:a\s+)?sub.?folder\s+"
-            r"(?:called|named|as)?\s*['\"]?([^'\"]+)['\"]?"
-            r"(?:\s+(?:in|inside|within|under)\s+(.+))?",
+            r"(?:called|named|as)?\s*['"]?([^'\"]+)['"]?\n            r"(?:\s+(?:in|inside|within|under)\s+(.+))?",
             text
         )
         if subfolder_match:
@@ -380,8 +377,7 @@ class ActionExecutor:
         folder_match = re.search(
             r"(?:create|make|new)\s+(?:a\s+)?folder\s+"
             r"(?:called|named|as|named as)\s+"
-            r"['\"]?([^"]+)['\"]?"
-            r"(?:\s+(?:in|on|at|inside)\s+(?:my\s+)?(.+))?",
+            r"['"]?([^'\"]+)['"]?\n            r"(?:\s+(?:in|on|at|inside)\s+(?:my\s+)?(.+))?",
             text
         )
         if folder_match:
@@ -411,7 +407,7 @@ class ActionExecutor:
                 "is_dangerous": False
             }
         # ── Rename File/Folder (Context-Aware) ────────────────
-        rename_match = re.search(r"rename\s+(?:the\s+)?(?:folder|file\s+)?(?:from\s+)?['\"]?([^'\"]+)['\"]?\s+(?:to|as)\s+['\"]?([^'\"]+)['\"]?", text)
+        rename_match = re.search(r"rename\s+(?:the\s+)?(?:folder|file\s+)?(?:from\s+)?['"]?([^'\"]+)['"]?\s+(?:to|as)\s+['"]?([^'\"]+)['"]?", text)
         if rename_match:
             old_name = rename_match.group(1).strip()
             new_name = rename_match.group(2).strip()
@@ -543,7 +539,7 @@ Rules:
 - Windows paths use backslashes
 - For installs use winget (apps) or pip (python packages)
 - is_dangerous only true for delete/format/uninstall
-- For rename: use command like: ren "full\\path\\oldname" "newname"
+- For rename: use command like: ren "full\path\oldname" "newname"
 - Return unsupported only if truly impossible to determine
 
 Respond with ONLY the JSON object. No markdown, no explanation."""
@@ -916,7 +912,7 @@ Be specific and practical. No preamble."""
             folder = filename
         elif command:
             # Extract path from mkdir command
-            match = re.search(r'mkdir\s+"?([^"']+)"?', command, re.IGNORECASE)
+            match = re.search(r'mkdir\s+"?([^"\']+)"?', command, re.IGNORECASE)
             folder = match.group(1).strip() if match else None
         else:
             folder = None
