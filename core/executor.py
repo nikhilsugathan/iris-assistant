@@ -101,7 +101,7 @@ class ActionExecutor:
         "run", "execute", "launch", "open", "start",
         "update", "upgrade", "configure", "enable", "disable",
         "move", "copy", "rename",
-        "search for", "look up", "find",
+        "find",
     ]
 
     def should_handle(self, user_input: str) -> bool:
