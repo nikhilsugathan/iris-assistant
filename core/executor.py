@@ -530,8 +530,7 @@ Rules:
 Respond with ONLY the JSON object. No markdown, no explanation."""
 
         response = self.brain._call_api(
-            getattr(Config, "PRIMARY_BRAIN", "groq"), plan_prompt,
-            use_persona=False, use_memory=False
+            getattr(Config, "PRIMARY_BRAIN", "groq"), plan_prompt
         )
 
         if not response:
@@ -720,8 +719,7 @@ Respond ONLY with valid JSON in this exact format:
 Respond with ONLY the JSON. No explanation."""
 
         response = self.brain._call_api(
-            getattr(Config, "PRIMARY_BRAIN", "groq"), prompt,
-            use_persona=False, use_memory=False
+            getattr(Config, "PRIMARY_BRAIN", "groq"), prompt
         )
 
         if not response:
@@ -791,8 +789,7 @@ In one sentence, what's the most likely cause and fix?
 Be specific and practical. No preamble."""
 
         response = self.brain._call_api(
-            "groq", prompt,
-            use_persona=False, use_memory=False
+            "groq", prompt
         )
         return response or f"Error: {error[:150]}"
 
