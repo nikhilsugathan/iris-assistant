@@ -51,6 +51,13 @@ class DialogManager:
         "reflect", "deeper", "meaning",
     ]
 
+    # Web-search intent — must fire BEFORE executor.should_handle() to avoid
+    # "search for" / "look up" being hijacked as OS-level shell actions.
+    WEB_SEARCH_KEYWORDS = [
+        "search for", "look up", "google", "find online", "search online",
+        "search the web", "browse for", "search web", "look online",
+    ]
+
     def analyze(self, text: str, executor, copilot, diagnostics, self_model) -> DialogueDecision:
         lowered = (text or "").lower().strip()
 
@@ -103,6 +110,21 @@ class DialogManager:
                 high_stakes=high_stakes,
                 emotionally_weighted=emotionally_weighted,
                 analytical=True,
+                reflective=reflective,
+            )
+
+        # 3.5. Web Search — must precede action check so "search for" / "look up"
+        # are not hijacked as OS-level shell actions by executor.should_handle().
+        if any(kw in lowered for kw in self.WEB_SEARCH_KEYWORDS):
+            return DialogueDecision(
+                mode="search",
+                depth="shallow",
+                tone="direct",
+                reason="user is requesting a web search",
+                high_stakes=high_stakes,
+                emotionally_weighted=emotionally_weighted,
+                analytical=analytical,
+                creative=creative,
                 reflective=reflective,
             )
 
