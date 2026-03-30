@@ -787,14 +787,14 @@ Respond with ONLY the JSON. No explanation."""
 
     def _run_command(self, plan: dict) -> str:
         """Run a shell command with defense-in-depth security re-check."""
-        command = plan.get("command", "")
+        command = os.path.expandvars(plan.get("command", ""))  # SECURITY: expand env vars before scan
         if not command: return "No command to run."
 
         from core.security import BLOCKED_COMMANDS
         cmd_lower = command.lower()
         for pattern in BLOCKED_COMMANDS:
             if re.search(pattern, cmd_lower, re.IGNORECASE):
-                self._log(f"EXECUTION BLOCKED: {command}")
+                self._log(f"SECURITY: execution blocked (matched hard rule): {command}")
                 return "Blocked — this matches a hard security rule."
 
         self._log(f"RUN: {command}")

@@ -295,10 +295,7 @@ Rules:
 - Be BLOCKED only for clearly harmful, illegal, or unethical actions
 - Do NOT be overly cautious — most developer/IT tasks are safe"""
 
-        response = self.brain._call_api(
-            Config.PRIMARY_BRAIN, prompt,
-            use_persona=False, use_memory=False
-        )
+        response = self.brain._call_api(Config.PRIMARY_BRAIN, prompt)
 
         if not response:
             return SAFE, ""

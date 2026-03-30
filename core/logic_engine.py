@@ -33,11 +33,9 @@ class LogicalEngine:
         THINKING PROCESS: Show monologue inside <think> tags.
         """
 
-        # FIX: Removed nested console.status — main.py already wraps this call
-        # with its own spinner, so nesting two Rich spinners caused visual corruption.
-        # FIX: Use API key "ollama_smart" instead of the raw model name string
-        # (e.g. "deepseek-r1:8b"), which caused _call_api to return None.
-        response = self.brain._call_api("ollama_smart", logic_prompt)
+        # Spinner is owned by main.py — do not add one here.
+        model = getattr(Config, "OLLAMA_MODEL_DEEP", "deepseek-r1:8b")
+        response = self.brain._call_api(model, logic_prompt)
 
         # FIX: Guard against a None / empty response from the engine.
         if not response:
