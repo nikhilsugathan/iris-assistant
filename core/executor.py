@@ -409,7 +409,25 @@ class ActionExecutor:
                 "filename": folderpath,
                 "is_dangerous": False
             }
+        # ── Rename File/Folder (Context-Aware) ────────────────
+        rename_match = re.search(r"rename\s+(?:the\s+)?(?:folder|file\s+)?(?:from\s+)?['\"]?([^'\"]+)['\"]?\s+(?:to|as)\s+['\"]?([^'\"]+)['\"]?", text)
+        if rename_match:
+            old_name = rename_match.group(1).strip()
+            new_name = rename_match.group(2).strip()
 
+            # Contextual Memory: Did she just interact with this?
+            target_path = ""
+            if self.last_action_path and old_name.lower() in os.path.basename(self.last_action_path).lower():
+                target_path = self.last_action_path
+            else:
+                target_path = self._resolve_location("desktop", old_name)
+
+            return {
+                "action_type": "run_command",
+                "description": f"rename '{old_name}' to '{new_name}'",
+                "command": f'ren "{target_path}" "{new_name}"',
+                "is_dangerous": False
+            }
         # ── Play specific song / music ────────────────────────
         song_match = re.search(
             r"(?:play|stream|listen to|put on)\s+(.+?)(?:\s+(?:on|from|via|using)\s+\w+)?$",

@@ -82,19 +82,22 @@ def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, 
     if decision.mode == "diagnostics":
         response = diagnostics.run(user_input, brain, voice, executor, copilot, brain.memory, self_model)
     elif decision.mode == "action":
-        response = executor.plan_action(user_input)
+        # Spinner for when she is figuring out HOW to do the task
+        with console.status("[bold yellow]Formulating action plan...[/bold yellow]", spinner="dots"):
+            response = executor.plan_action(user_input)
     elif decision.mode == "action_pending":
-        # Handshake: Route the Yes/No back to the specific waiting state
-        if getattr(executor, "waiting_for_permission", lambda: False)():
-            response = executor.handle_permission_response(user_input)
-        elif getattr(executor, "waiting_for_followup", lambda: False)():
-            response = executor.handle_followup_response(user_input)
-        elif getattr(executor, "waiting_for_clarification", lambda: False)():
-            response = executor.handle_clarification_response(user_input)
-        elif getattr(executor, "waiting_for_plan_choice", lambda: False)():
-            response = executor.handle_plan_choice(user_input)
-        else:
-            response = "Action state cleared."
+        # Spinner for when you say "Yes" and she actually executes the command
+        with console.status("[bold yellow]Executing system action... Please wait.[/bold yellow]", spinner="dots"):
+            if getattr(executor, "waiting_for_permission", lambda: False)():
+                response = executor.handle_permission_response(user_input)
+            elif getattr(executor, "waiting_for_followup", lambda: False)():
+                response = executor.handle_followup_response(user_input)
+            elif getattr(executor, "waiting_for_clarification", lambda: False)():
+                response = executor.handle_clarification_response(user_input)
+            elif getattr(executor, "waiting_for_plan_choice", lambda: False)():
+                response = executor.handle_plan_choice(user_input)
+            else:
+                response = "Action state cleared."
     else:
         packet = council.deliberate(user_input, decision, self_model)
         with console.status("[cyan]Thinking...[/cyan]"):
