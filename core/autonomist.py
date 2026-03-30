@@ -7,13 +7,15 @@ from config import Config
 class Autonomist:
     def __init__(self, brain):
         self.brain = brain
-        # FIX: Anchor kb_path to an absolute path so it always lands in the
+        # Anchor kb_path to an absolute path so it always lands in the
         # project root regardless of the working directory at launch time.
         _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.kb_path = os.path.join(_root, "knowledge_base.json")
 
     def learn_from_session(self, history_file: str):
         """Analyzes session logs to extract new facts and preferences."""
+        if not history_file:  # None guard — prevents TypeError on os.path.exists(None)
+            return
         if not os.path.exists(history_file):
             return
 
@@ -27,13 +29,12 @@ class Autonomist:
         ---
         Extract new facts about the user (Nikhil), the IRIS project, or coding preferences.
         Respond ONLY with a JSON object of key-value pairs. 
-        Example: {"user_preference": "prefers rich panels", "project_goal": "RTX 5050 optimization"}
+        Example: {{"user_preference": "prefers rich panels", "project_goal": "RTX 5050 optimization"}}
         """
 
-        # FIX: Use the correct API key "ollama_smart" instead of the raw model
-        # name string Config.OLLAMA_MODEL_DEEP ("deepseek-r1:8b"), which was
-        # causing _call_api to return None and silently skip all learning.
-        response = self.brain._call_api("ollama_smart", learning_prompt)
+        response = self.brain._call_api(
+            getattr(Config, "OLLAMA_MODEL_DEEP", "deepseek-r1:8b"), learning_prompt
+        )
 
         if not response:
             return
@@ -48,7 +49,11 @@ class Autonomist:
     def _update_kb(self, data: dict):
         kb = {}
         if os.path.exists(self.kb_path):
-            with open(self.kb_path, 'r') as f: kb = json.load(f)
+            try:
+                with open(self.kb_path, 'r') as f:
+                    kb = json.load(f)
+            except Exception:
+                kb = {}  # corrupted KB — start fresh rather than crash
         
         kb.update(data)
         with open(self.kb_path, 'w') as f:
