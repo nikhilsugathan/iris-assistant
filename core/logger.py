@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
-from logging.handlers import TimedRotatingFileHandler
+from logging.handlers import RotatingFileHandler
 
 # Resolve the project root (parent of this file's directory)
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -54,9 +54,9 @@ def get_logger(name: str) -> logging.Logger:
     try:
         _ensure_logs_dir()
         log_path = os.path.join(_LOGS_DIR, "iris.log")
-        file_handler = TimedRotatingFileHandler(
+        file_handler = RotatingFileHandler(
             log_path,
-            when="midnight",
+            maxBytes=5 * 1024 * 1024,  # 5 MB per file
             backupCount=7,
             encoding="utf-8",
         )

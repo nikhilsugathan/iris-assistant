@@ -12,6 +12,8 @@ import argparse
 import time
 import sys
 import os
+import traceback
+from datetime import datetime
 
 from rich.console import Console
 from rich.panel import Panel
@@ -29,10 +31,13 @@ from core.memory import Memory
 from core.self_model import SelfModel
 from core.voice import Voice
 from core.session_logger import SessionLogger
+from core.evolution import EvolutionEngine
 from tools.researcher import Researcher       # FIX: was missing
 from core.autonomist import Autonomist         # FIX: was missing
 
 console = Console()
+
+CRASH_LOG = os.path.join(os.path.dirname(__file__), "logs", "crash.log")
 
 BANNER = f"""
   ██████████████████████ ████████████████
@@ -61,7 +66,7 @@ def show_status(voice: Voice, self_model: SelfModel) -> None:
         )
     )
 
-def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, self_model, dialog_manager, council, diagnostics, logger, researcher=None, autonomist=None):
+def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, self_model, dialog_manager, council, diagnostics, logger, researcher=None, autonomist=None, evolution=None):
     """Processes input and records turns to the session log."""
     user_input = (user_input or "").strip()
     if not user_input: return None, False
@@ -80,6 +85,21 @@ def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, 
         voice.toggle_privacy()
         return "Privacy Toggled", False
 
+    # ── Evolution Engine: approve/reject pending tool ──────────────
+    if evolution:
+        if "approve tool" in lowered:
+            response = evolution.approve_tool()
+            console.print(f"\n[bold cyan]IRIS:[/bold cyan] {response}\n")
+            logger.log_turn("IRIS", response)
+            voice.speak(response)
+            return response, False
+        if "reject tool" in lowered:
+            response = evolution.reject_tool()
+            console.print(f"\n[bold cyan]IRIS:[/bold cyan] {response}\n")
+            logger.log_turn("IRIS", response)
+            voice.speak(response)
+            return response, False
+
     corrected, _ = autocorrect.correct_input(user_input)
     user_input = corrected
 
@@ -92,6 +112,9 @@ def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, 
         # Spinner for when she is figuring out HOW to do the task
         with console.status("[bold yellow]Formulating action plan...[/bold yellow]", spinner="dots"):
             response = executor.plan_action(user_input)
+        # Route unhandled intents to Evolution Engine
+        if evolution and response and "couldn't figure out how to do that" in response.lower():
+            response = evolution.triage_unknown_intent(user_input)
     elif decision.mode == "search" and researcher:
         # FIX: was missing entirely — web search was completely dead
         with console.status("[bold green]Searching the web...[/bold green]", spinner="dots"):
@@ -147,56 +170,72 @@ def main() -> None:
     dialog_manager, council, diagnostics = DialogManager(), Council(), SelfDiagnostics()
     researcher  = Researcher(brain)   # FIX: was never instantiated
     autonomist  = Autonomist(brain)   # FIX: was never instantiated
+    evolution   = EvolutionEngine(brain, researcher)
 
     console.print(BANNER, style="bold cyan")
     show_status(voice, self_model)
 
-    CONVERSATION_TURNS = 5 
+    CONVERSATION_TURNS = 5
 
-    while True:
-        try:
-            # 3. VRAM Safety Guard for RTX 5050
-            v_p, v_f = get_vram_status()
-            if v_p > 96:
-                voice.speak("VRAM is critically over-extended. Close background processes to avoid a crash.")
+    try:
+        while True:
+            try:
+                # 3. VRAM Safety Guard for RTX 5050
+                v_p, v_f = get_vram_status()
+                if v_p > 96:
+                    voice.speak("VRAM is critically over-extended. Close background processes to avoid a crash.")
 
-            if args.text:
-                user_input = input("You: ")
-                _, should_exit = handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, self_model, dialog_manager, council, diagnostics, logger, researcher, autonomist)
-                if should_exit: break
-                continue
-
-            heard_text = voice.listen_for_wake()
-            if not heard_text: continue
-
-            # --- BARGE-IN / INTERRUPT LOGIC ---
-            is_wake = any(w.lower() in heard_text.lower() for w in Config.WAKE_WORDS)
-            if is_wake:
-                if voice.is_speaking():
-                    voice.stop_speaking()
-                    console.print("[bold yellow]  (Interrupt detected! Stopping speech...)[/bold yellow]")
-                
-                cleaned = heard_text
-                for w in Config.WAKE_WORDS: 
-                    cleaned = cleaned.lower().replace(w.lower(), "").strip()
-                
-                _, should_exit = handle_user_input(cleaned or "Yes?", voice, autocorrect, executor, copilot, brain, self_model, dialog_manager, council, diagnostics, logger, researcher, autonomist)
-                if should_exit: break
-
-                # MOMENTUM LOOP
-                for _ in range(CONVERSATION_TURNS):
-                    follow_up = voice.listen_for_command()
-                    if not follow_up or any(w in follow_up.lower() for w in ["stop", "thanks", "bye"]):
-                        break
-                    _, should_exit = handle_user_input(follow_up, voice, autocorrect, executor, copilot, brain, self_model, dialog_manager, council, diagnostics, logger, researcher, autonomist)
+                if args.text:
+                    user_input = input("You: ")
+                    _, should_exit = handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, self_model, dialog_manager, council, diagnostics, logger, researcher, autonomist, evolution)
                     if should_exit: break
-                
-                if should_exit: break
+                    continue
 
-        except KeyboardInterrupt: break
-        except Exception as e:
-            console.print(f"[red]System Error:[/red] {e}")
-            time.sleep(1)
+                heard_text = voice.listen_for_wake()
+                if not heard_text: continue
+
+                # --- BARGE-IN / INTERRUPT LOGIC ---
+                is_wake = any(w.lower() in heard_text.lower() for w in Config.WAKE_WORDS)
+                if is_wake:
+                    if voice.is_speaking():
+                        voice.stop_speaking()
+                        console.print("[bold yellow]  (Interrupt detected! Stopping speech...)[/bold yellow]")
+                    
+                    cleaned = heard_text
+                    for w in Config.WAKE_WORDS: 
+                        cleaned = cleaned.lower().replace(w.lower(), "").strip()
+                    
+                    _, should_exit = handle_user_input(cleaned or "Yes?", voice, autocorrect, executor, copilot, brain, self_model, dialog_manager, council, diagnostics, logger, researcher, autonomist, evolution)
+                    if should_exit: break
+
+                    # MOMENTUM LOOP
+                    for _ in range(CONVERSATION_TURNS):
+                        follow_up = voice.listen_for_command()
+                        if not follow_up or any(w in follow_up.lower() for w in ["stop", "thanks", "bye"]):
+                            break
+                        _, should_exit = handle_user_input(follow_up, voice, autocorrect, executor, copilot, brain, self_model, dialog_manager, council, diagnostics, logger, researcher, autonomist, evolution)
+                        if should_exit: break
+                    
+                    if should_exit: break
+
+            except KeyboardInterrupt:
+                break
+            except Exception as e:
+                console.print(f"[red]System Error:[/red] {e}")
+                time.sleep(1)
+
+    except KeyboardInterrupt:
+        console.print("[bold yellow]Session ended by user.[/bold yellow]")
+    except Exception as e:
+        tb = traceback.format_exc()
+        os.makedirs(os.path.join(os.path.dirname(__file__), "logs"), exist_ok=True)
+        with open(CRASH_LOG, "a", encoding="utf-8") as f:
+            f.write(f"\n{'='*60}\nCRASH at {datetime.now().isoformat()}\n{tb}\n")
+        console.print("[bold red]IRIS crashed. Traceback written to logs/crash.log[/bold red]")
+        console.print(f"[red]{tb}[/red]")
+        raise
+    finally:
+        console.print("[dim]Session closed.[/dim]")
 
     # 4. Shutdown & Finalization — FIX: learn BEFORE finalize so file is still open
     console.print("\n[bold cyan]IRIS:[/bold cyan] Running autonomous learning cycle...")

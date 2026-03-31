@@ -233,7 +233,7 @@ class ActionExecutor:
 
     SIMPLE_ACTIONS = [
         "create_file", "create_folder", "open_app",
-        "search_web", "write_to_file", "play_music"
+        "search_web", "write_to_file", "play_music", "delete_item"
     ]
 
     def _is_simple_task(self, plan: dict, verdict: str) -> bool:
@@ -327,11 +327,57 @@ class ActionExecutor:
         """
         text = user_input.lower().strip()
 
+        # ── Permanent delete (security gate — ask for confirmation) ──
+        perm_delete_match = re.search(
+            r"(?:permanently\s+delete|force\s+delete|delete\s+forever|wipe)\s+['\"]?([^'\"]+?)['\"]?"
+            r"(?:\s+(?:from|in|on|at)\s+(?:my\s+)?(.+))?$",
+            user_input,
+            re.IGNORECASE
+        )
+        if perm_delete_match:
+            item_name = perm_delete_match.group(1).strip()
+            location  = perm_delete_match.group(2).strip() if perm_delete_match.group(2) else "desktop"
+            item_path = self._resolve_location(location, item_name)
+            # Determine command type based on existence and type
+            if os.path.exists(item_path) and os.path.isdir(item_path):
+                del_cmd = f'rd /s /q "{item_path}"'
+            else:
+                del_cmd = f'del /f /q "{item_path}"'
+            return {
+                "action_type": "run_command",
+                "description": f"permanently delete '{item_name}'",
+                "command": del_cmd,
+                "filename": item_path,
+                "is_dangerous": True
+            }
+
+        # ── Standard delete → Recycle Bin ────────────────────────────
+        std_delete_match = re.search(
+            r"(?:delete|remove|trash)\s+['\"]?([^'\"]+?)['\"]?"
+            r"(?:\s+(?:from|in|on|at)\s+(?:my\s+)?(.+))?$",
+            user_input,
+            re.IGNORECASE
+        )
+        if std_delete_match:
+            item_name = std_delete_match.group(1).strip()
+            location  = std_delete_match.group(2).strip() if std_delete_match.group(2) else "desktop"
+            item_path = self._resolve_location(location, item_name)
+            # Also check last_action_path for context
+            if self.last_action_path and item_name.lower() in os.path.basename(self.last_action_path).lower():
+                item_path = self.last_action_path
+            return {
+                "action_type": "delete_item",
+                "description": f"move '{item_name}' to Recycle Bin",
+                "filename": item_path,
+                "is_dangerous": False
+            }
+
         # ── Create file ───────────────────────────────────────
         file_match = re.search(
             r"(?:create|make|new)\s+(?:a\s+)?file\s+(?:called|named|as|named as)?\s*['\"]?([^'\"\s][^'\"]*?)['\"]?"
             r"(?:\s+(?:in|on|at|inside)\s+(?:my\s+)?(.+))?",
-            text
+            user_input,
+            re.IGNORECASE
         )
         if file_match:
             filename = file_match.group(1).strip()
@@ -350,7 +396,8 @@ class ActionExecutor:
             r"(?:create|make)\s+(?:a\s+)?sub.?folder\s+"
             r"(?:called|named|as)?\s*['\"]?([^'\"]+)['\"]?"
             r"(?:\s+(?:in|inside|within|under)\s+(.+))?",
-            text
+            user_input,
+            re.IGNORECASE
         )
         if subfolder_match:
             subfoldername = subfolder_match.group(1).strip()
@@ -378,11 +425,13 @@ class ActionExecutor:
 
         # ── Create folder ─────────────────────────────────────
         folder_match = re.search(
-            r"(?:create|make|new)\s+(?:a\s+)?folder\s+"
-            r"(?:called|named|as|named as)\s+"
-            r"['\"]?([^'\"]+)['\"]?"
-            r"(?:\s+(?:in|on|at|inside)\s+(?:my\s+)?(.+))?",
-            text
+            r"(?:create|make|new)\s+(?:a\s+)?(?:new\s+)?folder"
+            r"(?:\s+(?:on|in|at)\s+(?:my\s+)?\w+)?"   # optional location BEFORE name
+            r"\s+(?:called|named|as|named as)\s+"
+            r"['\"]?([A-Za-z0-9 _\-]+?)['\"]?"
+            r"(?:\s+(?:in|on|at|inside)\s+(?:my\s+)?(.+))?$",
+            user_input,
+            re.IGNORECASE
         )
         if folder_match:
             foldername = folder_match.group(1).strip()
@@ -399,7 +448,8 @@ class ActionExecutor:
         unnamed_folder = re.search(
             r"(?:create|make)\s+(?:a\s+)?(?:new\s+)?folder"
             r"(?:\s+(?:in|on|at)\s+(?:my\s+)?(.+))?$",
-            text
+            user_input,
+            re.IGNORECASE
         )
         if unnamed_folder:
             location   = unnamed_folder.group(1).strip() if unnamed_folder.group(1) else "desktop"
@@ -413,8 +463,9 @@ class ActionExecutor:
 
         # ── Rename File/Folder (Context-Aware) ────────────────
         rename_match = re.search(
-            r"rename\s+(?:the\s+)?(?:folder|file\s+)?(?:from\s+)?['\"]?([^'\"]+)['\"]?\s+(?:to|as)\s+['\"]?([^'\"]+)['\"]?", 
-            text
+            r"rename\s+(?:the\s+)?(?:folder|file\s+)?(?:from\s+)?['\"]?([^'\"]+)['\"]?\s+(?:to|as)\s+['\"]?([^'\"]+)['\"]?",
+            user_input,
+            re.IGNORECASE
         )
         if rename_match:
             old_name = rename_match.group(1).strip()
@@ -429,14 +480,17 @@ class ActionExecutor:
 
             return {
                 "action_type": "run_command",
-                "description": f"rename '{old_name}' to '{new_name}'",
+                "description": f"rename '{os.path.basename(target_path)}' to '{new_name}'",
                 "command": f'ren "{target_path}" "{new_name}"',
+                "old_path": target_path,
+                "new_name": new_name,
                 "is_dangerous": False
             }
         # ── Play specific song / music ────────────────────────
         song_match = re.search(
             r"(?:play|stream|listen to|put on)\s+(.+?)(?:\s+(?:on|from|via|using)\s+\w+)?$",
-            text
+            user_input,
+            re.IGNORECASE
         )
         if song_match:
             query = song_match.group(1).strip()
@@ -453,7 +507,7 @@ class ActionExecutor:
             }
 
         # ── Open app ──────────────────────────────────────────
-        open_match = re.search(r"(?:open|launch|start)\s+(.+)", text)
+        open_match = re.search(r"(?:open|launch|start)\s+(.+)", user_input, re.IGNORECASE)
         if open_match:
             app = open_match.group(1).strip()
             # Map common app names to commands
@@ -483,7 +537,7 @@ class ActionExecutor:
             }
 
         # ── Search web ────────────────────────────────────────
-        search_match = re.search(r"(?:search for|search|look up|google)\s+(.+)", text)
+        search_match = re.search(r"(?:search for|search|look up|google)\s+(.+)", user_input, re.IGNORECASE)
         if search_match:
             query = search_match.group(1).strip()
             return {
@@ -568,14 +622,24 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
             return None
 
     def _build_permission_request(self, plan: dict) -> str:
-        """Direct, no-nonsense permission request."""
+        """Direct, no-nonsense permission request using basenames for clean voice output."""
         description = plan.get("description", "perform this action")
         command     = plan.get("command", "")
         is_dangerous = plan.get("is_dangerous", False)
 
-        msg = f"I'll {description}."
+        # Strip full paths from command for voice display
+        display_command = command
         if command:
-            msg += f" Command: {command}."
+            # Replace quoted full paths with just the basename
+            display_command = re.sub(
+                r'"([A-Za-z]:\\[^"]+)"',
+                lambda m: f'"{os.path.basename(m.group(1))}"',
+                command
+            )
+
+        msg = f"I'll {description}."
+        if display_command and display_command != command:
+            msg += f" Command: {display_command}."
         if is_dangerous:
             msg += " ⚠ This is destructive and can't be undone."
         msg += " Go ahead?"
@@ -702,6 +766,10 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
                 result  = self._write_to_file(plan)
                 success = "Done." in result
 
+            elif action_type == "delete_item":
+                result  = self._delete_item(plan)
+                success = "Moved" in result or "Recycle Bin" in result
+
             else:
                 return "I don't know how to execute that type of action.", False
 
@@ -815,6 +883,17 @@ Respond with ONLY the JSON. No explanation."""
 
         if result.returncode == 0:
             output = result.stdout.strip()
+            # If this was a rename command, verify the new path exists
+            old_path = plan.get("old_path", "")
+            new_name_val = plan.get("new_name", "")
+            if old_path and new_name_val:
+                new_path = os.path.join(os.path.dirname(old_path), new_name_val)
+                if os.path.exists(new_path):
+                    self.last_action_path = new_path
+                    self._log(f"RENAME VERIFIED: {new_path}")
+                    return "Done."
+                else:
+                    return f"Failed: rename command succeeded but '{new_name_val}' was not found at the expected path. Check the path or try again."
             msg = "Done." + (f" {output}" if output and len(output) < 300 else "")
             self._log(f"SUCCESS: {command}")
             return msg
@@ -897,6 +976,11 @@ Be specific and practical. No preamble."""
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(content)
 
+        # Truth-First: verify the file actually exists before claiming success
+        if not os.path.isfile(filepath):
+            self._log(f"FILE CREATION FAILED: {filepath}")
+            return f"Failed: file was not created. Check permissions or path."
+
         self._log(f"CREATED FILE: {filepath}")
         self.last_action_path = filepath   # remember for follow-up commands
         self.follow_up = {"action": "open_file", "path": filepath}
@@ -908,7 +992,7 @@ Be specific and practical. No preamble."""
         if rename_msg:  notes.append(rename_msg)
 
         prefix = " ".join(notes) + " " if notes else ""
-        return f"{prefix}Done. '{os.path.basename(filepath)}' created at {filepath}. Want me to open it?"
+        return f"{prefix}Done. '{os.path.basename(filepath)}' created. Want me to open it?"
 
     def _create_folder(self, plan: dict) -> str:
         """Create a folder using os.makedirs — reliable across all Windows paths."""
@@ -934,13 +1018,13 @@ Be specific and practical. No preamble."""
 
         try:
             os.makedirs(folder, exist_ok=True)
-            # Verify it actually exists
+            # Truth-First: verify the folder actually exists
             if os.path.isdir(folder):
                 self._log(f"CREATED FOLDER: {folder}")
                 self.last_action_path = folder
                 return "Done."
             else:
-                return "Something went wrong — folder wasn't created."
+                return f"Failed: folder '{os.path.basename(folder)}' was not created. Check permissions."
         except Exception as e:
             self._log(f"ERROR creating folder: {e}")
             return f"Couldn't create the folder: {str(e)[:100]}"
@@ -1036,6 +1120,23 @@ Be specific and practical. No preamble."""
             f.write(content + "\n")
         self._log(f"WROTE TO: {filename}")
         return "Done."
+
+    def _delete_item(self, plan: dict) -> str:
+        """Move an item to the Recycle Bin using send2trash."""
+        import send2trash
+        path = plan.get("filename", "")
+        if not path or not os.path.exists(path):
+            return f"Can't find '{os.path.basename(path)}' — nothing deleted."
+        try:
+            send2trash.send2trash(path)
+            # Truth-First: verify it's actually gone
+            if not os.path.exists(path):
+                self._log(f"TRASHED: {path}")
+                return f"Moved '{os.path.basename(path)}' to Recycle Bin."
+            else:
+                return f"Failed: '{os.path.basename(path)}' could not be moved to Recycle Bin."
+        except Exception as e:
+            return f"Delete failed: {str(e)[:150]}"
 
     # ─────────────────────────────────────────────────────────────
     # LOGGING
