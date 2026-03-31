@@ -6,6 +6,7 @@ IRIS Voice Engine v4.8.3
 - Support for Calibration & Privacy Mode
 """
 
+import subprocess
 import os
 import time
 import threading
@@ -106,8 +107,14 @@ class Voice:
                 except: pass
 
             # 2. Call Edge-TTS
-            cmd = f'edge-tts --voice {Config.VOICE_NAME} --rate={Config.VOICE_RATE} --text "{text}" --write-media {temp_file}'
-            os.system(cmd)
+            cmd = [
+                "edge-tts",
+                "--voice", Config.VOICE_NAME,
+                f"--rate={Config.VOICE_RATE}",
+                "--text", text,
+                "--write-media", temp_file,
+            ]
+            subprocess.run(cmd, check=False)
             
             # 3. Security Gate: Only load if file exists AND is larger than 0 bytes
             if os.path.exists(temp_file) and os.path.getsize(temp_file) > 0:

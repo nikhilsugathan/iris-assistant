@@ -22,6 +22,7 @@ nvidia-ml-py==12.535.133
 duckduckgo-search>=5.0.0    # Required for tools/researcher.py (The Eyes)
 psutil>=5.9.8               # Required for system/disk pre-flight checks
 playwright>=1.42.0          # Required for core/browser.py automation
+send2trash>=1.8.0           # Required for safe (Recycle Bin) deletes
 
 # Phase 1: C++ LLM Engine (replaces Ollama HTTP middleman)
 # Install with GPU support: pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121
