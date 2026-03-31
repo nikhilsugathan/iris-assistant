@@ -39,10 +39,11 @@ from config import Config
 
 
 # ── Verdict constants ──────────────────────────────────────────
-SAFE       = "SAFE"
-WARNING    = "WARNING"
-BLOCKED    = "BLOCKED"
-NEED_ADMIN = "NEED_ADMIN"
+SAFE        = "SAFE"
+WARNING     = "WARNING"
+BLOCKED     = "BLOCKED"
+NEED_ADMIN  = "NEED_ADMIN"
+SYSTEM_PATH = "SYSTEM_PATH"
 
 
 # ── Hardcoded blocked patterns (never overrideable) ────────────
@@ -55,7 +56,7 @@ BLOCKED_COMMANDS = [
     # Credential dumping
     r"mimikatz", r"pwdump", r"hashdump",
     # Mass destruction
-    r"rm\s+-rf\s+/", r"del\s+/[sf].*\*",
+    r"rm\s+-rf\s+/",
     r"format\s+c:", r"format\s+[a-z]:\s*/",
     # Ransomware-like patterns
     r"encrypt.*all", r"cipher\s+/w",
@@ -98,7 +99,15 @@ ADMIN_REQUIRED_PATTERNS = [
     r"Set-ExecutionPolicy",              # PowerShell policy
     r"New-Service", r"Remove-Service",   # PS services
     r"HKLM\\",                           # Registry HKEY_LOCAL_MACHINE
-    r"C:\\Windows\\", r"C:\\Program Files", # System directories
+]
+
+# Protected system paths — intercepted by the Protected Path Guard
+PROTECTED_PATHS = [
+    r"C:\\Windows",
+    r"C:\\Program Files",
+    r"C:\\Program Files \(x86\)",
+    r"^C:\\$",           # root C:\
+    r"^C:\\[^\\]+$",     # direct children of C:\ (e.g. C:\hiberfil.sys)
 ]
 
 # Beyond-ethical — requires EXPLICIT user permission each time
@@ -114,6 +123,7 @@ class SecurityGuard:
 
     def __init__(self, brain):
         self.brain = brain
+        self._system_path_override_pending = False
 
     # ─────────────────────────────────────────────────────────────
     # MAIN ENTRY: check everything before any action runs
@@ -124,13 +134,28 @@ class SecurityGuard:
         Assess a planned action for safety.
 
         Returns: (verdict, message)
-          verdict : SAFE | WARNING | BLOCKED | NEED_ADMIN
+          verdict : SAFE | WARNING | BLOCKED | NEED_ADMIN | SYSTEM_PATH
           message : Human-readable explanation to speak to user
         """
         command  = plan.get("command", "")
         url      = self._extract_url(command) or plan.get("url", "")
         filename = plan.get("filename", "")
         action   = plan.get("action_type", "")
+
+        # ── Layer 0: Recycle Bin deletes are always safe (no protected path) ──
+        # Standard user-space deletes go straight to Recycle Bin via send2trash —
+        # no confirmation needed. Only protected-path deletes require override.
+        if action == "delete_item" and not self._is_protected_path(filename):
+            return SAFE, ""
+
+        # ── Protected Path Guard: intercept system path targets ────────────────
+        # Check command and filename separately to avoid false positives from concatenation
+        if self._is_protected_path(command) or self._is_protected_path(filename):
+            self._system_path_override_pending = True
+            return SYSTEM_PATH, (
+                "Target is a System Path. Manual Override Required. "
+                "Say 'Override' to proceed."
+            )
 
         # ── Layer 1: Hard blocks (no override ever) ────────────
         blocked, reason = self._check_hard_blocks(command)
@@ -166,6 +191,19 @@ class SecurityGuard:
         # Hard blocks in Layer 1 handle actual dangerous commands.
 
         return SAFE, ""
+
+    # ─────────────────────────────────────────────────────────────
+    # LAYER 0: Protected path detection
+    # ─────────────────────────────────────────────────────────────
+
+    def _is_protected_path(self, path: str) -> bool:
+        """Return True if path targets a protected system location."""
+        if not path:
+            return False
+        for pattern in PROTECTED_PATHS:
+            if re.search(pattern, path, re.IGNORECASE):
+                return True
+        return False
 
     # ─────────────────────────────────────────────────────────────
     # LAYER 1: Hard-coded blocks
@@ -335,9 +373,10 @@ Rules:
     def format_security_header(self, verdict: str) -> str:
         """Return a spoken/printed header for security messages."""
         headers = {
-            BLOCKED:    "🔴 IRIS Security — BLOCKED",
-            WARNING:    "🟡 IRIS Security — WARNING",
-            NEED_ADMIN: "🔵 IRIS Security — ADMIN REQUIRED",
-            SAFE:       "",
+            BLOCKED:     "🔴 IRIS Security — BLOCKED",
+            WARNING:     "🟡 IRIS Security — WARNING",
+            NEED_ADMIN:  "🔵 IRIS Security — ADMIN REQUIRED",
+            SYSTEM_PATH: "🔴 IRIS Security — SYSTEM PATH DETECTED",
+            SAFE:        "",
         }
         return headers.get(verdict, "")

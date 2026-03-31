@@ -235,24 +235,23 @@ def main() -> None:
         console.print(f"[red]{tb}[/red]")
         raise
     finally:
+        # Finalization always runs — normal exit, keyboard interrupt, or crash
+        try:
+            autonomist.learn_from_session(logger.filename)
+        except Exception as e:
+            console.print(f"[yellow][!] Learning skipped: {e}[/yellow]")
+
+        logger.finalize()
+
+        try:
+            from tools.cleaner import sanitize_memory
+            sanitize_memory(Config.MEMORY_FILE)
+        except Exception:
+            pass
+
         console.print("[dim]Session closed.[/dim]")
 
-    # 4. Shutdown & Finalization — FIX: learn BEFORE finalize so file is still open
-    console.print("\n[bold cyan]IRIS:[/bold cyan] Running autonomous learning cycle...")
-    try:
-        autonomist.learn_from_session(logger.filename)
-    except Exception as e:
-        console.print(f"[yellow][!] Learning skipped: {e}[/yellow]")
 
-    console.print("[bold cyan]IRIS:[/bold cyan] Terminating. Sanitizing memory...")
-    logger.finalize()
-    
-    try:
-        from tools.cleaner import sanitize_memory
-        sanitize_memory(Config.MEMORY_FILE)
-    except Exception: pass
-    
-    sys.exit()
 
 if __name__ == "__main__":
     main()

@@ -39,7 +39,7 @@ from typing import Optional, Tuple
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from config import Config
-from core.security import SecurityGuard, SAFE, WARNING, BLOCKED, NEED_ADMIN
+from core.security import SecurityGuard, SAFE, WARNING, BLOCKED, NEED_ADMIN, SYSTEM_PATH
 from core.autocorrect import AutoCorrector
 from core.browser import BrowserAutomation
 from core.improv import ImprovEngine
@@ -189,10 +189,22 @@ class ActionExecutor:
     def handle_permission_response(self, user_input: str) -> str:
         """
         User responded to a permission or security request.
-        Override is allowed for WARNING and NEED_ADMIN verdicts only.
+        Override is allowed for WARNING, NEED_ADMIN, and SYSTEM_PATH verdicts.
         BLOCKED verdicts cannot be overridden — they are hard security limits.
         """
         text = user_input.lower().strip()
+
+        # ── System path override — only "override" proceeds, anything else cancels ──
+        if self.pending_verdict == SYSTEM_PATH:
+            if "override" in text:
+                cmd = self.pending_action.get("command") or self.pending_action.get("description", "?")
+                self._log(f"SYSTEM PATH OVERRIDE: {cmd}")
+                self.security._system_path_override_pending = False
+                return self._execute_pending()
+            else:
+                self.pending_action  = None
+                self.pending_verdict = None
+                return "Action cancelled. System path was not overridden."
 
         # ── Admin override — only for WARNING and NEED_ADMIN, never BLOCKED ──
         if "override" in text:
@@ -243,7 +255,7 @@ class ActionExecutor:
         even when the security check passes — because those actions run
         shell commands that could come from AI-generated plans.
         """
-        if verdict in (BLOCKED, WARNING, NEED_ADMIN):
+        if verdict in (BLOCKED, WARNING, NEED_ADMIN, SYSTEM_PATH):
             return False
         action_type = plan.get("action_type", "")
         return action_type in self.SIMPLE_ACTIONS
@@ -303,6 +315,12 @@ class ActionExecutor:
             self.pending_action  = None
             self.pending_verdict = None
             return f"{header}\n{security_msg}\n\nThis action has been blocked and cannot be executed."
+
+        if verdict == SYSTEM_PATH:
+            self._log(f"SYSTEM_PATH: {plan.get('command', '') or plan.get('filename', '?')}")
+            self.pending_action  = plan
+            self.pending_verdict = SYSTEM_PATH
+            return f"{header}\n{security_msg}"
 
         # ── Simple safe task — execute with verification ─────
         if self._is_simple_task(plan, verdict):
@@ -1137,6 +1155,22 @@ Be specific and practical. No preamble."""
                 return f"Failed: '{os.path.basename(path)}' could not be moved to Recycle Bin."
         except Exception as e:
             return f"Delete failed: {str(e)[:150]}"
+
+    # ─────────────────────────────────────────────────────────────
+    # VOICE UTILITIES
+    # ─────────────────────────────────────────────────────────────
+
+    def _voice_clean(self, text: str) -> str:
+        """Replace full Windows paths in text with just the basename for clean TTS."""
+        def _basename(m):
+            # Strip trailing sentence punctuation then extract last path component
+            path = re.sub(r'[.,;:)]+$', '', m.group(0))
+            return path.rsplit('\\', 1)[-1]
+        return re.sub(
+            r'[A-Za-z]:\\(?:[^\s\\/:*?"<>|\r\n]+\\)*[^\s\\/:*?"<>|\r\n]*',
+            _basename,
+            text
+        )
 
     # ─────────────────────────────────────────────────────────────
     # LOGGING

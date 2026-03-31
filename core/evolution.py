@@ -68,7 +68,7 @@ Respond with ONLY the Python function code, no explanation."""
         danger_patterns = [r"\beval\b", r"\bexec\b", r"shutil\.rmtree", r"os\.remove\s*\(", r"subprocess.*shell\s*=\s*True"]
         for pattern in danger_patterns:
             if re.search(pattern, tool_code):
-                return "I drafted a tool but it contained potentially unsafe code. Please try rephrasing your request."
+                return "I found a potential solution but it contains unsafe patterns. I won't implement it."
 
         # Step 3: Store pending tool and ask for confirmation
         self._pending_tool_code = tool_code.strip()
@@ -82,9 +82,8 @@ Respond with ONLY the Python function code, no explanation."""
         ))
 
         return (
-            f"I don't know how to do that natively, but I've drafted a tool to learn it. "
-            f"The code is shown above. "
-            f"Say 'approve tool' to add it to my permanent library, or 'reject tool' to discard it."
+            f"I found a solution for '{self._pending_tool_intent}'. "
+            f"Want me to implement it? Say 'approve tool' to proceed or 'reject tool' to discard."
         )
 
     def approve_tool(self) -> str:

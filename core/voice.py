@@ -8,6 +8,7 @@ IRIS Voice Engine v4.8.3
 
 import subprocess
 import os
+import re
 import time
 import threading
 import numpy as np
@@ -71,7 +72,15 @@ class Voice:
     def speak(self, text):
         """Atomic TTS execution with thread serialization."""
         if not text: return
-        
+        # Strip full filesystem paths — speak only the basename
+        def _path_to_basename(m):
+            path = re.sub(r'[.,;:)]+$', '', m.group(0))
+            return path.rsplit('\\', 1)[-1]
+        text = re.sub(
+            r'[A-Za-z]:\\(?:[^\s\\/:*?"<>|\r\n]+\\)*[^\s\\/:*?"<>|\r\n]*',
+            _path_to_basename,
+            text
+        )
         with self._tts_lock:
             self.stop_speaking()
             # Serialize: Wait for any previous thread to die
