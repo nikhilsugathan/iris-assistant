@@ -81,8 +81,7 @@ Example:
 3. Close and reopen PowerShell so the PATH updates."""
 
         response = self.brain._call_api(
-            Config.PRIMARY_BRAIN, plan_prompt,
-            use_persona=False, use_memory=False
+            Config.PRIMARY_BRAIN, plan_prompt
         )
 
         self.steps = self._parse_steps(response or "")
@@ -165,8 +164,7 @@ Example:
             f"End by reminding them to say 'next' when ready."
         )
         response = self.brain._call_api(
-            Config.PRIMARY_BRAIN, prompt,
-            use_persona=True, use_memory=False
+            Config.PRIMARY_BRAIN, prompt
         )
         return response or "Let me know what specifically is tripping you up."
 
@@ -179,8 +177,7 @@ Example:
                 f"Give a short, warm, specific congratulation in 2 sentences max."
             )
             response = self.brain._call_api(
-                Config.PRIMARY_BRAIN, prompt,
-                use_persona=True, use_memory=False
+                Config.PRIMARY_BRAIN, prompt
             )
             return response or f"All done! You completed all {len(self.steps)} steps. Great work."
         else:

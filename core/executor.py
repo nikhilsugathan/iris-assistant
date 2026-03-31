@@ -378,11 +378,13 @@ class ActionExecutor:
 
         # ── Create folder ─────────────────────────────────────
         folder_match = re.search(
-            r"(?:create|make|new)\s+(?:a\s+)?folder\s+"
-            r"(?:called|named|as|named as)\s+"
-            r"['\"]?([^'\"]+)['\"]?"
-            r"(?:\s+(?:in|on|at|inside)\s+(?:my\s+)?(.+))?",
-            text
+            r"(?:create|make|new)\s+(?:a\s+)?(?:new\s+)?folder"
+            r"(?:\s+(?:on|in|at)\s+(?:my\s+)?\w+)?"   # optional location before name
+            r"\s+(?:called|named|as|named as)\s+"
+            r"['\"]?([A-Za-z0-9 _\-]+?)['\"]?"
+            r"(?:\s+(?:in|on|at|inside)\s+(?:my\s+)?(.+))?$",
+            user_input,
+            re.IGNORECASE
         )
         if folder_match:
             foldername = folder_match.group(1).strip()
@@ -413,8 +415,9 @@ class ActionExecutor:
 
         # ── Rename File/Folder (Context-Aware) ────────────────
         rename_match = re.search(
-            r"rename\s+(?:the\s+)?(?:folder|file\s+)?(?:from\s+)?['\"]?([^'\"]+)['\"]?\s+(?:to|as)\s+['\"]?([^'\"]+)['\"]?", 
-            text
+            r"rename\s+(?:the\s+)?(?:folder|file\s+)?(?:from\s+)?['\"]?([^'\"]+)['\"]?\s+(?:to|as)\s+['\"]?([^'\"]+)['\"]?",
+            user_input,
+            re.IGNORECASE
         )
         if rename_match:
             old_name = rename_match.group(1).strip()
@@ -427,11 +430,14 @@ class ActionExecutor:
             else:
                 target_path = self._resolve_location("desktop", old_name)
 
+            # Compute the new full path for last_action_path update after execution
+            new_path = os.path.join(os.path.dirname(target_path), new_name)
             return {
                 "action_type": "run_command",
                 "description": f"rename '{old_name}' to '{new_name}'",
                 "command": f'ren "{target_path}" "{new_name}"',
-                "is_dangerous": False
+                "is_dangerous": False,
+                "_new_path": new_path
             }
         # ── Play specific song / music ────────────────────────
         song_match = re.search(
@@ -817,6 +823,10 @@ Respond with ONLY the JSON. No explanation."""
             output = result.stdout.strip()
             msg = "Done." + (f" {output}" if output and len(output) < 300 else "")
             self._log(f"SUCCESS: {command}")
+            # Update last_action_path after a successful rename
+            new_path = plan.get("_new_path")
+            if new_path:
+                self.last_action_path = new_path
             return msg
         else:
             err = result.stderr.strip()
