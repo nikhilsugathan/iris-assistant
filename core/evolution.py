@@ -64,6 +64,12 @@ Respond with ONLY the Python function code, no explanation."""
         if not tool_code or len(tool_code.strip()) < 20:
             return "I couldn't figure out how to do that. Could you describe it differently?"
 
+        # Basic safety scan — reject tools containing dangerous patterns
+        danger_patterns = [r"\beval\b", r"\bexec\b", r"shutil\.rmtree", r"os\.remove\s*\(", r"subprocess.*shell\s*=\s*True"]
+        for pattern in danger_patterns:
+            if re.search(pattern, tool_code):
+                return "I drafted a tool but it contained potentially unsafe code. Please try rephrasing your request."
+
         # Step 3: Store pending tool and ask for confirmation
         self._pending_tool_code = tool_code.strip()
         self._pending_tool_name = f"custom_{self._slugify(user_input)}"

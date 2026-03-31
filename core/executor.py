@@ -338,10 +338,15 @@ class ActionExecutor:
             item_name = perm_delete_match.group(1).strip()
             location  = perm_delete_match.group(2).strip() if perm_delete_match.group(2) else "desktop"
             item_path = self._resolve_location(location, item_name)
+            # Determine command type based on existence and type
+            if os.path.exists(item_path) and os.path.isdir(item_path):
+                del_cmd = f'rd /s /q "{item_path}"'
+            else:
+                del_cmd = f'del /f /q "{item_path}"'
             return {
                 "action_type": "run_command",
                 "description": f"permanently delete '{item_name}'",
-                "command": f'del /f /q "{item_path}"' if not os.path.isdir(item_path) else f'rd /s /q "{item_path}"',
+                "command": del_cmd,
                 "filename": item_path,
                 "is_dangerous": True
             }
@@ -635,8 +640,6 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
         msg = f"I'll {description}."
         if display_command and display_command != command:
             msg += f" Command: {display_command}."
-        elif command and not display_command:
-            pass  # No command shown
         if is_dangerous:
             msg += " ⚠ This is destructive and can't be undone."
         msg += " Go ahead?"
@@ -890,7 +893,7 @@ Respond with ONLY the JSON. No explanation."""
                     self._log(f"RENAME VERIFIED: {new_path}")
                     return "Done."
                 else:
-                    return "Failed: rename did not complete. Windows error may have occurred."
+                    return f"Failed: rename command succeeded but '{new_name_val}' was not found at the expected path. Check the path or try again."
             msg = "Done." + (f" {output}" if output and len(output) < 300 else "")
             self._log(f"SUCCESS: {command}")
             return msg
