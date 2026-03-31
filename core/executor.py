@@ -380,8 +380,8 @@ class ActionExecutor:
         folder_match = re.search(
             r"(?:create|make|new)\s+(?:a\s+)?folder\s+"
             r"(?:called|named|as|named as)\s+"
-            r"['\"]?([^'\"]+)['\"]?"
-            r"(?:\s+(?:in|on|at|inside)\s+(?:my\s+)?(.+))?",
+            r"['\"]?([^'\"]+?)['\"]?"
+            r"(?:\s+(?:in|on|at|inside)\s+(?:my\s+)?(.+))?$",
             text
         )
         if folder_match:
@@ -402,11 +402,19 @@ class ActionExecutor:
             text
         )
         if unnamed_folder:
-            location   = unnamed_folder.group(1).strip() if unnamed_folder.group(1) else "desktop"
-            folderpath = self._resolve_location(location, "New Folder")
+            location_raw = unnamed_folder.group(1).strip() if unnamed_folder.group(1) else "desktop"
+            # Handle "on <location> named/called <name>" — extract name from location string
+            name_in_loc = re.search(r'(?:named|called)\s+[\'"]?(.+?)[\'"]?$', location_raw)
+            if name_in_loc:
+                foldername = name_in_loc.group(1).strip()
+                location   = location_raw[:name_in_loc.start()].strip() or "desktop"
+            else:
+                foldername = "New Folder"
+                location   = location_raw
+            folderpath = self._resolve_location(location, foldername)
             return {
                 "action_type": "create_folder",
-                "description": "create a new folder",
+                "description": f"create folder '{foldername}'" if foldername != "New Folder" else "create a new folder",
                 "filename": folderpath,
                 "is_dangerous": False
             }

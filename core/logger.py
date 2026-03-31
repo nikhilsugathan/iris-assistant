@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
-from logging.handlers import TimedRotatingFileHandler
+from logging.handlers import RotatingFileHandler
 
 # Resolve the project root (parent of this file's directory)
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -28,10 +28,10 @@ def _ensure_logs_dir() -> None:
 
 
 def get_logger(name: str) -> logging.Logger:
-    """Return a named logger that writes to both the console and a daily log file.
+    """Return a named logger that writes to both the console and a size-rotating log file.
 
     The log file is placed in ``<project_root>/logs/iris.log`` and rotated
-    once per day, keeping up to 7 days of history.
+    when it reaches 5 MB, keeping up to 5 backup files.
 
     Args:
         name: A short identifier for the subsystem (e.g. ``"Diagnostics"``).
@@ -50,14 +50,14 @@ def get_logger(name: str) -> logging.Logger:
 
     formatter = logging.Formatter(_LOG_FORMAT, datefmt=_DATE_FORMAT)
 
-    # ── File handler (daily rotation) ──────────────────────────────────
+    # ── File handler (size-based rotation) ────────────────────────────
     try:
         _ensure_logs_dir()
         log_path = os.path.join(_LOGS_DIR, "iris.log")
-        file_handler = TimedRotatingFileHandler(
+        file_handler = RotatingFileHandler(
             log_path,
-            when="midnight",
-            backupCount=7,
+            maxBytes=5 * 1024 * 1024,  # 5 MB
+            backupCount=5,
             encoding="utf-8",
         )
         file_handler.setLevel(logging.DEBUG)
