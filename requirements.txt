@@ -28,3 +28,4 @@ playwright>=1.42.0          # Required for core/browser.py automation
 # Phase 1.5: C++ TTS Engine (replaces edge-tts + pygame disk I/O pipeline)
 llama-cpp-python>=0.2.0
 sounddevice>=0.4.6
+send2trash
