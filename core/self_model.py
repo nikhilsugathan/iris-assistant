@@ -102,7 +102,7 @@ class SelfModel:
                 f"urgency={self.urgency:.2f}"
             )
         return (
-            f"mode={self.cognitive_mode}, confidence={self.confidence:.2f}, "
+            f"IRIS mode={self.cognitive_mode}, confidence={self.confidence:.2f}, "
             f"caution={self.caution:.2f}, urgency={self.urgency:.2f}"
         )
 
