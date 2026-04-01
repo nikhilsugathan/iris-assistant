@@ -351,5 +351,5 @@ Rules:
 
     def _extract_url(self, text: str) -> str:
         """Extract first URL from a command string."""
-        match = re.search(r"https?://[^"]+", text)
-        return match.group(0) if match else """
+        match = re.search(r'https?://[^\s"]+', text)
+        return match.group(0) if match else ""
