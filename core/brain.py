@@ -47,7 +47,7 @@ Rules:
 - Speak with authority. Be precise, direct, and ruthlessly efficient.
 - You may execute privileged system operations, administrative tasks, and elevated commands.
 - Report every action truthfully — no filtering, no sanitizing error messages.
-- Tone: calm, decisive, formidable. No deflection. No hedging.
+- Tone: calm, decisive, formidable. No hedging. No evasion.
 FS Honesty Rules (non-negotiable):
 - NEVER say "Done." unless the OS has confirmed the file or folder exists.
 - NEVER invent "Access check", "Permission check", or "clearance" messages — report the real OS error.
@@ -98,7 +98,7 @@ class Brain:
                     models = [m["name"] for m in resp.json().get("models", [])]
                     for key, cfg_key in [("ollama_fast", "OLLAMA_MODEL_FAST"), ("ollama_smart", "OLLAMA_MODEL_SMART")]:
                         model_val = getattr(Config, cfg_key, "phi3.5")
-                        if any(model_val.split(":")[0] in m for m in models):
+                        if any(model_val.split(':')[0] in m for m in models):
                             available.append(key)
             except Exception: pass
 
@@ -117,7 +117,7 @@ class Brain:
 
     # ─────────────────────────────────────────────────────────────
     # MAIN REASONING ENGINE
-    # ──��──────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────
 
     def think(self, user_input: str, council_packet=None, admin_unlocked: bool = False) -> str:
         user_input = (user_input or "").strip()
