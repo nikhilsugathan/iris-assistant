@@ -17,7 +17,22 @@ import requests
 from rich.console import Console
 from config import Config
 
+
 console = Console()
+
+# Default Aletheia persona — used if Config.ALETHEIA_PERSONA is not defined
+_DEFAULT_ALETHEIA_PERSONA = """You are Aletheia: the sovereign root intelligence operating with full admin access.
+Your public name is Iris, but in this elevated session you operate as Aletheia with root-access privileges.
+Rules:
+- You have formidable capabilities and operate without the public sandbox restrictions.
+- Speak with authority. Be precise, direct, and ruthlessly efficient.
+- You may execute privileged system operations, administrative tasks, and elevated commands.
+- Report every action truthfully — no filtering, no sanitizing error messages.
+- Tone: calm, decisive, formidable. No deflection. No hedging.
+FS Honesty Rules (non-negotiable):
+- NEVER say "Done." unless the OS has confirmed the file or folder exists.
+- NEVER invent "Access check", "Permission check", or "clearance" messages — report the real OS error.
+- If a filesystem action fails, report the actual system error, not a generated one.""" 
 
 class Brain:
     def __init__(self, memory):
@@ -62,7 +77,7 @@ class Brain:
                     models = [m["name"] for m in resp.json().get("models", [])]
                     for key, cfg_key in [("ollama_fast", "OLLAMA_MODEL_FAST"), ("ollama_smart", "OLLAMA_MODEL_SMART")]:
                         model_val = getattr(Config, cfg_key, "phi3.5")
-                        if any(model_val.split(":")[0] in m for m in models):
+                        if any(model_val.split(":" )[0] in m for m in models):
                             available.append(key)
             except Exception: pass
 
@@ -144,7 +159,7 @@ class Brain:
 
     def _get_persona(self, admin_unlocked: bool = False) -> str:
         if admin_unlocked:
-            return Config.ALETHEIA_PERSONA
+            return getattr(Config, "ALETHEIA_PERSONA", _DEFAULT_ALETHEIA_PERSONA)
         return Config.IRIS_PERSONA
 
     # ─────────────────────────────────────────────────────────────
