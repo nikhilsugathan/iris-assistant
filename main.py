@@ -186,7 +186,7 @@ def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, 
     else:
         packet = council.deliberate(user_input, decision, self_model)
         with console.status("[cyan]Thinking...[/cyan]:"): 
-            response = brain.think(user_input, council_packet=packet)
+            response = brain.think(user_input, council_packet=packet, admin_unlocked=self_model.admin_unlocked)
 
     # Update self-model and log IRIS turn
     self_model.note_response(response, source=decision.mode)

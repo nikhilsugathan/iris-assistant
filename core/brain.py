@@ -58,6 +58,7 @@ class Brain:
     def __init__(self, memory):
         self.memory = memory
         self.llm = None
+        self._active_admin_unlocked: bool = False
         self.available_apis = self._detect_apis()
         self._update_priority()
         local_model = Config.LOCAL_MODEL_PATH
@@ -118,7 +119,7 @@ class Brain:
     # MAIN REASONING ENGINE
     # ─────────────────────────────────────────────────────────────
 
-    def think(self, user_input: str, council_packet=None) -> str:
+    def think(self, user_input: str, council_packet=None, admin_unlocked: bool = False) -> str:
         user_input = (user_input or "").strip()
         if not user_input: return "Try that again."
 
@@ -133,9 +134,9 @@ class Brain:
         
         # 3. Ensemble Reasoning
         if getattr(Config, "USE_ENSEMBLE", False):
-            response = self._ensemble_think(user_input, query_type)
+            response = self._ensemble_think(user_input, query_type, admin_unlocked=admin_unlocked)
         else:
-            response = self._smart_route(user_input, query_type)
+            response = self._smart_route(user_input, query_type, admin_unlocked=admin_unlocked)
 
         if response:
             clean_response = self._postprocess(response)
@@ -144,8 +145,9 @@ class Brain:
 
         return "I encountered a connection error. Please try again."
 
-    def _ensemble_think(self, user_input: str, query_type: str) -> str:
+    def _ensemble_think(self, user_input: str, query_type: str, admin_unlocked: bool = False) -> str:
         """Calls APIs in parallel and selects the best answer."""
+        self._active_admin_unlocked = admin_unlocked
         apis = self._get_apis_for_query(query_type)[:3]
         responses: Dict[str, str] = {}
 
@@ -165,7 +167,8 @@ class Brain:
             return judge_res.split("WINNER:")[-1].strip()
         return next(iter(responses.values()))
 
-    def _smart_route(self, user_input, query_type):
+    def _smart_route(self, user_input, query_type, admin_unlocked: bool = False):
+        self._active_admin_unlocked = admin_unlocked
         order = self._get_apis_for_query(query_type)
         for api in order:
             if api not in self.available_apis: continue
@@ -202,7 +205,7 @@ class Brain:
         return None
 
     def _call_groq(self, prompt) -> str:
-        payload = {"model": Config.GROQ_MODEL, "messages": self._build_msgs(prompt), "temperature": 0.4}
+        payload = {"model": Config.GROQ_MODEL, "messages": self._build_msgs(prompt, self._active_admin_unlocked), "temperature": 0.4}
         resp = requests.post("https://api.groq.com/openai/v1/chat/completions", headers={"Authorization": f"Bearer {Config.GROQ_API_KEY}"}, json=payload, timeout=7)
         return resp.json()["choices"][0]["message"]["content"].strip()
 
@@ -226,7 +229,7 @@ class Brain:
         if api_key == "llama_cpp":
             if self.llm is None:
                 raise RuntimeError("C++ engine not loaded yet")
-            messages = self._build_msgs(prompt)
+            messages = self._build_msgs(prompt, self._active_admin_unlocked)
             response = self.llm.create_chat_completion(
                 messages=messages,
                 max_tokens=1024,
@@ -256,8 +259,8 @@ class Brain:
         if q_type == "web_search": return ["perplexity", "gemini", "groq"]
         return ["groq", "claude", "gemini"]
 
-    def _build_msgs(self, prompt):
-        msgs = [{"role": "system", "content": Config.IRIS_PERSONA}]
+    def _build_msgs(self, prompt, admin_unlocked: bool = False):
+        msgs = [{"role": "system", "content": self._get_persona(admin_unlocked)}]
         msgs.extend(self.memory.get_context(3))
         msgs.append({"role": "user", "content": prompt})
         return msgs
