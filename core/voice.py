@@ -81,6 +81,28 @@ class Voice:
             except: pass
         self._speak_edge_tts(text)
 
+
+    def listen_for_wake(self):
+        """Listen for wake word using speech recognition."""
+        if not self.mic_ready: 
+            import time; time.sleep(0.5); return None
+        try:
+            with self.mic as source:
+                audio = self.recognizer.listen(source, timeout=5, phrase_time_limit=5)
+            return self.recognizer.recognize_google(audio, language="en-US")
+        except Exception:
+            return None
+
+    def listen_for_command(self):
+        """Listen for a follow-up command."""
+        if not self.mic_ready: return None
+        try:
+            with self.mic as source:
+                audio = self.recognizer.listen(source, timeout=8, phrase_time_limit=10)
+            return self.recognizer.recognize_google(audio, language="en-US")
+        except Exception:
+            return None
+
     def _speak_edge_tts(self, text):
         temp_file = "temp_speech.mp3"
         try:
