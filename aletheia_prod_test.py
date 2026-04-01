@@ -103,12 +103,22 @@ _req_get_patcher.start()
 _req_post_patcher.start()
 
 # ── Rich UI ───────────────────────────────────────────────────────────────────
-_rich         = _make_stub("rich")
-_rich_console = _make_stub("rich.console", Console=MagicMock)
-_rich_panel   = _make_stub("rich.panel",   Panel=MagicMock)
-_rich_prog    = _make_stub("rich.progress",
-    Progress=MagicMock, SpinnerColumn=MagicMock, TextColumn=MagicMock)
-_rich_live    = _make_stub("rich.live",    Live=MagicMock)
+# ── Section 1: Rich UI Stubs ──────────────────────────────────────────────────
+# ── Section 1: Rich UI & Hardware Stubs ───────────────────────────────────────
+# We add __path__=[] so Python treats 'rich' as a package, allowing sub-imports.
+_rich         = _make_stub("rich", __path__=[]) 
+_rich_console = _make_stub("rich.console",  Console=MagicMock)
+_rich_panel   = _make_stub("rich.panel",    Panel=MagicMock)
+_rich_prog    = _make_stub("rich.progress", Progress=MagicMock, SpinnerColumn=MagicMock, TextColumn=MagicMock)
+_rich_live    = _make_stub("rich.live",     Live=MagicMock)
+
+# Explicitly stub the sub-modules and their required attributes
+_make_stub("rich.markup", escape=MagicMock)
+_make_stub("rich.text",   Text=MagicMock)
+_make_stub("rich.table",  Table=MagicMock)
+
+# Add the hardware telemetry stub used in v5.1
+_make_stub("psutil", cpu_percent=MagicMock(return_value=10.0))
 
 # ── Config (minimal stub — matches what project code reads) ──────────────────
 class _Config:

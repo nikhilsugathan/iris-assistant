@@ -55,3 +55,12 @@ OLD_FILES/
 *.spec
 .pytest_cache/
 ai-collab/
+
+# ── Local LLMs & Weights (CRITICAL) ──────────────────────
+models/
+*.gguf
+*.bin
+
+# ── IRIS Auto-Generated Directories ──────────────────────
+logs/
+exports/

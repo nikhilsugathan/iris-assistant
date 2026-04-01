@@ -11,6 +11,7 @@ import json
 import os
 from datetime import datetime
 from typing import List, Dict
+from config import Config
 
 class Memory:
     def __init__(self, memory_file: str):
@@ -85,10 +86,12 @@ class Memory:
         
         self._save()
 
-    def get_context(self, max_turns: int = 20) -> List[Dict]:
-        """Returns role + content for LLM API calls."""
-        recent = self.conversation[-max_turns * 2:]
-        return [{"role": e["role"], "content": e["content"]} for e in recent]
+    def get_context(self, max_turns: int = None) -> List[Dict]:
+        """Retrieve the most recent conversation context."""
+        # Default to the Config value if nothing is passed
+        limit = max_turns if max_turns is not None else getattr(Config, "MAX_MEMORY_TURNS", 8)
+        recent = self.conversation[-limit * 2:]
+        return recent
 
     def summary(self) -> str:
         turns = len([e for e in self.conversation if e["role"] == "user"])

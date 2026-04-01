@@ -6,10 +6,15 @@ IRIS Hard Sanitizer & Auto-Sync v4.8.3
 import json, os, re, subprocess
 from datetime import datetime
 from rich.console import Console
+from config import Config
 
 console = Console()
 
 def sync_to_git():
+    if not getattr(Config, 'ENABLE_AUTO_SYNC', False):
+        console.print("[bold yellow]Auto-sync disabled. Skipping git commit/push.[/bold yellow]")
+        return
+
     try:
         console.print("[bold cyan]→ Syncing to GitHub...[/bold cyan]")
         # Local Ops

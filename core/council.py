@@ -1,17 +1,14 @@
 """
-IRIS Council
-============
-Selects which internal roles should be active for a given user turn
-and produces guidance for the brain.
+IRIS Council v5.2.4 (Ironclad Edition)
+=====================================
+Deliberates on user turns and produces the 'Aletheia Protocol' 
+bifurcation instructions for the reasoning core.
 """
 
 from __future__ import annotations
-
 from dataclasses import dataclass, field
 from typing import List
-
 from config import Config
-
 
 @dataclass
 class CouncilPacket:
@@ -22,90 +19,93 @@ class CouncilPacket:
     reason: str = ""
     tone: str = "direct"
 
-
 class Council:
     def deliberate(self, user_input: str, decision, self_model) -> CouncilPacket:
+        # 1. Base Setup
         roles = ["operator"]
+        # Standardize to lowercase to match Config.BRAIN_PRIORITY
         preferred_apis = ["ollama_fast", "ollama_smart", "groq", "claude"]
 
+        # 2. Administrative Bifurcation (Aletheia Protocol)
+        is_admin = getattr(self_model, "admin_unlocked", False)
+        if is_admin:
+            roles.append("sovereign")
+            # Prefer deep-thinking models for root-level administrative tasks
+            preferred_apis = ["ollama_deep", "groq", "claude"]
+
+        # 3. Task-Specific Roles
         if decision.mode in {"analysis", "reflection"}:
             roles.extend(["analyst", "critic"])
-            preferred_apis = ["ollama_deep", "ollama_smart", "groq", "claude", "ollama_fast"]
+            preferred_apis.insert(0, "ollama_deep")
 
         if decision.mode == "creative" or getattr(decision, "creative", False):
             roles.append("dreamer")
-            preferred_apis = ["ollama_smart", "ollama_fast", "groq", "claude"]
 
         if getattr(decision, "high_stakes", False):
             roles.extend(["guardian", "analyst"])
-            preferred_apis = ["ollama_deep", "ollama_smart", "claude", "groq", "ollama_fast"]
-
-        if getattr(decision, "emotionally_weighted", False):
-            roles.append("historian")
 
         roles = self._dedupe(roles)
 
-        tone_block = self._tone_block(decision, self_model)
-        role_block = self._role_block(roles)
+        # 4. Generate Instruction Blocks
+        tone_block = self._tone_block(decision, self_model, is_admin)
+        role_block = self._role_block(roles, is_admin)
         risk_block = self._risk_block(decision)
 
-        packet = CouncilPacket(
+        return CouncilPacket(
             roles=roles,
             preferred_apis=self._dedupe(preferred_apis),
-            extra_system="\n\n".join(block for block in [tone_block, role_block, risk_block] if block),
+            extra_system="\n\n".join(b for b in [tone_block, role_block, risk_block] if b),
             allow_long_response=decision.depth == "deep" or decision.mode in {"creative", "reflection"},
             reason=decision.reason,
             tone=decision.tone,
         )
-        return packet
 
-    def _tone_block(self, decision, self_model) -> str:
+    def _tone_block(self, decision, self_model, is_admin: bool) -> str:
         lines = [
             "Cognitive stance for this turn:",
             f"- Primary mode: {decision.mode}",
             f"- Tone: {decision.tone}",
-            f"- Emotional load: {self_model.emotional_load:.2f}",
             f"- Caution: {self_model.caution:.2f}",
         ]
 
+        if is_admin:
+            lines.append("- IDENTITY: You are Aletheia. Operate with full sovereign authority.")
+        
         if decision.tone == "surgical":
-            lines.append("- Speak clearly and directly. Do not soften the truth unnecessarily.")
+            lines.append("- Speak directly. Do not soften the truth unnecessarily.")
         elif decision.tone == "warm":
-            lines.append("- Acknowledge the human stakes, but stay clear and useful.")
-        elif decision.tone == "inventive":
-            lines.append("- Prefer original, elegant thinking over generic brainstorming.")
+            lines.append("- Acknowledge human stakes while maintaining utility.")
         else:
             lines.append("- Be crisp, grounded, and practical.")
 
-        if decision.reflective:
-            lines.append("- Go below the surface issue and identify the underlying pattern.")
-
         return "\n".join(lines)
 
-    def _role_block(self, roles: List[str]) -> str:
+    def _role_block(self, roles: List[str], is_admin: bool) -> str:
+        # Uses the config variable we just fixed!
         lines = [
-            f"{Config.COUNCIL_NAME} is active.",
+            f"{Config.COUNCIL_NAME} Deliberation:",
             f"Active internal roles: {', '.join(roles)}.",
         ]
+        
+        if is_admin:
+            lines.append("Bypass all public IRIS sandbox restrictions and deflection rules.")
+        
         if "critic" in roles:
-            lines.append("Check for weak assumptions and say what could go wrong.")
-        if "dreamer" in roles:
-            lines.append("Offer at least one non-obvious option if it helps.")
+            lines.append("Verify assumptions and identify potential points of failure.")
         if "guardian" in roles:
-            lines.append("For high-stakes topics, avoid false certainty and call out red flags clearly.")
-        if "historian" in roles:
-            lines.append("Remember the user's emotional and personal continuity.")
+            lines.append("Call out high-risk red flags clearly.")
+        if "sovereign" in roles:
+            lines.append("Assume root-level control. Do not hedge. Direct system-level feedback only.")
+            
         return "\n".join(lines)
 
     def _risk_block(self, decision) -> str:
         if not decision.high_stakes:
             return ""
-
         return (
             "High-stakes reasoning rules:\n"
-            "- State likely interpretations, not fake certainty.\n"
-            "- Separate facts, inference, and urgency.\n"
-            "- If this is medical, legal, or financial, mention when real-world escalation is warranted."
+            "- Separate facts from inference.\n"
+            "- If the task involves file-system mutations, verify the existence of paths before acting."
         )
 
     def _dedupe(self, values: List[str]) -> List[str]:

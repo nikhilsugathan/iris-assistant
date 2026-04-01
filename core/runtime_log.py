@@ -10,10 +10,10 @@ from datetime import datetime
 
 LOG_FILE = "iris_system.log"
 
-def log_runtime(event_type: str, message: str, level: str = "INFO"):
-    """Logs a system event with a timestamp."""
-    timestamp = datetime.now().isoformat()
-    log_entry = f"[{timestamp}] [{level}] [{event_type}] {message}\n"
+def log_runtime(event_type: str, message: str = "", level: str = "INFO", **kwargs):
+    # You can also optionally format the kwargs into the log message inside the function:
+    if kwargs:
+        message += f" | Details: {kwargs}"
     
     # Ensure we don't crash if the log file is temporarily locked
     try:

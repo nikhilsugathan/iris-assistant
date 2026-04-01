@@ -1,6 +1,6 @@
 """
-IRIS v4.8.3 Final Build Verification
-====================================
+IRIS v5.1 Final Build Verification
+==================================
 Checks the integrity of manual diffs for Config and Voice modules.
 """
 import os
@@ -11,7 +11,7 @@ from rich.console import Console
 console = Console()
 
 def verify():
-    console.print("[bold cyan]→ Starting IRIS v4.8.3 Integrity Check...[/bold cyan]\n")
+    console.print("[bold cyan]→ Starting IRIS v5.1 Integrity Check...[/bold cyan]\n")
     errors = 0
 
     # 1. Verify Config Thresholds
@@ -54,7 +54,7 @@ def verify():
         errors += 1
 
     if errors == 0:
-        console.print("\n[bold green]FINAL VERDICT: GREEN LIGHT. IRIS v4.8.3 IS PRODUCTION READY.[/bold green]")
+        console.print("\n[bold green]FINAL VERDICT: GREEN LIGHT. IRIS v5.1 IS PRODUCTION READY.[/bold green]")
     else:
         console.print(f"\n[bold red]VERDICT: FAIL. {errors} hardening issues detected.[/bold red]")
 

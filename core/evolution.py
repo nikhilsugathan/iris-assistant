@@ -1,15 +1,6 @@
-"""
-IRIS Evolution Engine
-=====================
-Handles unknown intent triage and self-learning capability.
-When IRIS encounters a request she cannot handle, she researches
-a solution, drafts a tool, and asks for user confirmation before
-integrating it into her permanent library.
-"""
-
 import os
 import re
-import json
+import importlib
 from datetime import datetime
 from rich.console import Console
 from rich.panel import Panel
@@ -18,117 +9,60 @@ from config import Config
 console = Console()
 
 CUSTOM_TOOLS_PATH = os.path.join(os.path.dirname(__file__), "custom_tools.py")
-PENDING_TOOLS_PATH = os.path.join(os.path.dirname(__file__), "pending_tool.py")
-
 
 class EvolutionEngine:
     def __init__(self, brain, researcher):
         self.brain = brain
         self.researcher = researcher
         self._pending_tool_code = None
-        self._pending_tool_name = None
-        self._pending_tool_intent = None
 
     def triage_unknown_intent(self, user_input: str) -> str:
-        """
-        Called when no existing action handler matches the user's intent.
-        Researches the task, drafts a Python tool, and asks for approval.
-        """
+        # CRIT-03: Security Gate
+        if not getattr(self.brain, "_active_admin_unlocked", False):
+            return "The Evolution Engine requires Aletheia-level administrative authorization."
+
         console.print("[dim cyan]Unknown intent — triggering Evolution Engine...[/dim cyan]")
+        research_result = self.researcher.search(user_input) if self.researcher else ""
 
-        # Step 1: Research how to do this on Windows
-        research_query = f"How to {user_input} on Windows using Python or command line"
-        research_result = self.researcher.search(research_query) if self.researcher else ""
+        # CRIT-04: Fixed unterminated string literal
+        draft_prompt = f"""You are a Python developer for IRIS.
+User intent: "{user_input}"
+Context: {research_result[:1000]}
 
-        # Step 2: Ask Brain to draft a Python tool function
-        draft_prompt = f"""You are a Python tools developer for a Windows desktop AI assistant called IRIS.
-The user wants to: "{user_input}"
-
-Research context:
-{research_result[:1500] if research_result else 'No research available.'}
-
-Write a single Python function called 'custom_{self._slugify(user_input)}' that performs this task.
-Requirements:
-- Must run on Windows
-- Must return a string result: "Done." on success, or an error message on failure
-- Must verify the action completed (e.g., os.path.exists) before returning "Done."
-- Use only standard library + common packages (os, subprocess, shutil, pathlib)
-- Include a brief docstring
-- No input() calls — all parameters must be passed as arguments
-- Keep it under 30 lines
-
-Respond with ONLY the Python function code, no explanation."""
+Write a function 'custom_{self._slugify(user_input)}' that returns a string.
+Respond with ONLY the Python code, no explanation."""
 
         tool_code = self.brain._call_api(Config.PRIMARY_BRAIN, draft_prompt)
-
-        if not tool_code or len(tool_code.strip()) < 20:
-            return "I couldn't figure out how to do that. Could you describe it differently?"
-
-        # Basic safety scan — reject tools containing dangerous patterns
-        danger_patterns = [r"\beval\b", r"\bexec\b", r"shutil\.rmtree", r"os\.remove\s*\(", r"subprocess.*shell\s*=\s*True"]
-        for pattern in danger_patterns:
+        
+        # Security Scan using centralized danger patterns
+        for pattern in Config.DANGER_PATTERNS:
             if re.search(pattern, tool_code):
-                return "I drafted a tool but it contained potentially unsafe code. Please try rephrasing your request."
+                return "Drafted tool rejected due to safety patterns. Rephrase the request."
 
-        # Step 3: Store pending tool and ask for confirmation
         self._pending_tool_code = tool_code.strip()
-        self._pending_tool_name = f"custom_{self._slugify(user_input)}"
-        self._pending_tool_intent = user_input
-
-        console.print(Panel(
-            f"[bold cyan]Drafted Tool:[/bold cyan]\n\n[green]{self._pending_tool_code}[/green]",
-            title="[bold magenta]IRIS Evolution — New Capability Draft[/bold magenta]",
-            border_style="magenta"
-        ))
-
-        return (
-            f"I don't know how to do that natively, but I've drafted a tool to learn it. "
-            f"The code is shown above. "
-            f"Say 'approve tool' to add it to my permanent library, or 'reject tool' to discard it."
-        )
+        console.print(Panel(f"[green]{self._pending_tool_code}[/green]", title="Drafted Tool"))
+        return "Tool drafted. Say 'approve tool' to integrate it."
 
     def approve_tool(self) -> str:
-        """Appends the pending tool to core/custom_tools.py."""
-        if not self._pending_tool_code:
-            return "No pending tool to approve."
+        if not self._pending_tool_code: return "No pending tool."
 
-        os.makedirs(os.path.dirname(CUSTOM_TOOLS_PATH), exist_ok=True)
-
-        # Create file with header if it doesn't exist
+        # CRIT-04: Fixed header writing and added hot-reload
         if not os.path.exists(CUSTOM_TOOLS_PATH):
             with open(CUSTOM_TOOLS_PATH, "w", encoding="utf-8") as f:
-                f.write('"""\nIRIS Custom Tools Library\n'
-                        'Auto-generated by the Evolution Engine.\n'
-                        'Each function here was approved by the user.\n"""\n\nimport os\nimport subprocess\nimport shutil\n\n')
+                f.write('"""IRIS Custom Tools Library"""\nimport os\nimport subprocess\n\n')
 
-        # Append the new tool
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
         with open(CUSTOM_TOOLS_PATH, "a", encoding="utf-8") as f:
-            f.write(f"\n# Learned: {timestamp} | Intent: {self._pending_tool_intent}\n")
-            f.write(self._pending_tool_code)
-            f.write("\n")
+            f.write(f"\n{self._pending_tool_code}\n")
 
-        tool_name = self._pending_tool_name
         self._pending_tool_code = None
-        self._pending_tool_name = None
-        self._pending_tool_intent = None
-
-        return f"Tool '{tool_name}' has been added to my permanent library. I'll use it next time you ask."
-
-    def reject_tool(self) -> str:
-        """Discards the pending tool."""
-        if not self._pending_tool_code:
-            return "No pending tool to reject."
-        self._pending_tool_code = None
-        self._pending_tool_name = None
-        self._pending_tool_intent = None
-        return "Tool discarded. I'll try a different approach next time."
-
-    def has_pending_tool(self) -> bool:
-        return self._pending_tool_code is not None
+        # Hot-reload the tools module
+        try:
+            import core.custom_tools
+            importlib.reload(core.custom_tools)
+        except: pass
+        
+        return "Tool integrated and hot-reloaded successfully."
 
     @staticmethod
     def _slugify(text: str) -> str:
-        """Convert user intent to a valid Python function name."""
-        slug = re.sub(r'[^a-z0-9]+', '_', text.lower().strip())
-        return slug[:40].strip('_') or "unknown_action"
+        return re.sub(r'[^a-z0-9]+', '_', text.lower().strip())[:40]

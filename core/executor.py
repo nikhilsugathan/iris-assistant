@@ -286,9 +286,12 @@ class ActionExecutor:
         if plan.get("action_type") == "unsupported":
             return "I'm not sure how to do that safely. Could you describe it differently?"
 
+        # -- Expand environment variables BEFORE security assessment --
+        if "command" in plan and isinstance(plan["command"], str):
+            plan["command"] = os.path.expandvars(plan["command"])
+
         # -- Run security assessment --
         verdict, security_msg = self.security.assess(plan, admin_unlocked=admin_unlocked)
-        header = self.security.format_security_header(verdict)
 
         if verdict == BLOCKED:
             self._log(f"BLOCKED: {plan.get('command','?')} - {security_msg}")
@@ -935,7 +938,10 @@ Be specific and practical. No preamble."""
 
         filepath, rename_msg = self._resolve_filename(filepath)
 
-        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        # Ensure directory string isn't empty before trying to create it
+        target_dir = os.path.dirname(filepath)
+        if target_dir:
+            os.makedirs(target_dir, exist_ok=True)
 
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(content)
