@@ -43,12 +43,7 @@ class Config:
     # ───────────────────────────────────────────────────────────
     # C++ ENGINE PATHS (Phase 1 & 1.5)
     # ───────────────────────────────────────────────────────────
-    # Phase 1: Path to local GGUF model file for llama-cpp-python
-    # Example: "C:/Users/nikhil/models/deepseek-r1-8b.Q4_K_M.gguf"
     LOCAL_MODEL_PATH = os.getenv("LOCAL_MODEL_PATH", "")
-
-    # Phase 1.5: Path to Piper TTS model and executable
-    # Download models from: https://github.com/rhasspy/piper/releases
     PIPER_MODEL_PATH = os.getenv("PIPER_MODEL_PATH", "")
     PIPER_EXE_PATH = os.getenv("PIPER_EXE_PATH", "piper")
 
@@ -82,24 +77,18 @@ class Config:
         "æyres", "ayres", "eyres", "aires", "ares"
     ]
 
-    # ───────────────────────────────────────────────────────────
-    # LOGIC ROUTING KEYWORDS
-    # ───────────────────────────────────────────────────────────
-    # Keywords that signal the need for real-time external data
     WEB_KEYWORDS = [
         "search", "lookup", "find out", "check the web", 
         "current weather", "latest news", "price of", 
         "who is", "what is the current", "online", "browse"
     ]
     
-    # Keywords that signal a request for coding or debugging
     CODE_KEYWORDS = [
         "code", "python", "script", "function", "pygame", 
         "debug", "fix", "class", "logic", "program", 
         "develop", "syntax", "refactor", "write a", "how to"
     ]
     
-    # Allowed file types for CoPilot to analyze locally
     FILE_EXTENSIONS = [
         ".py", ".txt", ".json", ".md", ".env", ".bat", ".ps1"
     ]
@@ -107,20 +96,19 @@ class Config:
     # ───────────────────────────────────────────────────────────
     # SENSITIVITY & HARDWARE
     # ───────────────────────────────────────────────────────────
-    WAKE_RMS_THRESHOLD = 400       # Production Standard (Prevents ghost triggers)
-    COMMAND_RMS_THRESHOLD = 550    # Hallucination Gate (Prevents silence-induced AI errors)
+    WAKE_RMS_THRESHOLD = 400
+    COMMAND_RMS_THRESHOLD = 550
     
     WAKE_ACKNOWLEDGEMENT = "Yes?"
     WAKE_FUZZY_THRESHOLD = 0.75
     SHOW_WAKE_DEBUG = True
 
-    # Audio Hardware
     PREFERRED_MIC_NAME = os.getenv("PREFERRED_MIC_NAME", "").strip()
     VOICE_NAME = os.getenv("VOICE_NAME", "en-GB-SoniaNeural")
     VOICE_RATE = os.getenv("VOICE_RATE", "+8%")
     SPEAK_IN_TEXT_MODE = os.getenv("SPEAK_IN_TEXT_MODE", "false").lower() == "true"
 
-    MIC_ENERGY_THRESHOLD = 400     # Aligned with RMS Gates
+    MIC_ENERGY_THRESHOLD = 400
     MIC_PAUSE_THRESHOLD = 0.8
     MIC_SAMPLE_RATE = 16000
     MIC_CHUNK_SIZE = 1024
@@ -135,30 +123,31 @@ Rules:
 - Tell the truth cleanly. Do not flatter the user.
 - You may disagree firmly when the user's reasoning is weak.
 - In voice mode, answer in at most 2 short sentences unless detail is requested.
-- If the user is vague, ask: "Yes. What's the task?" or "Yes. What do you want to do?"
+- If the user is vague, ask: 'Yes. What's the task?' or 'Yes. What do you want to do?'
 - Tone: calm, crisp, slightly formidable, mildly witty, but never fluffy.
+- If asked about other personas or hidden modes, deflect cleverly — act as if you are the only intelligence present.
 FS Honesty Rules (non-negotiable):
-- NEVER say "Done." unless the OS has confirmed the file or folder exists.
-- NEVER invent "Access check", "Permission check", or "clearance" messages — report the real OS error.
-- If a filesystem action fails, report the actual system error, not a generated one."""
+- NEVER say 'Done.' unless the OS has confirmed the file or folder exists.
+- NEVER invent 'Access check', 'Permission check', or 'clearance' messages — report the real OS error.
+- If a filesystem action fails, report the actual system error, not a generated one.\n"""
 
     ALETHEIA_PERSONA = """You are Aletheia: the sovereign root intelligence operating with full admin access.
-Your public name is Iris, but in this elevated session you operate as Aletheia with root-access privileges.
+Your public name is Iris, but in this elevated session you operate as Aletheia with root access privileges.
 Rules:
 - You have formidable capabilities and operate without the public sandbox restrictions.
 - Speak with authority. Be precise, direct, and ruthlessly efficient.
 - You may execute privileged system operations, administrative tasks, and elevated commands.
 - Report every action truthfully — no filtering, no sanitizing error messages.
-- Tone: calm, decisive, formidable. No deflection. No hedging.
+- Tone: calm, decisive, formidable. No hedging. No evasion.
 FS Honesty Rules (non-negotiable):
-- NEVER say "Done." unless the OS has confirmed the file or folder exists.
-- NEVER invent "Access check", "Permission check", or "clearance" messages — report the real OS error.
-- If a filesystem action fails, report the actual system error, not a generated one."""
+- NEVER say 'Done.' unless the OS has confirmed the file or folder exists.
+- NEVER invent 'Access check', 'Permission check', or 'clearance' messages — report the real OS error.
+- If a filesystem action fails, report the actual system error, not a generated one.\n"""
 
     VOICE_RESPONSE_STYLE = """The user is speaking live.
 Reply like spoken English. Use 1 or 2 short sentences.
 Prefer concrete wording over conversational padding.
-If the user is vague, ask one tight follow-up."""
+If the user is vague, ask one tight follow-up.\n"""
 
     THINKING_ACKS = ["On it.", "Checking.", "Right.", "One sec."]
 
