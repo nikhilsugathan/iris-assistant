@@ -35,7 +35,7 @@ BEYOND BASELINE (requires YOUR explicit permission):
 Phase 7 change:
   - assess() signature updated to accept admin_unlocked: bool = False
   - Layer 0 public sandbox blocks run_command, install_package, delete_item
-    when admin_unlocked=False, with an Aletheia unlock hint in the message.
+    when admin_unlocked=False, with an unlock hint in the message.
   - Layer 1 hard blocks remain unconditional regardless of admin state.
   - All _call_api calls are strictly two-argument (api, prompt).
 """
@@ -117,7 +117,7 @@ SENSITIVE_OPERATIONS = [
 ]
 
 # Action types restricted in public mode (admin_unlocked=False).
-# These require Aletheia mode to be unlocked before execution.
+# These require admin mode to be unlocked before execution.
 _PUBLIC_RESTRICTED_ACTIONS = {"run_command", "install_package", "delete_item"}
 
 
@@ -137,7 +137,7 @@ class SecurityGuard:
         Parameters
         ----------
         plan           : the action plan dict from executor
-        admin_unlocked : True when Aletheia admin mode is active
+        admin_unlocked : True when admin mode is active
 
         Returns
         -------
@@ -157,7 +157,7 @@ class SecurityGuard:
         if not admin_unlocked and action in _PUBLIC_RESTRICTED_ACTIONS:
             return BLOCKED, (
                 f"'{action}' is restricted in public IRIS mode. "
-                "To unlock full system control, activate Aletheia admin mode."
+                "To unlock full system control, activate admin mode."
             )
 
         # Layer 1: Hard blocks (no override - unconditional regardless of admin state)
