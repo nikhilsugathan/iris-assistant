@@ -30,7 +30,7 @@ BEYOND BASELINE (requires YOUR explicit permission):
   - Firewall/antivirus modifications
   - Registry edits
   - Network configuration changes
-  - Accessing system folders (C:\\Windows\\System32 etc.)
+  - Accessing system folders (C:\Windows\System32 etc.)
 
 Phase 7 change:
   - assess() signature updated to accept admin_unlocked: bool = False
@@ -64,7 +64,7 @@ BLOCKED_COMMANDS = [
     r"mimikatz", r"pwdump", r"hashdump",
     # Mass destruction
     r"rm\s+-rf\s+\/", r"del\s+/[sf].*\*",
-    r"format\s+c:", r"format\s+[a-z]:\s*/",
+    r"format\s+c:", r"format\s+[a-z]:\s+/",
     # Ransomware-like patterns
     r"encrypt.*all", r"cipher\s+/w",
     # UAC bypass techniques
@@ -99,9 +99,9 @@ ADMIN_REQUIRED_PATTERNS = [
     r"reg\s+(add|delete|import|export)",
     r"bcdedit", r"diskpart",
     r"net\s+(user|group|localgroup)",
-    r"sfc\s+/", r"dism\s+/",
+    r"sfc\s+\/", r"dism\s+\/",
     r"icacls", r"takeown",
-    r"runas\s+/",
+    r"runas\s+\/",
     r"Set-ExecutionPolicy",
     r"New-Service", r"Remove-Service",
     r"HKLM\\",
@@ -209,7 +209,7 @@ class SecurityGuard:
     def _check_admin_required(self, command: str) -> Tuple[bool, str]:
         for pattern in ADMIN_REQUIRED_PATTERNS:
             if re.search(pattern, command, re.IGNORECASE):
-                readable = pattern.replace(r"\s+", " ").replace(r"\\", "\\")
+                readable = pattern.replace(r"\s+", " ").replace(r"\\", "\")
                 return True, f"'{readable}' requires elevated privileges on Windows"
         return False, ""
 
@@ -351,5 +351,5 @@ Rules:
 
     def _extract_url(self, text: str) -> str:
         """Extract first URL from a command string."""
-        match = re.search(r"https?://[^"]+", text)
-        return match.group(0) if match else """
+        match = re.search(r'https?://[^"]+', text)
+        return match.group(0) if match else ""
