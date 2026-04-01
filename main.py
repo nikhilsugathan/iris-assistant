@@ -162,11 +162,7 @@ def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, 
     # Speak first, then print — keeps audio and text in sync
     voice.speak(response)
     console.print(f"\n[bold {label_color}]{persona_label}:[/bold {label_color}] {response}\n")
-<<<<<<< Updated upstream
 
-=======
-    
->>>>>>> Stashed changes
     return response, False
 
 
@@ -204,7 +200,6 @@ def main() -> None:
     researcher, autonomist = Researcher(brain), Autonomist(brain)
     evolution = EvolutionEngine(brain, researcher)
 
-<<<<<<< Updated upstream
     # Wait for C++ engine to finish loading before printing banner
     engine_ready = _wait_for_engine(brain, timeout=30)
     if not engine_ready:
@@ -220,20 +215,6 @@ def main() -> None:
         console.print(f"\n[bold green]🎤 Voice Mode — listening for: {', '.join(Config.WAKE_WORDS)}[/bold green]")
     else:
         console.print(f"\n[bold green]⌨️  Text Mode — type your command[/bold green]")
-=======
-    # Wait for C++ engine to finish loading before showing banner
-    import time
-    waited = 0
-    while brain.llm is None and waited < 30:
-        time.sleep(0.5)
-        waited += 0.5
-
-    console.print(BANNER, style="bold cyan")
-    show_status(voice, self_model)
-
-    # Startup greeting
-    greeting = _generate_greeting(admin_unlocked=False)
->>>>>>> Stashed changes
     console.print(f"[bold cyan]IRIS:[/bold cyan] {greeting}")
     voice.speak(greeting)
 
