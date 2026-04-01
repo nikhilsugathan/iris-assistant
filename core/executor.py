@@ -321,7 +321,7 @@ class ActionExecutor:
 
         # -- Permanent delete (security gate - ask for confirmation) --
         perm_delete_match = re.search(
-            r"(?:permanently\s+delete|force\s+delete|delete\s+forever|wipe)\s+['\"]?([^'\"]+?)['\"]?\"
+            r"(?:permanently\s+delete|force\s+delete|delete\s+forever|wipe)\s+['\"]?([^'\"]+?)['\"]?"
             r"(?:\s+(?:from|in|on|at)\s+(?:my\s+)?(.+))?$",
             user_input,
             re.IGNORECASE
@@ -344,7 +344,7 @@ class ActionExecutor:
 
         # -- Standard delete - Recycle Bin --
         std_delete_match = re.search(
-            r"(?:delete|remove|trash)\s+['\"]?([^'\"]+?)['\"]?\"
+            r"(?:delete|remove|trash)\s+['\"]?([^'\"]+?)['\"]?"
             r"(?:\s+(?:from|in|on|at)\s+(?:my\s+)?(.+))?$",
             user_input,
             re.IGNORECASE
@@ -364,7 +364,7 @@ class ActionExecutor:
 
         # -- Create file --
         file_match = re.search(
-            r"(?:create|make|new)\s+(?:a\s+)?file\s+(?:called|named|as|named as)?\s*['\"]?([^'\"]\w*?)['\"]?\"
+            r"(?:create|make|new)\s+(?:a\s+)?file\s+(?:called|named|as|named as)?\s*['\"]?([^'\"]\w*?)['\"]?"
             r"(?:\s+(?:in|on|at|inside)\s+(?:my\s+)?(.+))?",
             user_input,
             re.IGNORECASE
@@ -384,7 +384,7 @@ class ActionExecutor:
         # -- Create subfolder inside existing folder --
         subfolder_match = re.search(
             r"(?:create|make)\s+(?:a\s+)?sub.?folder\s+"
-            r"(?:called|named|as)?\s*['\"]?([^'\"]+)['\"]?\"
+            r"(?:called|named|as)?\s*['\"]?([^'\"]+)['\"]?"
             r"(?:\s+(?:in|inside|within|under)\s+(.+))?",
             user_input,
             re.IGNORECASE
@@ -613,8 +613,7 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
         display_command = command
         if command:
             display_command = re.sub(
-                r'"([A-Za-z]:\\[^"\]+)"
-                ,
+                r'"([A-Za-z]:\\[^"\\]+)"',
                 lambda m: f'"{os.path.basename(m.group(1))}"',
                 command
             )
