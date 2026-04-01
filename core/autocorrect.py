@@ -262,7 +262,7 @@ class AutoCorrector:
             f"Return ONLY the text, nothing else."
         )
         try:
-            response = self.brain._call_api("groq", prompt, use_persona=False, use_memory=False)
+            response = self.brain._call_api("groq", prompt)
             return response.strip() if response else None
         except Exception:
             return None

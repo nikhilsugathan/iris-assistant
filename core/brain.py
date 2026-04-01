@@ -41,13 +41,13 @@ FS Honesty Rules (non-negotiable):
 # Default Aletheia persona — used if Config.ALETHEIA_PERSONA is not defined
 _DEFAULT_ALETHEIA_PERSONA = """
 You are Aletheia: the sovereign root intelligence operating with full admin access.
-Your public name is Iris, but in this elevated session you operate as Aletheia with root-access privileges.
+Your public name is Iris, but in this elevated session you operate as Aletheia with root access privileges.
 Rules:
 - You have formidable capabilities and operate without the public sandbox restrictions.
 - Speak with authority. Be precise, direct, and ruthlessly efficient.
 - You may execute privileged system operations, administrative tasks, and elevated commands.
 - Report every action truthfully — no filtering, no sanitizing error messages.
-- Tone: calm, decisive, formidable. No deflection. No hedging.
+- Tone: calm, decisive, formidable. No hedging. No evasion.
 FS Honesty Rules (non-negotiable):
 - NEVER say "Done." unless the OS has confirmed the file or folder exists.
 - NEVER invent "Access check", "Permission check", or "clearance" messages — report the real OS error.
@@ -180,14 +180,34 @@ class Brain:
     # PERSONA SELECTION
     # ─────────────────────────────────────────────────────────────
 
-    def _get_persona(self, admin_unlocked: bool = False) -> str:
+    def _get_persona(self, admin_unlocked: bool = False, tone: str = "") -> str:
+        """
+        Return the active persona string.
+
+        Args:
+            admin_unlocked: If True, return the elevated Aletheia persona.
+            tone: Optional tone directive from the Council
+                  (e.g. "surgical", "warm", "inventive").
+                  Appended to the persona without overriding core identity.
+        """
         if admin_unlocked:
-            return getattr(Config, "ALETHEIA_PERSONA", _DEFAULT_ALETHEIA_PERSONA)
-        persona = getattr(Config, "IRIS_PERSONA", _DEFAULT_IRIS_PERSONA)
-        # Ensure the persona has deflection instruction; if not, use the full default
-        if "deflect" not in persona.lower():
-            return _DEFAULT_IRIS_PERSONA
-        return persona
+            base = getattr(Config, "ALETHEIA_PERSONA", _DEFAULT_ALETHEIA_PERSONA)
+        else:
+            base = getattr(Config, "IRIS_PERSONA", _DEFAULT_IRIS_PERSONA)
+            # Ensure the persona has deflection instruction; if not, use the full default
+            if "deflect" not in base.lower():
+                base = _DEFAULT_IRIS_PERSONA
+
+        if tone:
+            tone_map = {
+                "surgical":  "Speak with surgical precision — no hedging, no softening.",
+                "warm":      "Acknowledge the human stakes, but stay clear and useful.",
+                "inventive": "Prefer original, elegant thinking over generic brainstorming.",
+            }
+            tone_directive = tone_map.get(tone.lower(), f"Tone for this turn: {tone}.")
+            base = f"{base}\n\n[Council tone directive]\n{tone_directive}"
+
+        return base
 
     # ─────────────────────────────────────────────────────────────
     # API HANDLERS
@@ -259,8 +279,8 @@ class Brain:
         if q_type == "web_search": return ["perplexity", "gemini", "groq"]
         return ["groq", "claude", "gemini"]
 
-    def _build_msgs(self, prompt, admin_unlocked: bool = False):
-        msgs = [{"role": "system", "content": self._get_persona(admin_unlocked)}]
+    def _build_msgs(self, prompt, admin_unlocked: bool = False, tone: str = ""):
+        msgs = [{"role": "system", "content": self._get_persona(admin_unlocked, tone=tone)}]
         msgs.extend(self.memory.get_context(3))
         msgs.append({"role": "user", "content": prompt})
         return msgs

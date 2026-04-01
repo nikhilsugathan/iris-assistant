@@ -109,6 +109,8 @@ _rich_panel   = _make_stub("rich.panel",   Panel=MagicMock)
 _rich_prog    = _make_stub("rich.progress",
     Progress=MagicMock, SpinnerColumn=MagicMock, TextColumn=MagicMock)
 _rich_live    = _make_stub("rich.live",    Live=MagicMock)
+_make_stub("rich.markup")
+_make_stub("rich.text")
 
 # ── Config (minimal stub — matches what project code reads) ──────────────────
 class _Config:
