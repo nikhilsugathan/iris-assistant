@@ -34,6 +34,10 @@ class EvolutionEngine:
         Called when no existing action handler matches the user's intent.
         Researches the task, drafts a Python tool, and asks for approval.
         """
+        self_model = getattr(getattr(self, 'brain', None), 'self_model', None)
+        if not getattr(self_model, 'admin_unlocked', False):
+            return "Evolution engine requires admin access."
+
         console.print("[dim cyan]Unknown intent — triggering Evolution Engine...[/dim cyan]")
 
         # Step 1: Research how to do this on Windows
