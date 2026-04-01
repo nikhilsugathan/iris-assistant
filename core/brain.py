@@ -256,8 +256,8 @@ class Brain:
         return "general"
 
     def _get_apis_for_query(self, q_type: str) -> List[str]:
-        if q_type == "web_search": return ["perplexity", "gemini", "groq"]
-        return ["groq", "claude", "gemini"]
+        if q_type == "web_search": return ["llama_cpp", "perplexity", "gemini", "groq"]
+        return ["llama_cpp", "groq", "claude", "gemini"]
 
     def _build_msgs(self, prompt, admin_unlocked: bool = False):
         msgs = [{"role": "system", "content": self._get_persona(admin_unlocked)}]
