@@ -30,7 +30,7 @@ BEYOND BASELINE (requires YOUR explicit permission):
   - Firewall/antivirus modifications
   - Registry edits
   - Network configuration changes
-  - Accessing system folders (C:\Windows\System32 etc.)
+  - Accessing system folders (C:\\Windows\\System32 etc.)
 
 Phase 7 change:
   - assess() signature updated to accept admin_unlocked: bool = False
@@ -209,7 +209,7 @@ class SecurityGuard:
     def _check_admin_required(self, command: str) -> Tuple[bool, str]:
         for pattern in ADMIN_REQUIRED_PATTERNS:
             if re.search(pattern, command, re.IGNORECASE):
-                readable = pattern.replace(r"\s+", " ").replace(r"\\", "\")
+                readable = pattern.replace(r"\s+", " ").replace("\\\\", "\\")
                 return True, f"'{readable}' requires elevated privileges on Windows"
         return False, ""
 
@@ -353,3 +353,13 @@ Rules:
         """Extract first URL from a command string."""
         match = re.search(r'https?://[^"]+', text)
         return match.group(0) if match else ""
+
+    def format_security_header(self, verdict: str) -> str:
+        """Return a formatted header string for security verdicts."""
+        headers = {
+            SAFE: "[SAFE]",
+            WARNING: "[⚠ WARNING]",
+            BLOCKED: "[🛑 BLOCKED]",
+            NEED_ADMIN: "[🔒 ADMIN REQUIRED]",
+        }
+        return headers.get(verdict, f"[{verdict}]")

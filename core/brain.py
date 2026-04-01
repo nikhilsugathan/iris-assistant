@@ -139,6 +139,15 @@ class Brain:
         return None
 
     # ─────────────────────────────────────────────────────────────
+    # PERSONA SELECTION
+    # ─────────────────────────────────────────────────────────────
+
+    def _get_persona(self, admin_unlocked: bool = False) -> str:
+        if admin_unlocked:
+            return Config.ALETHEIA_PERSONA
+        return Config.IRIS_PERSONA
+
+    # ─────────────────────────────────────────────────────────────
     # API HANDLERS
     # ─────────────────────────────────────────────────────────────
 

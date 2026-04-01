@@ -23,6 +23,7 @@ class SelfModel:
     last_reason: str = "startup"
     active_roles: List[str] = field(default_factory=list)
     recent_friction: List[str] = field(default_factory=list)
+    admin_unlocked: bool = False
 
     def observe_user_input(self, text: str, decision) -> None:
         lowered = (text or "").lower()
@@ -94,6 +95,12 @@ class SelfModel:
         }
 
     def summary(self) -> str:
+        if self.admin_unlocked:
+            return (
+                f"[Aletheia admin mode] mode={self.cognitive_mode}, "
+                f"confidence={self.confidence:.2f}, caution={self.caution:.2f}, "
+                f"urgency={self.urgency:.2f}"
+            )
         return (
             f"mode={self.cognitive_mode}, confidence={self.confidence:.2f}, "
             f"caution={self.caution:.2f}, urgency={self.urgency:.2f}"

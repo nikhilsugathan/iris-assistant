@@ -9,6 +9,7 @@ IRIS Main Entry Point v5.1 (C++ Engine + Survival Layer)
 
 from __future__ import annotations
 import argparse
+import random
 import time
 import sys
 import os
@@ -38,6 +39,51 @@ from core.autonomist import Autonomist         # FIX: was missing
 console = Console()
 
 CRASH_LOG = os.path.join(os.path.dirname(__file__), "logs", "crash.log")
+
+# ─────────────────────────────────────────────────────────────
+# GREETING / FAREWELL POOLS (Phase 7 — Aletheia Protocol)
+# ─────────────────────────────────────────────────────────────
+
+_GREETINGS_PUBLIC = [
+    "Online.",
+    "Ready.",
+    "Standing by.",
+    "Yes?",
+]
+
+_GREETINGS_ADMIN = [
+    "Aletheia online.",
+    "Root access active.",
+    "Aletheia ready.",
+    "Admin session established.",
+]
+
+_FAREWELLS_PUBLIC = [
+    "Session closed.",
+    "Goodbye.",
+    "Standing down.",
+    "Signing off.",
+]
+
+_FAREWELLS_ADMIN = [
+    "Aletheia signing off.",
+    "Admin session terminated.",
+    "Root session closed.",
+    "Aletheia standing down.",
+]
+
+
+def _generate_greeting(admin_unlocked: bool = False) -> str:
+    """Return a random greeting from the appropriate pool. Must NOT call any LLM API."""
+    pool = _GREETINGS_ADMIN if admin_unlocked else _GREETINGS_PUBLIC
+    return random.choice(pool)
+
+
+def _generate_farewell(self_model) -> str:
+    """Return a random farewell from the appropriate pool. Must NOT call any LLM API."""
+    admin = getattr(self_model, "admin_unlocked", False)
+    pool = _FAREWELLS_ADMIN if admin else _FAREWELLS_PUBLIC
+    return random.choice(pool)
 
 BANNER = f"""
   ██████████████████████ ████████████████
