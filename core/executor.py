@@ -1,13 +1,14 @@
+# -*- coding: utf-8 -*-
 """
 IRIS Action Executor
 =======================
-When you ask IRIS to DO something — install, create, delete, run —
+When you ask IRIS to DO something - install, create, delete, run -
 it plans the action, tells you exactly what it's about to do,
 and waits for your voice/text permission before executing.
 
 PERMISSION GATE FLOW:
   You: "Iris, install Python"
-  IRIS: "I'll run: winget install Python.Python.3 — shall I go ahead?"
+  IRIS: "I'll run: winget install Python.Python.3 - shall I go ahead?"
   You: "yes" / "go ahead" / "do it"
   IRIS: [runs the command, reports result]
   IRIS: "Done. Python installed. Want me to verify it worked?"
@@ -45,20 +46,20 @@ from core.browser import BrowserAutomation
 from core.improv import ImprovEngine
 
 
-# ── Phrases that mean YES ──────────────────────────────────────
+# -- Phrases that mean YES --
 YES_WORDS = [
     "yes", "yeah", "yep", "yup", "sure", "go ahead", "do it",
     "proceed", "confirm", "ok", "okay", "affirmative", "correct",
     "go for it", "run it", "execute", "do that", "sounds good"
 ]
 
-# ── Phrases that mean NO ───────────────────────────────────────
+# -- Phrases that mean NO --
 NO_WORDS = [
     "no", "nope", "cancel", "stop", "don't", "abort", "wait",
     "hold on", "negative", "never mind", "nevermind", "skip"
 ]
 
-# ── Phrases that are DANGEROUS (need double confirm) ───────────
+# -- Phrases that are DANGEROUS (need double confirm) --
 DANGEROUS_PATTERNS = [
     r"del\s", r"rm\s", r"rmdir", r"format", r"delete",
     r"drop\s", r"uninstall", r"--force", r"-rf"
@@ -68,8 +69,8 @@ DANGEROUS_PATTERNS = [
 class ActionExecutor:
 
     def __init__(self, voice, brain):
-        self.voice   = voice
-        self.brain   = brain
+        self.voice    = voice
+        self.brain    = brain
         self.security = SecurityGuard(brain)
         self.log_file    = "iris_actions.log"
         self.is_windows  = platform.system() == "Windows"
@@ -78,10 +79,10 @@ class ActionExecutor:
         self.follow_up              = None
         self.autocorrect            = AutoCorrector(brain)
         self.improv                 = ImprovEngine(brain)
-        self.pending_plans          = None   # stores A/B/C plans waiting for user choice
+        self.pending_plans          = None
         self.last_action_path       = None
         self._clarification_options = []
-        self._browser = None   # lazy — created only when needed
+        self._browser = None
 
     @property
     def browser(self):
@@ -90,9 +91,9 @@ class ActionExecutor:
             self._browser = BrowserAutomation()
         return self._browser
 
-    # ─────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
     # DETECTION: Does this input want an action?
-    # ─────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
 
     ACTION_TRIGGERS = [
         "install", "uninstall", "download", "setup", "set up",
@@ -109,9 +110,9 @@ class ActionExecutor:
         text = user_input.lower()
         return any(trigger in text for trigger in self.ACTION_TRIGGERS)
 
-    # ─────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
     # PERMISSION CHECK: Are we waiting for yes/no?
-    # ─────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
 
     def waiting_for_permission(self) -> bool:
         return self.pending_action is not None and not self.waiting_for_clarification()
@@ -150,7 +151,7 @@ class ActionExecutor:
         elif any(word in text for word in NO_WORDS):
             return "No problem."
 
-        return None  # Unrecognised — fall through to brain
+        return None
 
     def handle_clarification_response(self, user_input: str) -> Optional[str]:
         """Resolve a pending clarification, usually a file extension choice."""
@@ -187,14 +188,13 @@ class ActionExecutor:
         return self._execute_pending()
 
     def handle_permission_response(self, user_input: str) -> str:
-        """
-        User responded to a permission or security request.
+        """User responded to a permission or security request.
         Override is allowed for WARNING and NEED_ADMIN verdicts only.
-        BLOCKED verdicts cannot be overridden — they are hard security limits.
+        BLOCKED verdicts cannot be overridden - they are hard security limits.
         """
         text = user_input.lower().strip()
 
-        # ── Admin override — only for WARNING and NEED_ADMIN, never BLOCKED ──
+        # -- Admin override - only for WARNING and NEED_ADMIN, never BLOCKED --
         if "override" in text:
             if self.pending_verdict == BLOCKED:
                 self._log(f"OVERRIDE DENIED (BLOCKED): {self.pending_action.get('command', '?')}")
@@ -208,28 +208,24 @@ class ActionExecutor:
             self._log(f"ADMIN OVERRIDE [{self.pending_verdict}]: {cmd}")
             return self._execute_pending()
 
-        # ── Yes — proceed (but not for BLOCKED) ──
+        # -- Yes - proceed (but not for BLOCKED) --
         if any(word in text for word in YES_WORDS):
             if self.pending_verdict == BLOCKED:
                 return "That action is blocked. Say 'cancel' to dismiss."
             return self._execute_pending()
 
-        # ── No — cancel ──
+        # -- No - cancel --
         if any(word in text for word in NO_WORDS):
             self.pending_action  = None
             self.pending_verdict = None
             return "Cancelled."
 
-        # ── Anything else — ask once more plainly ──
+        # -- Anything else - ask once more plainly --
         return "Go ahead, or cancel?"
 
-    # ─────────────────────────────────────────────────────────────
-    # PLAN: Figure out what action to take
-    # ─────────────────────────────────────────────────────────────
-    
-    # ─────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
     # SIMPLE TASK DETECTION: These run without asking permission
-    # ─────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
 
     SIMPLE_ACTIONS = [
         "create_file", "create_folder", "open_app",
@@ -237,10 +233,9 @@ class ActionExecutor:
     ]
 
     def _is_simple_task(self, plan: dict, verdict: str) -> bool:
-        """
-        Only actions in SIMPLE_ACTIONS auto-execute when verdict is SAFE.
+        """Only actions in SIMPLE_ACTIONS auto-execute when verdict is SAFE.
         run_command and install_package always ask for permission first,
-        even when the security check passes — because those actions run
+        even when the security check passes - because those actions run
         shell commands that could come from AI-generated plans.
         """
         if verdict in (BLOCKED, WARNING, NEED_ADMIN):
@@ -248,21 +243,18 @@ class ActionExecutor:
         action_type = plan.get("action_type", "")
         return action_type in self.SIMPLE_ACTIONS
 
-    # ─────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
     # COGNITIVE FILE NAMING: auto-rename if file already exists
-    # ─────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
 
     def _resolve_filename(self, filepath: str) -> tuple:
-        """
-        If the file already exists, auto-generate a new name cognitively.
-        Returns (final_path, message_about_rename_or_None)
-        """
+        """If the file already exists, auto-generate a new name cognitively.
+        Returns (final_path, message_about_rename_or_None)"""
         if not os.path.exists(filepath):
             return filepath, None
 
-        # File exists — generate a new name
-        base  = os.path.splitext(filepath)[0]
-        ext   = os.path.splitext(filepath)[1]
+        base    = os.path.splitext(filepath)[0]
+        ext     = os.path.splitext(filepath)[1]
         counter = 2
 
         while True:
@@ -271,20 +263,20 @@ class ActionExecutor:
                 original_name = os.path.basename(filepath)
                 new_name      = os.path.basename(new_path)
                 return new_path, (
-                    f"'{original_name}' already exists — "
+                    f"'{original_name}' already exists - "
                     f"I've created '{new_name}' instead."
                 )
             counter += 1
 
-    def plan_action(self, user_input: str) -> str:
+    def plan_action(self, user_input: str, admin_unlocked: bool = False) -> str:
         """Interpret the request, run security assessment.
         Simple safe tasks execute immediately.
         Risky tasks ask for permission first.
         """
-        # ── Try direct pattern matching first (fast, reliable) ──
+        # -- Try direct pattern matching first (fast, reliable) --
         plan = self._pattern_match(user_input)
 
-        # ── Fall back to AI JSON planning if no pattern matched ──
+        # -- Fall back to AI JSON planning if no pattern matched --
         if not plan:
             plan = self._ai_plan(user_input)
 
@@ -294,24 +286,24 @@ class ActionExecutor:
         if plan.get("action_type") == "unsupported":
             return "I'm not sure how to do that safely. Could you describe it differently?"
 
-        # ── Run security assessment ──────────────────────────
-        verdict, security_msg = self.security.assess(plan)
+        # -- Run security assessment --
+        verdict, security_msg = self.security.assess(plan, admin_unlocked=admin_unlocked)
         header = self.security.format_security_header(verdict)
 
         if verdict == BLOCKED:
-            self._log(f"BLOCKED: {plan.get('command','?')} — {security_msg}")
+            self._log(f"BLOCKED: {plan.get('command','?')} - {security_msg}")
             self.pending_action  = None
             self.pending_verdict = None
             return f"{header}\n{security_msg}\n\nThis action has been blocked and cannot be executed."
 
-        # ── Simple safe task — execute with verification ─────
+        # -- Simple safe task - execute with verification --
         if self._is_simple_task(plan, verdict):
-            self._log(f"AUTO-EXECUTE: {plan.get('action_type')} — {plan.get('description','')}")
+            self._log(f"AUTO-EXECUTE: {plan.get('action_type')} - {plan.get('description','')}")
             self.pending_action  = plan
             self.pending_verdict = verdict
             return self._execute_pending()
 
-        # ── Everything else — ask for permission ─────────────
+        # -- Everything else - ask for permission --
         self.pending_action  = plan
         self.pending_verdict = verdict
         permission_msg = self._build_permission_request(plan)
@@ -327,9 +319,9 @@ class ActionExecutor:
         """
         text = user_input.lower().strip()
 
-        # ── Permanent delete (security gate — ask for confirmation) ──
+        # -- Permanent delete (security gate - ask for confirmation) --
         perm_delete_match = re.search(
-            r"(?:permanently\s+delete|force\s+delete|delete\s+forever|wipe)\s+['\"]?([^'\"]+?)['\"]?"
+            r"(?:permanently\s+delete|force\s+delete|delete\s+forever|wipe)\s+['\"]?([^'\"]+?)['\"]?\"
             r"(?:\s+(?:from|in|on|at)\s+(?:my\s+)?(.+))?$",
             user_input,
             re.IGNORECASE
@@ -338,7 +330,6 @@ class ActionExecutor:
             item_name = perm_delete_match.group(1).strip()
             location  = perm_delete_match.group(2).strip() if perm_delete_match.group(2) else "desktop"
             item_path = self._resolve_location(location, item_name)
-            # Determine command type based on existence and type
             if os.path.exists(item_path) and os.path.isdir(item_path):
                 del_cmd = f'rd /s /q "{item_path}"'
             else:
@@ -351,9 +342,9 @@ class ActionExecutor:
                 "is_dangerous": True
             }
 
-        # ── Standard delete → Recycle Bin ────────────────────────────
+        # -- Standard delete - Recycle Bin --
         std_delete_match = re.search(
-            r"(?:delete|remove|trash)\s+['\"]?([^'\"]+?)['\"]?"
+            r"(?:delete|remove|trash)\s+['\"]?([^'\"]+?)['\"]?\"
             r"(?:\s+(?:from|in|on|at)\s+(?:my\s+)?(.+))?$",
             user_input,
             re.IGNORECASE
@@ -362,7 +353,6 @@ class ActionExecutor:
             item_name = std_delete_match.group(1).strip()
             location  = std_delete_match.group(2).strip() if std_delete_match.group(2) else "desktop"
             item_path = self._resolve_location(location, item_name)
-            # Also check last_action_path for context
             if self.last_action_path and item_name.lower() in os.path.basename(self.last_action_path).lower():
                 item_path = self.last_action_path
             return {
@@ -372,9 +362,9 @@ class ActionExecutor:
                 "is_dangerous": False
             }
 
-        # ── Create file ───────────────────────────────────────
+        # -- Create file --
         file_match = re.search(
-            r"(?:create|make|new)\s+(?:a\s+)?file\s+(?:called|named|as|named as)?\s*['\"]?([^'\"\s][^'\"]*?)['\"]?"
+            r"(?:create|make|new)\s+(?:a\s+)?file\s+(?:called|named|as|named as)?\s*['\"]?([^'\"]\w*?)['\"]?\"
             r"(?:\s+(?:in|on|at|inside)\s+(?:my\s+)?(.+))?",
             user_input,
             re.IGNORECASE
@@ -391,10 +381,10 @@ class ActionExecutor:
                 "is_dangerous": False
             }
 
-        # ── Create subfolder inside existing folder ───────────
+        # -- Create subfolder inside existing folder --
         subfolder_match = re.search(
             r"(?:create|make)\s+(?:a\s+)?sub.?folder\s+"
-            r"(?:called|named|as)?\s*['\"]?([^'\"]+)['\"]?"
+            r"(?:called|named|as)?\s*['\"]?([^'\"]+)['\"]?\"
             r"(?:\s+(?:in|inside|within|under)\s+(.+))?",
             user_input,
             re.IGNORECASE
@@ -403,12 +393,10 @@ class ActionExecutor:
             subfoldername = subfolder_match.group(1).strip()
             parent        = subfolder_match.group(2).strip() if subfolder_match.group(2) else ""
 
-            # Resolve parent folder — check desktop first
             if parent:
                 desktop = self._get_desktop_path()
                 parent_path = os.path.join(desktop, parent)
                 if not os.path.isdir(parent_path):
-                    # Try as absolute path
                     parent_path = parent if os.path.isdir(parent) else desktop
             elif self.last_action_path and os.path.isdir(self.last_action_path):
                 parent_path = self.last_action_path
@@ -423,10 +411,10 @@ class ActionExecutor:
                 "is_dangerous": False
             }
 
-        # ── Create folder ─────────────────────────────────────
+        # -- Create folder --
         folder_match = re.search(
             r"(?:create|make|new)\s+(?:a\s+)?(?:new\s+)?folder"
-            r"(?:\s+(?:on|in|at)\s+(?:my\s+)?\w+)?"   # optional location BEFORE name
+            r"(?:\s+(?:on|in|at)\s+(?:my\s+)?\w+)?"
             r"\s+(?:called|named|as|named as)\s+"
             r"['\"]?([A-Za-z0-9 _\-]+?)['\"]?"
             r"(?:\s+(?:in|on|at|inside)\s+(?:my\s+)?(.+))?$",
@@ -444,7 +432,7 @@ class ActionExecutor:
                 "is_dangerous": False
             }
 
-        # ── Create unnamed folder ─────────────────────────────
+        # -- Create unnamed folder --
         unnamed_folder = re.search(
             r"(?:create|make)\s+(?:a\s+)?(?:new\s+)?folder"
             r"(?:\s+(?:in|on|at)\s+(?:my\s+)?(.+))?$",
@@ -461,7 +449,7 @@ class ActionExecutor:
                 "is_dangerous": False
             }
 
-        # ── Rename File/Folder (Context-Aware) ────────────────
+        # -- Rename File/Folder (Context-Aware) --
         rename_match = re.search(
             r"rename\s+(?:the\s+)?(?:folder|file\s+)?(?:from\s+)?['\"]?([^'\"]+)['\"]?\s+(?:to|as)\s+['\"]?([^'\"]+)['\"]?",
             user_input,
@@ -471,7 +459,6 @@ class ActionExecutor:
             old_name = rename_match.group(1).strip()
             new_name = rename_match.group(2).strip()
 
-            # Contextual Memory: Did she just interact with this?
             target_path = ""
             if self.last_action_path and old_name.lower() in os.path.basename(self.last_action_path).lower():
                 target_path = self.last_action_path
@@ -486,7 +473,8 @@ class ActionExecutor:
                 "new_name": new_name,
                 "is_dangerous": False
             }
-        # ── Play specific song / music ────────────────────────
+
+        # -- Play specific song / music --
         song_match = re.search(
             r"(?:play|stream|listen to|put on)\s+(.+?)(?:\s+(?:on|from|via|using)\s+\w+)?$",
             user_input,
@@ -494,7 +482,6 @@ class ActionExecutor:
         )
         if song_match:
             query = song_match.group(1).strip()
-            # Remove filler words
             for filler in ["me a song", "some music", "music", "something", "a song"]:
                 if query == filler:
                     query = ""
@@ -506,11 +493,10 @@ class ActionExecutor:
                 "is_dangerous": False
             }
 
-        # ── Open app ──────────────────────────────────────────
+        # -- Open app --
         open_match = re.search(r"(?:open|launch|start)\s+(.+)", user_input, re.IGNORECASE)
         if open_match:
             app = open_match.group(1).strip()
-            # Map common app names to commands
             app_map = {
                 "notepad": "notepad.exe",
                 "calculator": "calc.exe",
@@ -536,7 +522,7 @@ class ActionExecutor:
                 "is_dangerous": False
             }
 
-        # ── Search web ────────────────────────────────────────
+        # -- Search web --
         search_match = re.search(r"(?:search for|search|look up|google)\s+(.+)", user_input, re.IGNORECASE)
         if search_match:
             query = search_match.group(1).strip()
@@ -547,7 +533,7 @@ class ActionExecutor:
                 "is_dangerous": False
             }
 
-        return None  # No pattern matched — fall through to AI
+        return None
 
     def _resolve_location(self, location: str, filename: str) -> str:
         """Resolve a natural language location to a real path."""
@@ -564,20 +550,18 @@ class ActionExecutor:
             "onedrive":  os.path.join(home, "OneDrive"),
         }
 
-        # Fuzzy match location name
         best = difflib.get_close_matches(location, location_map.keys(), n=1, cutoff=0.6)
         folder = location_map.get(best[0] if best else "desktop", self._get_desktop_path())
 
         return os.path.join(folder, filename)
 
     def _ai_plan(self, user_input: str) -> Optional[dict]:
-        """AI JSON planner — fallback when pattern matching fails."""
+        """AI JSON planner - fallback when pattern matching fails."""
         system = platform.system()
 
-        # Inject context about last action so follow-up commands work
         context = ""
         if self.last_action_path:
-            context = f'\nLast action path: "{self.last_action_path}" — use this if the user refers to "it", "that folder", "that file", or "the one I just created".\n'
+            context = f'\nLast action path: "{self.last_action_path}" - use this if the user refers to "it", "that folder", "that file", or "the one I just created".\n'
 
         plan_prompt = f"""The user wants IRIS to take a real action on their computer.
 System: {system}
@@ -615,7 +599,6 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
 
         try:
             clean = response.strip()
-            # Strip markdown code fences if present
             clean = re.sub(r"```(?:json)?", "", clean).strip()
             return json.loads(clean)
         except Exception:
@@ -623,16 +606,15 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
 
     def _build_permission_request(self, plan: dict) -> str:
         """Direct, no-nonsense permission request using basenames for clean voice output."""
-        description = plan.get("description", "perform this action")
-        command     = plan.get("command", "")
+        description  = plan.get("description", "perform this action")
+        command      = plan.get("command", "")
         is_dangerous = plan.get("is_dangerous", False)
 
-        # Strip full paths from command for voice display
         display_command = command
         if command:
-            # Replace quoted full paths with just the basename
             display_command = re.sub(
-                r'"([A-Za-z]:\\[^"]+)"',
+                r'"([A-Za-z]:\\[^"\]+)"
+                ,
                 lambda m: f'"{os.path.basename(m.group(1))}"',
                 command
             )
@@ -641,13 +623,13 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
         if display_command and display_command != command:
             msg += f" Command: {display_command}."
         if is_dangerous:
-            msg += " ⚠ This is destructive and can't be undone."
+            msg += " This is destructive and can't be undone."
         msg += " Go ahead?"
         return msg
 
-    # ─────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
     # EXECUTE: Run the approved action
-    # ─────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
 
     def waiting_for_plan_choice(self) -> bool:
         return self.pending_plans is not None
@@ -658,7 +640,6 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
         if not plans:
             return None
 
-        # Cancel
         if any(w in user_input.lower() for w in ["cancel", "never mind", "forget it", "no"]):
             self.pending_plans = None
             return "Cancelled."
@@ -669,9 +650,8 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
             a = plans.get("plan_a", {}).get("description", "?")
             b = plans.get("plan_b", {}).get("description", "?")
             c = plans.get("plan_c", {}).get("description", "?")
-            return f"Which one — A: {a}, B: {b}, or C: {c}?"
+            return f"Which one - A: {a}, B: {b}, or C: {c}?"
 
-        # Plan C needs explicit permission
         if selected.get("requires_permission"):
             self.pending_action  = selected
             self.pending_verdict = WARNING
@@ -681,10 +661,9 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
             msg  = f"Plan C: {desc}."
             if cmd:
                 msg += f" Command: {cmd}."
-            msg += " This one has real side effects — go ahead?"
+            msg += " This one has real side effects - go ahead?"
             return msg
 
-        # Plans A and B — just execute
         self.pending_plans   = None
         self.pending_action  = selected
         self.pending_verdict = SAFE
@@ -696,7 +675,7 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
         Flow:
           1. Execute
           2. Verify it worked
-          3. If failed → generate Plan A/B/C via improv engine
+          3. If failed - generate Plan A/B/C via improv engine
           4. Present options to user
         """
         plan    = self.pending_action
@@ -711,29 +690,25 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
         action_type = plan.get("action_type")
         self._log(f"EXECUTE [{verdict}]: {plan.get('command') or plan.get('description','?')}")
 
-        # ── Execute and verify ────────────────────────────────
         result, success = self._execute_with_verify(plan)
 
         if success:
             return result
 
-        # ── Failed — use improv engine ────────────────────────
-        self._log(f"FAILED: {result} — generating improv plans")
+        self._log(f"FAILED: {result} - generating improv plans")
         original_request = plan.get("description", "that action")
         plans = self.improv.generate_plans(original_request, plan, result)
 
         if not plans:
-            return result  # Improv also failed to generate plans
+            return result
 
-        # Store plans for user to choose
         self.pending_plans = plans
         spoken = self.improv.format_spoken_options(plans)
         return spoken
 
     def _execute_with_verify(self, plan: dict) -> tuple:
         """Execute an action and verify it actually worked.
-        Returns (message, success_bool)
-        """
+        Returns (message, success_bool)"""
         action_type = plan.get("action_type")
 
         try:
@@ -755,7 +730,6 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
 
             elif action_type == "open_app":
                 result  = self._open_app(plan)
-                # Can't easily verify app opened — assume success if no exception
                 success = result == "Done."
 
             elif action_type == "search_web":
@@ -776,7 +750,7 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
             return result, success
 
         except Exception as e:
-            self._log(f"EXCEPTION: {action_type} — {e}")
+            self._log(f"EXCEPTION: {action_type} - {e}")
             return f"That didn't work: {str(e)[:100]}", False
 
     def _ai_retry_plan(self, original_plan: dict, error_msg: str) -> dict:
@@ -787,7 +761,7 @@ Original action: {json.dumps(original_plan, indent=2)}
 Error/result: {error_msg}
 
 Generate a different plan to achieve the same goal.
-Use a completely different method — if mkdir failed, try os.makedirs via python; 
+Use a completely different method - if mkdir failed, try os.makedirs via python;
 if start command failed, try webbrowser; if one path failed, try a different path.
 
 Respond ONLY with valid JSON in this exact format:
@@ -841,7 +815,7 @@ Respond with ONLY the JSON. No explanation."""
                         progress.update(task, description=f"[cyan]Working:[/cyan] [dim]{short_line}[/dim]")
                 process.wait()
             except Exception as e:
-                self._log(f"EXCEPTION running command: {command} — {e}")
+                self._log(f"EXCEPTION running command: {command} - {e}")
                 return f"Couldn't run that command: {str(e)[:150]}"
 
         final_output = "\n".join(output_lines[-4:])
@@ -849,21 +823,22 @@ Respond with ONLY the JSON. No explanation."""
             self._log(f"SUCCESS: {command}")
             return "Done. " + final_output
         else:
-            self._log(f"FAILED: {command} — {final_output}")
+            self._log(f"FAILED: {command} - {final_output}")
             fix = self._think_of_fix(command, final_output)
             return f"That didn't work. {fix}"
 
     def _run_command(self, plan: dict) -> str:
         """Run a shell command with defense-in-depth security re-check."""
-        command = os.path.expandvars(plan.get("command", ""))  # expand env vars before blocked-commands scan
-        if not command: return "No command to run."
+        command = os.path.expandvars(plan.get("command", ""))
+        if not command:
+            return "No command to run."
 
         from core.security import BLOCKED_COMMANDS
         cmd_lower = command.lower()
         for pattern in BLOCKED_COMMANDS:
             if re.search(pattern, cmd_lower, re.IGNORECASE):
                 self._log(f"EXECUTION BLOCKED: {command}")
-                return "Blocked — this matches a hard security rule."
+                return "Blocked - this matches a hard security rule."
 
         self._log(f"RUN: {command}")
 
@@ -883,8 +858,7 @@ Respond with ONLY the JSON. No explanation."""
 
         if result.returncode == 0:
             output = result.stdout.strip()
-            # If this was a rename command, verify the new path exists
-            old_path = plan.get("old_path", "")
+            old_path     = plan.get("old_path", "")
             new_name_val = plan.get("new_name", "")
             if old_path and new_name_val:
                 new_path = os.path.join(os.path.dirname(old_path), new_name_val)
@@ -899,7 +873,7 @@ Respond with ONLY the JSON. No explanation."""
             return msg
         else:
             err = result.stderr.strip()
-            self._log(f"FAILED: {command} — {err}")
+            self._log(f"FAILED: {command} - {err}")
             fix = self._think_of_fix(command, err)
             return f"That didn't work. {fix}"
 
@@ -913,21 +887,17 @@ Error: {error[:300]}
 In one sentence, what's the most likely cause and fix?
 Be specific and practical. No preamble."""
 
-        response = self.brain._call_api(
-            "groq", prompt
-        )
+        response = self.brain._call_api("groq", prompt)
         return response or f"Error: {error[:150]}"
 
     def _get_desktop_path(self) -> str:
-        """Get the correct Desktop path — checks OneDrive first (most common on Win10/11)."""
+        """Get the correct Desktop path - checks OneDrive first (most common on Win10/11)."""
         home = os.path.expanduser("~")
 
-        # OneDrive Desktop first — most common on Windows 10/11
         onedrive = os.path.join(home, "OneDrive", "Desktop")
         if os.path.exists(onedrive):
             return onedrive
 
-        # Standard desktop
         standard = os.path.join(home, "Desktop")
         if os.path.exists(standard):
             return standard
@@ -935,20 +905,17 @@ Be specific and practical. No preamble."""
         return home
 
     def _create_file(self, plan: dict) -> str:
-        """Create a file — cognitively corrects extension, auto-renames if exists."""
+        """Create a file - cognitively corrects extension, auto-renames if exists."""
         filename = plan.get("filename", "iris_output.txt")
         content  = plan.get("content", "")
         context  = plan.get("description", "")
 
-        # ── Step 1: Auto-correct path typos ──────────────────
         filename, path_note = self.autocorrect.correct_path(filename)
 
-        # ── Step 2: Cognitively correct the extension ─────────
         filename, ext_note, needs_clarification, options = \
             self.autocorrect.correct_extension(filename, context)
 
         if needs_clarification:
-            # Store plan so we can resume after user answers
             self.pending_action = plan
             self.pending_action["filename"] = filename
             self.pending_verdict = SAFE
@@ -959,7 +926,6 @@ Be specific and practical. No preamble."""
                 f"Say the extension you want and I'll create it."
             )
 
-        # ── Step 3: Resolve correct folder path ──────────────
         if "desktop" in filename.lower():
             bare_name = os.path.basename(filename)
             filepath  = os.path.join(self._get_desktop_path(), bare_name)
@@ -968,7 +934,6 @@ Be specific and practical. No preamble."""
         else:
             filepath  = filename
 
-        # ── Step 4: Cognitive rename if file already exists ───
         filepath, rename_msg = self._resolve_filename(filepath)
 
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
@@ -976,34 +941,30 @@ Be specific and practical. No preamble."""
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(content)
 
-        # Truth-First: verify the file actually exists before claiming success
         if not os.path.isfile(filepath):
             self._log(f"FILE CREATION FAILED: {filepath}")
-            return f"Failed: file was not created. Check permissions or path."
+            return "Failed: file was not created. Check permissions or path."
 
         self._log(f"CREATED FILE: {filepath}")
-        self.last_action_path = filepath   # remember for follow-up commands
+        self.last_action_path = filepath
         self.follow_up = {"action": "open_file", "path": filepath}
 
-        # Build response noting any corrections made
         notes = []
-        if path_note:   notes.append(path_note)
-        if ext_note:    notes.append(ext_note)
-        if rename_msg:  notes.append(rename_msg)
+        if path_note:  notes.append(path_note)
+        if ext_note:   notes.append(ext_note)
+        if rename_msg: notes.append(rename_msg)
 
         prefix = " ".join(notes) + " " if notes else ""
         return f"{prefix}Done. '{os.path.basename(filepath)}' created. Want me to open it?"
 
     def _create_folder(self, plan: dict) -> str:
-        """Create a folder using os.makedirs — reliable across all Windows paths."""
+        """Create a folder using os.makedirs - reliable across all Windows paths."""
         filename = plan.get("filename", "")
         command  = plan.get("command", "")
 
-        # Resolve the folder path
         if filename:
             folder = filename
         elif command:
-            # Extract path from mkdir command
             match = re.search(r'mkdir\s+"?([^"\']+)"?', command, re.IGNORECASE)
             folder = match.group(1).strip() if match else None
         else:
@@ -1012,13 +973,11 @@ Be specific and practical. No preamble."""
         if not folder:
             return "I couldn't determine where to create the folder."
 
-        # Fix desktop path — handle OneDrive
         if "desktop" in folder.lower():
             folder = os.path.join(self._get_desktop_path(), os.path.basename(folder))
 
         try:
             os.makedirs(folder, exist_ok=True)
-            # Truth-First: verify the folder actually exists
             if os.path.isdir(folder):
                 self._log(f"CREATED FOLDER: {folder}")
                 self.last_action_path = folder
@@ -1041,14 +1000,12 @@ Be specific and practical. No preamble."""
         command = (plan.get("command") or "").strip()
         url     = (plan.get("url") or "").strip()
 
-        # Direct URL — open in browser
         if url and url.startswith("http"):
             import webbrowser
             webbrowser.open(url)
             self._log(f"OPENED URL: {url}")
             return "Done."
 
-        # Known app name map → exact executable or URL
         app_map = {
             "notepad":          "notepad.exe",
             "calculator":       "calc.exe",
@@ -1075,11 +1032,9 @@ Be specific and practical. No preamble."""
 
         target = app_map.get(app.lower(), app)
 
-        # If it's a URL (from app_map or direct) — use browser automation
         if target and target.startswith("http"):
             return self.browser.open_url(target)
 
-        # Shell command provided directly
         if command:
             try:
                 subprocess.Popen(command, shell=True)
@@ -1088,7 +1043,6 @@ Be specific and practical. No preamble."""
             except Exception as e:
                 return f"Couldn't open that: {e}"
 
-        # Use Windows start command
         if target:
             try:
                 subprocess.Popen(f'start "" "{target}"', shell=True)
@@ -1126,10 +1080,9 @@ Be specific and practical. No preamble."""
         import send2trash
         path = plan.get("filename", "")
         if not path or not os.path.exists(path):
-            return f"Can't find '{os.path.basename(path)}' — nothing deleted."
+            return f"Can't find '{os.path.basename(path)}' - nothing deleted."
         try:
             send2trash.send2trash(path)
-            # Truth-First: verify it's actually gone
             if not os.path.exists(path):
                 self._log(f"TRASHED: {path}")
                 return f"Moved '{os.path.basename(path)}' to Recycle Bin."
@@ -1138,9 +1091,9 @@ Be specific and practical. No preamble."""
         except Exception as e:
             return f"Delete failed: {str(e)[:150]}"
 
-    # ─────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
     # LOGGING
-    # ─────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------------
 
     def _log(self, message: str):
         """Log every action to file for transparency."""
