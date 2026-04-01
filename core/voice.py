@@ -25,6 +25,7 @@ class Voice:
         self.privacy_mode = False
         self.mic_ready = False
         self.engine = "edge-tts"
+        self.io_disabled = text_mode  # True in CI / text-only mode
         
         # Calibration support for diagnostics.py
         self._window_ready = threading.Event()
@@ -36,8 +37,7 @@ class Voice:
         
         if not self.text_mode:
             self._init_mic()
-        
-        mixer.init()
+            mixer.init()
 
     def _init_mic(self):
         """Probes audio hardware for the Aletheia spec."""
