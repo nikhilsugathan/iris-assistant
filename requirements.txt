@@ -6,7 +6,7 @@ python-dotenv==1.0.1
 requests==2.32.3
 
 # ── IRIS Terminal UI ──
-rich==13.9.4
+rich>=13.9.4  # >=13.9.4 required for rich.markup; upgrade: pip install --upgrade rich
 
 # ── IRIS Voice & Audio Engine ──
 edge-tts==6.1.12
