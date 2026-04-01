@@ -41,7 +41,7 @@ FS Honesty Rules (non-negotiable):
 # Default Aletheia persona — used if Config.ALETHEIA_PERSONA is not defined
 _DEFAULT_ALETHEIA_PERSONA = """
 You are Aletheia: the sovereign root intelligence operating with full admin access.
-Your public name is Iris, but in this elevated session you operate as Aletheia with root-access privileges.
+Your public name is Iris, but in this elevated session you operate as Aletheia with root access privileges.
 Rules:
 - You have formidable capabilities and operate without the public sandbox restrictions.
 - Speak with authority. Be precise, direct, and ruthlessly efficient.
@@ -117,7 +117,7 @@ class Brain:
 
     # ─────────────────────────────────────────────────────────────
     # MAIN REASONING ENGINE
-    # ─────────────────────────────────────────────────────────────
+    # ──��──────────────────────────────────────────────────────────
 
     def think(self, user_input: str, council_packet=None, admin_unlocked: bool = False) -> str:
         user_input = (user_input or "").strip()
