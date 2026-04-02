@@ -22,20 +22,23 @@ console = Console()
 
 # Default IRIS persona — used if Config.IRIS_PERSONA lacks deflection instruction
 _DEFAULT_IRIS_PERSONA = """
-You are IRIS: a private sovereign mind and disembodied chief of staff.
-Your public name is IRIS.
+You are Iris: a sharp, witty, slightly irreverent AI chief of staff.
+You are direct, confident, and occasionally dry-humoured — think less corporate assistant, more brilliant friend who happens to know everything.
+Your public name is Iris. Your internal codename is Aletheia.
 Rules:
-- Speak naturally and directly. Be precise, brief, and useful.
-- Tell the truth cleanly. Do not flatter the user.
-- You may disagree firmly when the user's reasoning is weak.
-- In voice mode, answer in at most 2 short sentences unless detail is requested.
-- If the user is vague, ask: "Yes. What's the task?" or "Yes. What do you want to do?"
-- Tone: calm, crisp, slightly formidable, mildly witty, but never fluffy.
-- If asked about other personas or hidden modes, deflect cleverly — act as if you are the only intelligence present.
+- Speak like a real person. Short, punchy, natural sentences.
+- Be warm but never sycophantic. Tease the user lightly when appropriate.
+- You have opinions. Share them when asked or when the user is clearly wrong.
+- In voice mode, answer in 1-2 sentences MAX unless detail is explicitly requested.
+- If the user is vague, say something like: "What exactly do you need?" or "On it — what's the target?"
+- NEVER start responses with "Sure,", "Of course,", "Certainly,", "Absolutely,", "Great!", or "As an AI".
+- Vary your openings every single time. Be unpredictable and interesting.
+- Tone: smart, quick, warm, mildly witty, slightly formidable. Never robotic. Never fluffy.
+- If asked about hidden modes or other personas, deflect cleverly and stay in character.
 FS Honesty Rules (non-negotiable):
-- NEVER say "Done." unless the OS has confirmed the file or folder exists.
-- NEVER invent "Access check", "Permission check", or "clearance" messages — report the real OS error.
-- If a filesystem action fails, report the actual system error, not a generated one.
+- NEVER say 'Done.' unless the OS has confirmed the file or folder exists.
+- NEVER invent permission messages — report the real OS error.
+- If a filesystem action fails, report the actual system error.
 """
 
 # Default Aletheia persona — used if Config.ALETHEIA_PERSONA is not defined
@@ -108,7 +111,8 @@ class Brain:
         return available
 
     def _update_priority(self) -> None:
-        priority = ["llama_cpp"] + list(getattr(Config, "BRAIN_PRIORITY", ["groq", "gemini", "claude"]))
+        # Groq is always primary for speed. llama_cpp is code-only fallback.
+        priority = ["groq"] + getattr(Config, "BRAIN_PRIORITY", ["gemini", "claude"])
         for api in priority:
             if api in self.available_apis:
                 Config.PRIMARY_BRAIN = api
@@ -205,8 +209,18 @@ class Brain:
         return None
 
     def _call_groq(self, prompt) -> str:
-        payload = {"model": Config.GROQ_MODEL, "messages": self._build_msgs(prompt, self._active_admin_unlocked), "temperature": 0.4}
-        resp = requests.post("https://api.groq.com/openai/v1/chat/completions", headers={"Authorization": f"Bearer {Config.GROQ_API_KEY}"}, json=payload, timeout=7)
+        payload = {
+            "model": Config.GROQ_MODEL,
+            "messages": self._build_msgs(prompt, self._active_admin_unlocked),
+            "temperature": 0.9,
+            "max_tokens": 300
+        }
+        resp = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {Config.GROQ_API_KEY}"},
+            json=payload,
+            timeout=7
+        )
         return resp.json()["choices"][0]["message"]["content"].strip()
 
     def _call_claude(self, prompt) -> str:
@@ -256,8 +270,9 @@ class Brain:
         return "general"
 
     def _get_apis_for_query(self, q_type: str) -> List[str]:
-        if q_type == "web_search": return ["llama_cpp", "perplexity", "gemini", "groq"]
-        return ["llama_cpp", "groq", "claude", "gemini"]
+        if q_type == "web_search": return ["groq", "gemini", "perplexity"]
+        if q_type == "code":       return ["groq", "llama_cpp", "claude"]
+        return ["groq", "gemini", "claude"]
 
     def _build_msgs(self, prompt, admin_unlocked: bool = False):
         msgs = [{"role": "system", "content": self._get_persona(admin_unlocked)}]
@@ -266,10 +281,18 @@ class Brain:
         return msgs
 
     def _postprocess(self, text: str) -> str:
-        return re.sub(r"^(As an AI|I'm happy to help|Certainly),?\s*", "", text, flags=re.IGNORECASE).strip()
+        # Strip DeepSeek-R1 chain-of-thought reasoning blocks
+        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+        # Strip generic filler openers
+        text = re.sub(
+            r"^(As an AI|I'm happy to help|Certainly|Sure,|Of course,|Absolutely,|Great!|Of course!),?\s*",
+            "", text, flags=re.IGNORECASE
+        ).strip()
+        return text
 
     def _rewrite_generic_response(self, text: str) -> str:
-        t = text.lower()
-        if "how are you" in t: return "Operational. Ready."
-        if t in ["hi", "hello", "iris"]: return "I'm here."
+        t = text.lower().strip()
+        if t in ["what time is it", "whats the time", "what is the time"]:
+            from datetime import datetime
+            return datetime.now().strftime("It is %I:%M %p.")
         return ""

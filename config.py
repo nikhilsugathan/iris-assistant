@@ -43,7 +43,7 @@ class _Config:
     OLLAMA_BASE_URL    = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
     # ── MODEL NAMES ──────────────────────────────────────────
-    GROQ_MODEL         = "llama-3.1-8b-instant"
+    GROQ_MODEL         = "llama-3.3-70b-versatile"
     GEMINI_MODEL       = "gemini-2.0-flash"
     CLAUDE_MODEL       = "claude-3-5-sonnet-20241022"
     PERPLEXITY_MODEL   = "llama-3.1-sonar-large-128k-online"
