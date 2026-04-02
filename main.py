@@ -56,7 +56,25 @@ _GREETINGS_ADMIN  = ["Aletheia online.", "Root access active.", "Admin session e
 _FAREWELLS_PUBLIC = ["Session closed.", "Goodbye.", "Standing down."]
 _FAREWELLS_ADMIN  = ["Aletheia signing off.", "Admin session terminated.", "Root session closed."]
 
-def _generate_greeting(admin_unlocked: bool = False) -> str:
+def _generate_greeting(admin_unlocked: bool = False, brain=None) -> str:
+    if brain is not None:
+        try:
+            from datetime import datetime
+            hour = datetime.now().hour
+            tod = "morning" if hour < 12 else "afternoon" if hour < 17 else "evening"
+            mode = "You are Aletheia in root/admin mode." if admin_unlocked else "You are Iris in public mode."
+            prompt = (
+                f"It is {tod}. {mode} "
+                f"Give ONE unique, witty, in-character boot-up line. "
+                f"Max 10 words. No quotes. No explanation. Just say it. "
+                f"Never say 'Standing by', 'Online', 'Ready', or 'I'm here'."
+            )
+            brain._active_admin_unlocked = admin_unlocked
+            result = brain._call_groq(prompt)
+            if result and 3 < len(result) < 120:
+                return result.strip().strip('"').strip("'")
+        except Exception:
+            pass
     pool = _GREETINGS_ADMIN if admin_unlocked else _GREETINGS_PUBLIC
     return random.choice(pool)
 
@@ -159,9 +177,9 @@ def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, 
     self_model.note_response(response, source=decision.mode)
     label_color = "red" if self_model.admin_unlocked else "cyan"
     logger.log_turn(persona_label, response)
-    # Speak first, then print — keeps audio and text in sync
-    voice.speak(response)
+    # Print immediately so text appears before audio starts
     console.print(f"\n[bold {label_color}]{persona_label}:[/bold {label_color}] {response}\n")
+    voice.speak(response)
 
     return response, False
 
@@ -210,7 +228,7 @@ def main() -> None:
     show_status(voice, self_model)
 
     # Boot greeting — spoken + printed
-    greeting = _generate_greeting(self_model.admin_unlocked)
+    greeting = _generate_greeting(self_model.admin_unlocked, brain=brain)
     if not args.text:
         console.print(f"\n[bold green]🎤 Voice Mode — listening for: {', '.join(Config.WAKE_WORDS)}[/bold green]")
     else:
