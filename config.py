@@ -23,6 +23,12 @@ class _Config:
     SPEAK_IN_TEXT_MODE = os.getenv("SPEAK_IN_TEXT_MODE", "false").lower() == "true"
     PIPER_MODEL_PATH   = os.getenv("PIPER_MODEL_PATH", "")
     PIPER_EXE_PATH     = os.getenv("PIPER_EXE_PATH", "piper")
+    WAKE_STT_PRIORITY  = os.getenv("WAKE_STT_PRIORITY", "cloud_first").lower()
+    STT_LANGUAGE       = os.getenv("STT_LANGUAGE", "en-US")
+    LOCAL_WHISPER_MODEL = os.getenv("LOCAL_WHISPER_MODEL", "base")
+    LOCAL_WHISPER_DEVICE = os.getenv("LOCAL_WHISPER_DEVICE", "cpu")
+    LOCAL_WHISPER_COMPUTE_TYPE = os.getenv("LOCAL_WHISPER_COMPUTE_TYPE", "int8")
+    LOCAL_WHISPER_LANGUAGE_HINT = os.getenv("LOCAL_WHISPER_LANGUAGE_HINT", "en")
 
     # ── HARDWARE GOVERNOR (RTX 5050 Mobile) ──────────────────
     GPU_TEMP_LIMIT        = 85
@@ -59,7 +65,7 @@ class _Config:
     MAX_MEMORY_TURNS = 200
 
     # ── AUDIO GATES ──────────────────────────────────────────
-    WAKE_WORDS            = ["iris", "ares"]
+    WAKE_WORDS            = ["iris"]
     WAKE_RMS_THRESHOLD    = 400
     COMMAND_RMS_THRESHOLD = 550
     MIC_SAMPLE_RATE       = 16000
