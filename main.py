@@ -16,12 +16,10 @@ import argparse
 import random
 import time
 import sys
-import traceback
 import psutil
 from datetime import datetime
 
 from rich.console import Console
-from rich.panel import Panel
 from rich.table import Table
 from rich.markup import escape
 
@@ -33,7 +31,6 @@ from core.copilot import CoPilot
 from core.dialog_manager import DialogManager
 from core.diagnostics import SelfDiagnostics, BootDiagnostics, get_vram_status
 from core.executor import ActionExecutor
-from core.logic_engine import LogicalEngine
 from core.memory import Memory
 from core.self_model import SelfModel
 from core.voice import Voice
@@ -59,7 +56,6 @@ _FAREWELLS_ADMIN  = ["Aletheia signing off.", "Admin session terminated.", "Root
 def _generate_greeting(admin_unlocked: bool = False, brain=None) -> str:
     if brain is not None:
         try:
-            from datetime import datetime
             hour = datetime.now().hour
             tod = "morning" if hour < 12 else "afternoon" if hour < 17 else "evening"
             mode = "You are Aletheia in root/admin mode." if admin_unlocked else "You are Iris in public mode."
@@ -70,7 +66,7 @@ def _generate_greeting(admin_unlocked: bool = False, brain=None) -> str:
                 f"Never say 'Standing by', 'Online', 'Ready', or 'I'm here'."
             )
             brain._active_admin_unlocked = admin_unlocked
-            result = brain._call_groq(prompt)
+            result = brain._call_groq_simple(prompt)
             if result and 3 < len(result) < 120:
                 return result.strip().strip('"').strip("'")
         except Exception:

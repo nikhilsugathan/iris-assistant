@@ -33,7 +33,7 @@ class Autonomist:
         # FIX: Use the correct API key "ollama_smart" instead of the raw model
         # name string Config.OLLAMA_MODEL_DEEP ("deepseek-r1:8b"), which was
         # causing _call_api to return None and silently skip all learning.
-        response = self.brain._call_api("ollama_smart", learning_prompt)
+        response = self.brain._call_api(Config.PRIMARY_BRAIN, learning_prompt)
 
         if not response:
             return

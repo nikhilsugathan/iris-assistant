@@ -78,9 +78,11 @@ class Brain:
             console.print("[dim cyan]Spinning up C++ LLM Engine...[/dim cyan]")
             self.llm = Llama(
                 model_path=Config.LOCAL_MODEL_PATH,
-                n_gpu_layers=-1,    # Full RTX 5050 offload
-                n_ctx=8192,
-                chat_format="chatml",  # Required for DeepSeek-R1
+                n_gpu_layers=Config.N_GPU_LAYERS,
+                n_ctx=Config.N_CTX,
+                chat_format="llama-3",  # Required for Llama 3.x family (including DeepSeek-R1 Llama distill)
+                use_mmap=True,
+                use_mlock=False,
                 verbose=False
             )
             console.print("[bold green]✓ C++ Engine Ready[/bold green]")
@@ -221,7 +223,29 @@ class Brain:
             json=payload,
             timeout=7
         )
-        return resp.json()["choices"][0]["message"]["content"].strip()
+        data = resp.json()
+        if "choices" not in data:
+            raise RuntimeError(f"Groq error: {data.get('error', data)}")
+        return data["choices"][0]["message"]["content"].strip()
+
+    def _call_groq_simple(self, prompt: str) -> str:
+        """Direct Groq call with no memory context — for boot greeting and diagnostics."""
+        payload = {
+            "model": Config.GROQ_MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.9,
+            "max_tokens": 50
+        }
+        resp = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {Config.GROQ_API_KEY}"},
+            json=payload,
+            timeout=7
+        )
+        data = resp.json()
+        if "choices" not in data:
+            return ""
+        return data["choices"][0]["message"]["content"].strip()
 
     def _call_claude(self, prompt) -> str:
         headers = {"x-api-key": Config.CLAUDE_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"}
@@ -276,7 +300,8 @@ class Brain:
 
     def _build_msgs(self, prompt, admin_unlocked: bool = False):
         msgs = [{"role": "system", "content": self._get_persona(admin_unlocked)}]
-        msgs.extend(self.memory.get_context(3))
+        for entry in self.memory.get_context(3):
+            msgs.append({"role": entry["role"], "content": entry["content"]})
         msgs.append({"role": "user", "content": prompt})
         return msgs
 

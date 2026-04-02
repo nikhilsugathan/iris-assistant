@@ -134,8 +134,7 @@ Rules:
 Respond with ONLY the JSON. No explanation."""
 
         response = self.brain._call_api(
-            Config.PRIMARY_BRAIN, prompt,
-            use_persona=False, use_memory=False
+            Config.PRIMARY_BRAIN, prompt
         )
 
         if not response:
