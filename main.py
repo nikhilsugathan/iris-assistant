@@ -106,14 +106,14 @@ def show_status(voice: Voice, self_model: SelfModel) -> None:
     mode_label = "ROOT / ALETHEIA" if self_model.admin_unlocked else "PUBLIC / IRIS"
 
     table = Table(title=f"IRIS v5.1 Status - {mode_label}", border_style=color, box=None)
-table.add_column("Component", style="white")
-table.add_column("Status / Data", style=color)
+    table.add_column("Component", style="white")
+    table.add_column("Status / Data", style=color)
 
     table.add_row("Identity", Config.INNER_CODENAME if self_model.admin_unlocked else "IRIS")
-table.add_row("VRAM Usage", f"{v_p:.1f}% ({v_f:.0f}MB Free)")
-table.add_row("CPU Load", f"{cpu_p}%")
-table.add_row("Microphone", f"{mic_status} (Gate: {Config.WAKE_RMS_THRESHOLD})")
-table.add_row("Self Model", self_model.summary())
+    table.add_row("VRAM Usage", f"{v_p:.1f}% ({v_f:.0f}MB Free)")
+    table.add_row("CPU Load", f"{cpu_p}%")
+    table.add_row("Microphone", f"{mic_status} (Gate: {Config.WAKE_RMS_THRESHOLD})")
+    table.add_row("Self Model", self_model.summary())
 
     console.print(table)
 
@@ -237,7 +237,7 @@ def main() -> None:
             try:
                 v_p, _ = get_vram_status()
                 is_safe, temp = diagnostics.check_thermal_integrity()
-                if v_p > 96:
+                if v_p > Config.VRAM_CRITICAL_PERCENT:
                     console.print("[bold red]VRAM CRITICAL - System throttled.[/bold red]")
                 if not is_safe:
                     console.print(f"[bold red]THERMAL WARNING - GPU: {temp}°C.[/bold red]")
