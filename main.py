@@ -14,6 +14,7 @@ os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
 
 import argparse
 import random
+import re
 import time
 import sys
 import psutil
@@ -49,9 +50,12 @@ CRASH_LOG = os.path.join(LOGS_DIR, "crash.log")
 # ── GREETING / FAREWELL POOLS ───────────────────────────────────────────────
 _GREETINGS_PUBLIC = ["Online.", "Ready.", "Standing by.", "I'm here."]
 _GREETINGS_ADMIN  = ["Aletheia online.", "Root access active.", "Admin session established."]
+_WAKE_ACKS_PUBLIC = ["Yes. What's the task?", "Go on.", "What do you need?"]
+_WAKE_ACKS_ADMIN  = ["Proceed.", "State the task.", "What's the objective?"]
 
 _FAREWELLS_PUBLIC = ["Session closed.", "Goodbye.", "Standing down."]
 _FAREWELLS_ADMIN  = ["Aletheia signing off.", "Admin session terminated.", "Root session closed."]
+_SENTENCE_RE = re.compile(r"^\s*(.+?[.!?])(?=(?:\s|$))(.*)$", re.DOTALL)
 
 def _generate_greeting(admin_unlocked: bool = False, brain=None) -> str:
     if brain is not None:
@@ -78,6 +82,53 @@ def _generate_farewell(self_model: SelfModel) -> str:
     admin = getattr(self_model, "admin_unlocked", False)
     pool = _FAREWELLS_ADMIN if admin else _FAREWELLS_PUBLIC
     return random.choice(pool)
+
+def _extract_complete_sentences(buffer: str):
+    sentences = []
+    remaining = buffer
+    while True:
+        match = _SENTENCE_RE.match(remaining)
+        if not match:
+            break
+        sentence = match.group(1).strip()
+        remaining = match.group(2).lstrip()
+        if sentence:
+            sentences.append(sentence)
+    return sentences, remaining
+
+def _stream_reasoning_response(user_input, voice, brain, self_model, decision, council_packet, logger):
+    persona_label = "Aletheia" if self_model.admin_unlocked else "IRIS"
+    label_color = "red" if self_model.admin_unlocked else "cyan"
+    response_parts = []
+    speech_buffer = ""
+    speech_started = False
+
+    console.print(f"\n[bold {label_color}]{persona_label}:[/bold {label_color}] ", end="")
+    for chunk in brain.stream_think(
+        user_input,
+        council_packet=council_packet,
+        admin_unlocked=self_model.admin_unlocked,
+        voice_mode=True,
+    ):
+        if not chunk:
+            continue
+        response_parts.append(chunk)
+        console.print(chunk, end="", markup=False, highlight=False)
+        speech_buffer += chunk
+        sentences, speech_buffer = _extract_complete_sentences(speech_buffer)
+        for sentence in sentences:
+            voice.speak(sentence, interrupt=not speech_started)
+            speech_started = True
+
+    final_response = "".join(response_parts).strip()
+    if speech_buffer.strip():
+        voice.speak(speech_buffer.strip(), interrupt=not speech_started)
+        speech_started = True
+
+    console.print("\n")
+    self_model.note_response(final_response, source=decision.mode)
+    logger.log_turn(persona_label, final_response)
+    return final_response
 
 # ── BANNER ──────────────────────────────────────────────────────────────────
 _RAW_BANNER = rf"""
@@ -106,18 +157,18 @@ def show_status(voice: Voice, self_model: SelfModel) -> None:
     mode_label = "ROOT / ALETHEIA" if self_model.admin_unlocked else "PUBLIC / IRIS"
 
     table = Table(title=f"IRIS v5.1 Status - {mode_label}", border_style=color, box=None)
-table.add_column("Component", style="white")
-table.add_column("Status / Data", style=color)
+    table.add_column("Component", style="white")
+    table.add_column("Status / Data", style=color)
 
     table.add_row("Identity", Config.INNER_CODENAME if self_model.admin_unlocked else "IRIS")
-table.add_row("VRAM Usage", f"{v_p:.1f}% ({v_f:.0f}MB Free)")
-table.add_row("CPU Load", f"{cpu_p}%")
-table.add_row("Microphone", f"{mic_status} (Gate: {Config.WAKE_RMS_THRESHOLD})")
-table.add_row("Self Model", self_model.summary())
+    table.add_row("VRAM Usage", f"{v_p:.1f}% ({v_f:.0f}MB Free)")
+    table.add_row("CPU Load", f"{cpu_p}%")
+    table.add_row("Microphone", f"{mic_status} (Gate: {Config.WAKE_RMS_THRESHOLD})")
+    table.add_row("Self Model", self_model.summary())
 
     console.print(table)
 
-def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, self_model, dialog_manager, council, diagnostics, logger, researcher=None, autonomist=None, evolution=None):
+def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, self_model, dialog_manager, council, diagnostics, logger, researcher=None, autonomist=None, evolution=None, voice_mode=False):
     user_input = (user_input or "").strip()
     if not user_input: return None, False
 
@@ -147,6 +198,8 @@ def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, 
     user_input = corrected
 
     decision = dialog_manager.analyze(user_input, executor, copilot, diagnostics, self_model)
+    self_model.observe_user_input(user_input, decision)
+    streamed_response = False
 
     if decision.mode == "diagnostics":
         response = diagnostics.run(user_input, brain, voice, executor, copilot, brain.memory, self_model)
@@ -167,15 +220,26 @@ def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, 
             console.print(f"[bold red]THERMAL OVERRIDE:[/bold red] {response}")
         else:
             packet = council.deliberate(user_input, decision, self_model)
-            with console.status("[cyan]Thinking...[/cyan]", spinner="dots"):
-                response = brain.think(user_input, council_packet=packet, admin_unlocked=self_model.admin_unlocked)
+            self_model.apply_council(packet.roles)
+            if voice_mode:
+                response = _stream_reasoning_response(user_input, voice, brain, self_model, decision, packet, logger)
+                streamed_response = True
+            else:
+                with console.status("[cyan]Thinking...[/cyan]", spinner="dots"):
+                    response = brain.think(
+                        user_input,
+                        council_packet=packet,
+                        admin_unlocked=self_model.admin_unlocked,
+                        voice_mode=voice_mode,
+                    )
 
-    self_model.note_response(response, source=decision.mode)
-    label_color = "red" if self_model.admin_unlocked else "cyan"
-    logger.log_turn(persona_label, response)
-    # Print immediately so text appears before audio starts
-    console.print(f"\n[bold {label_color}]{persona_label}:[/bold {label_color}] {response}\n")
-    voice.speak(response)
+    if not streamed_response:
+        self_model.note_response(response, source=decision.mode)
+        label_color = "red" if self_model.admin_unlocked else "cyan"
+        logger.log_turn(persona_label, response)
+        # Print immediately so text appears before audio starts
+        console.print(f"\n[bold {label_color}]{persona_label}:[/bold {label_color}] {response}\n")
+        voice.speak(response)
 
     return response, False
 
@@ -237,7 +301,7 @@ def main() -> None:
             try:
                 v_p, _ = get_vram_status()
                 is_safe, temp = diagnostics.check_thermal_integrity()
-                if v_p > 96:
+                if v_p > Config.VRAM_CRITICAL_PERCENT:
                     console.print("[bold red]VRAM CRITICAL - System throttled.[/bold red]")
                 if not is_safe:
                     console.print(f"[bold red]THERMAL WARNING - GPU: {temp}°C.[/bold red]")
@@ -250,7 +314,7 @@ def main() -> None:
                     user_input = input()
                     if not user_input.strip(): continue
 
-                    _, should_exit = handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, self_model, dialog_manager, council, diagnostics, logger, researcher, autonomist, evolution)
+                    _, should_exit = handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, self_model, dialog_manager, council, diagnostics, logger, researcher, autonomist, evolution, voice_mode=False)
                     if should_exit: break
                     continue
 
@@ -264,12 +328,20 @@ def main() -> None:
                     for w in Config.WAKE_WORDS:
                         cleaned = cleaned.lower().replace(w.lower(), "").strip()
 
-                    _, should_exit = handle_user_input(
-                        cleaned or "Yes?", voice, autocorrect, executor, copilot,
-                        brain, self_model, dialog_manager, council, diagnostics,
-                        logger, researcher, autonomist, evolution
-                    )
-                    if should_exit: break
+                    if not cleaned:
+                        label_color = "red" if self_model.admin_unlocked else "cyan"
+                        persona_label = "Aletheia" if self_model.admin_unlocked else "IRIS"
+                        ack_pool = _WAKE_ACKS_ADMIN if self_model.admin_unlocked else _WAKE_ACKS_PUBLIC
+                        wake_ack = random.choice(ack_pool)
+                        console.print(f"\n[bold {label_color}]{persona_label}:[/bold {label_color}] {wake_ack}\n")
+                        voice.speak(wake_ack)
+                    else:
+                        _, should_exit = handle_user_input(
+                            cleaned, voice, autocorrect, executor, copilot,
+                            brain, self_model, dialog_manager, council, diagnostics,
+                            logger, researcher, autonomist, evolution, voice_mode=True
+                        )
+                        if should_exit: break
 
                     for _ in range(5):
                         follow_up = voice.listen_for_command()
@@ -278,7 +350,7 @@ def main() -> None:
                         _, should_exit = handle_user_input(
                             follow_up, voice, autocorrect, executor, copilot,
                             brain, self_model, dialog_manager, council, diagnostics,
-                            logger, researcher, autonomist, evolution
+                            logger, researcher, autonomist, evolution, voice_mode=True
                         )
                         if should_exit: break
                     if should_exit: break

@@ -111,7 +111,7 @@ class SelfDiagnostics:
         return any(t in (text or "").lower() for t in self.TRIGGERS)
 
     def check_thermal_integrity(self) -> Tuple[bool, int]:
-        """Integrated Sentry for RTX 5050 Mobile (85°C Throttle Threshold)."""
+        """Integrated Sentry using the configured GPU thermal limit."""
         if not NVML_AVAILABLE:
             return psutil.cpu_percent() < 95, 0
             
@@ -120,7 +120,7 @@ class SelfDiagnostics:
             try:
                 handle = nvmlDeviceGetHandleByIndex(0)
                 temp = nvmlDeviceGetTemperature(handle, NVML_TEMPERATURE_GPU)
-                return (temp < 85), temp
+                return (temp < Config.GPU_TEMP_LIMIT), temp
             finally:
                 nvmlShutdown()
         except Exception:
@@ -129,25 +129,7 @@ class SelfDiagnostics:
     def run_calibration(self, voice, duration=5) -> str:
         if getattr(voice, "io_disabled", False):
             return "Calibration skipped: Text-mode active."
-
-        console.print(f"[bold cyan]→ Calibrating... Stay silent for {duration}s.[/bold cyan]")
-        samples = []
-        start_time = time.time()
-        
-        while time.time() - start_time < duration:
-            if voice._window_ready.wait(timeout=0.5):
-                window = voice._latest_window
-                rms = float(np.sqrt(np.mean(window.astype(np.float32) ** 2)))
-                samples.append(rms)
-                voice._window_ready.clear()
-        
-        if not samples:
-            return "Error: No audio stream detected."
-        
-        avg_noise = sum(samples) / len(samples)
-        rec_wake = int((avg_noise * 1.5) + 100)
-        rec_cmd = int((avg_noise * 2.0) + 150)
-        return f"Noise Floor: {avg_noise:.0f} | Rec. WAKE: {rec_wake} | Rec. CMD: {rec_cmd}"
+        return "Microphone calibration is unavailable in the current voice pipeline."
 
     def run(self, user_input: str, brain, voice, executor, copilot, memory, self_model=None) -> str:
         lowered = user_input.lower()

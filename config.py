@@ -9,6 +9,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class _Config:
+    PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__))
+
     # ── IDENTITY & BRANDING ──────────────────────────────────
     PUBLIC_NAME     = os.getenv("IRIS_PUBLIC_NAME", "Iris")
     SYSTEM_NAME     = os.getenv("IRIS_SYSTEM_NAME", "IRIS")
@@ -23,17 +25,28 @@ class _Config:
     SPEAK_IN_TEXT_MODE = os.getenv("SPEAK_IN_TEXT_MODE", "false").lower() == "true"
     PIPER_MODEL_PATH   = os.getenv("PIPER_MODEL_PATH", "")
     PIPER_EXE_PATH     = os.getenv("PIPER_EXE_PATH", "piper")
+    PIPER_TTS_WARMUP   = os.getenv("PIPER_TTS_WARMUP", "false").lower() == "true"
+    WAKE_STT_PRIORITY  = os.getenv("WAKE_STT_PRIORITY", "cloud_first").lower()
+    STT_LANGUAGE       = os.getenv("STT_LANGUAGE", "en-US")
+    LOCAL_WHISPER_MODEL = os.getenv("LOCAL_WHISPER_MODEL", "base")
+    LOCAL_WHISPER_DEVICE = os.getenv("LOCAL_WHISPER_DEVICE", "cpu")
+    LOCAL_WHISPER_COMPUTE_TYPE = os.getenv("LOCAL_WHISPER_COMPUTE_TYPE", "int8")
+    LOCAL_WHISPER_LANGUAGE_HINT = os.getenv("LOCAL_WHISPER_LANGUAGE_HINT", "en")
+    LOCAL_WHISPER_CACHE_DIR = os.getenv(
+        "LOCAL_WHISPER_CACHE_DIR",
+        os.path.join(PROJECT_ROOT, "models", ".cache"),
+    )
 
     # ── HARDWARE GOVERNOR (RTX 5050 Mobile) ──────────────────
-    GPU_TEMP_LIMIT        = 85
-    VRAM_CRITICAL_PERCENT = 96
+    GPU_TEMP_LIMIT        = int(os.getenv("GPU_TEMP_LIMIT", "85"))
+    VRAM_CRITICAL_PERCENT = float(os.getenv("VRAM_CRITICAL_PERCENT", "96"))
     CPU_THREADS           = os.cpu_count() or 4
 
     # ── C++ LLM ENGINE ───────────────────────────────────────
     LOCAL_MODEL_PATH = os.getenv("LOCAL_MODEL_PATH", "D:/IRIS/models/DeepSeek-R1-Distill-Llama-8B-Q4_K_M.gguf")
     N_GPU_LAYERS     = 32
     N_CTX            = 4096
-    USE_FLASH_ATTN   = True
+    USE_FLASH_ATTN   = os.getenv("USE_FLASH_ATTN", "true").lower() == "true"
 
     # ── AI BACKENDS ──────────────────────────────────────────
     GEMINI_API_KEY     = os.getenv("GEMINI_API_KEY", "")
@@ -55,14 +68,14 @@ class _Config:
     PRIMARY_BRAIN  = "llama_cpp"
     FALLBACK_BRAIN = "groq"
     USE_ENSEMBLE   = False
-    MEMORY_FILE    = "iris_memory.json"
+    MEMORY_FILE    = os.path.join(PROJECT_ROOT, "iris_memory.json")
     MAX_MEMORY_TURNS = 200
 
     # ── AUDIO GATES ──────────────────────────────────────────
-    WAKE_WORDS            = ["iris", "ares"]
+    WAKE_WORDS            = ["iris"]
     WAKE_RMS_THRESHOLD    = 400
     COMMAND_RMS_THRESHOLD = 550
-    MIC_SAMPLE_RATE       = 16000
+    MIC_SAMPLE_RATE       = int(os.getenv("MIC_SAMPLE_RATE", "16000"))
 
     # ── SECURITY & ROUTING ───────────────────────────────────
     WEB_KEYWORDS = ["search", "lookup", "find out", "check the web", "current weather",
@@ -75,8 +88,8 @@ class _Config:
     ]
 
     # ── PERSONAS ─────────────────────────────────────────────
-    IRIS_PERSONA = """You are Iris: a private sovereign mind and disembodied chief of staff.
-Your public name is Iris. Your internal codename is Aletheia.
+    IRIS_PERSONA = """You are IRIS: a private sovereign mind and disembodied chief of staff.
+Your public name is Iris.
 Rules:
 - Speak naturally and directly. Be precise, brief, and useful.
 - Tell the truth cleanly. Do not flatter the user.
@@ -104,8 +117,8 @@ FS Honesty Rules (non-negotiable):
 
     @classmethod
     def validate(cls):
-        for d in ["logs", "models", "exports"]:
-            os.makedirs(d, exist_ok=True)
+        for d in ["logs", "models", os.path.join("models", ".cache"), "exports"]:
+            os.makedirs(os.path.join(cls.PROJECT_ROOT, d), exist_ok=True)
         return True
 
 Config = _Config()

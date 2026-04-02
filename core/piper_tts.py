@@ -1,46 +1,59 @@
 """
-IRIS Piper TTS Engine v1.0
+IRIS Piper TTS Engine v2.0
 ==========================
-- Local C++ neural TTS (no cloud dependency)
-- In-memory audio streaming (no disk I/O)
-- Drop-in replacement for edge-tts + pygame pipeline
+- Local neural TTS synthesis separated from playback
+- Supports queued producer/consumer streaming in Voice
+- In-memory playback via sounddevice
 """
 import subprocess
 import threading
-import os
-import io
-import wave
 
 
 class PiperTTSEngine:
     """
-    Synthesizes speech using a local Piper TTS model and streams it
-    directly to the speakers via sounddevice — no disk writes.
+    Synthesizes speech using a local Piper TTS model and plays raw PCM
+    audio buffers via sounddevice.
     """
+    SAMPLE_RATE = 22050
+
     def __init__(self, model_path: str, piper_exe: str = "piper"):
         self.model_path = model_path
         self.piper_exe = piper_exe
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
+        self._sd = None
+        self._np = None
 
-    def speak(self, text: str) -> None:
-        """Synthesize text and play it immediately in-memory."""
+    def synthesize(self, text: str) -> bytes:
+        """Run Piper and return raw PCM bytes for a single text chunk."""
         with self._lock:
             self._stop_event.clear()
-            try:
-                import sounddevice as sd
-                import numpy as np
-                audio_bytes = self._synthesize(text)
-                if audio_bytes and not self._stop_event.is_set():
-                    self._play_wav_bytes(audio_bytes, sd, np)
-            except ImportError:
-                raise RuntimeError("sounddevice not installed. Run: pip install sounddevice")
-            except Exception as e:
-                raise RuntimeError(f"Piper TTS playback failed: {e}")
+            return self._synthesize(text)
+
+    def play_audio(self, raw_bytes: bytes) -> None:
+        """Play synthesized PCM bytes unless playback has been cancelled."""
+        if not raw_bytes or self._stop_event.is_set():
+            return
+        sd, np = self._ensure_audio_modules()
+        self._play_wav_bytes(raw_bytes, sd, np)
+
+    def speak(self, text: str) -> None:
+        """Backward-compatible convenience path for one-shot synthesis + playback."""
+        try:
+            audio_bytes = self.synthesize(text)
+            if audio_bytes and not self._stop_event.is_set():
+                self.play_audio(audio_bytes)
+        except Exception as e:
+            raise RuntimeError(f"Piper TTS playback failed: {e}")
 
     def stop(self) -> None:
         """Signal the engine to stop current playback."""
         self._stop_event.set()
+        if self._sd is not None:
+            try:
+                self._sd.stop()
+            except Exception:
+                pass
 
     def _synthesize(self, text: str) -> bytes:
         """Run piper CLI and capture raw WAV bytes from stdout."""
@@ -62,9 +75,21 @@ class PiperTTSEngine:
             raise RuntimeError(f"Piper failed: {proc.stderr.decode()}")
         return proc.stdout
 
+    def _ensure_audio_modules(self):
+        if self._sd is None or self._np is None:
+            try:
+                import sounddevice as sd
+                import numpy as np
+            except ImportError:
+                raise RuntimeError("sounddevice not installed. Run: pip install sounddevice")
+            self._sd = sd
+            self._np = np
+        return self._sd, self._np
+
     def _play_wav_bytes(self, raw_bytes: bytes, sd, np) -> None:
         """Play raw PCM bytes via sounddevice."""
-        # Piper outputs 16-bit PCM at 22050 Hz mono by default
+        if self._stop_event.is_set():
+            return
         audio_array = np.frombuffer(raw_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-        sd.play(audio_array, samplerate=22050)
+        sd.play(audio_array, samplerate=self.SAMPLE_RATE)
         sd.wait()

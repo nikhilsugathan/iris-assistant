@@ -8,11 +8,12 @@ IRIS Brain v5.0 (C++ Engine Edition)
 """
 
 from __future__ import annotations
+import json
 import os
 import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, List, Optional
+from typing import Dict, Iterator, List, Optional
 import requests
 from rich.console import Console
 from config import Config
@@ -22,9 +23,9 @@ console = Console()
 
 # Default IRIS persona — used if Config.IRIS_PERSONA lacks deflection instruction
 _DEFAULT_IRIS_PERSONA = """
-You are Iris: a sharp, witty, slightly irreverent AI chief of staff.
+You are IRIS: a sharp, witty, slightly irreverent AI chief of staff.
 You are direct, confident, and occasionally dry-humoured — think less corporate assistant, more brilliant friend who happens to know everything.
-Your public name is Iris. Your internal codename is Aletheia.
+Your public name is IRIS.
 Rules:
 - Speak like a real person. Short, punchy, natural sentences.
 - Be warm but never sycophantic. Tease the user lightly when appropriate.
@@ -62,6 +63,7 @@ class Brain:
         self.memory = memory
         self.llm = None
         self._active_admin_unlocked: bool = False
+        self._call_ctx = threading.local()
         self.available_apis = self._detect_apis()
         self._update_priority()
         local_model = Config.LOCAL_MODEL_PATH
@@ -125,7 +127,7 @@ class Brain:
     # MAIN REASONING ENGINE
     # ─────────────────────────────────────────────────────────────
 
-    def think(self, user_input: str, council_packet=None, admin_unlocked: bool = False) -> str:
+    def think(self, user_input: str, council_packet=None, admin_unlocked: bool = False, voice_mode: bool = False) -> str:
         user_input = (user_input or "").strip()
         if not user_input: return "Try that again."
 
@@ -137,12 +139,13 @@ class Brain:
 
         # 2. Classification (Web Search Trigger)
         query_type = self._classify_query(user_input)
+        settings = self._generation_settings(query_type, council_packet=council_packet, voice_mode=voice_mode)
         
         # 3. Ensemble Reasoning
         if getattr(Config, "USE_ENSEMBLE", False):
-            response = self._ensemble_think(user_input, query_type, admin_unlocked=admin_unlocked)
+            response = self._ensemble_think(user_input, query_type, settings, admin_unlocked=admin_unlocked)
         else:
-            response = self._smart_route(user_input, query_type, admin_unlocked=admin_unlocked)
+            response = self._smart_route(user_input, query_type, settings, admin_unlocked=admin_unlocked)
 
         if response:
             clean_response = self._postprocess(response)
@@ -151,14 +154,62 @@ class Brain:
 
         return "I encountered a connection error. Please try again."
 
-    def _ensemble_think(self, user_input: str, query_type: str, admin_unlocked: bool = False) -> str:
+    def stream_think(self, user_input: str, council_packet=None, admin_unlocked: bool = False, voice_mode: bool = False) -> Iterator[str]:
+        user_input = (user_input or "").strip()
+        if not user_input:
+            yield "Try that again."
+            return
+
+        direct = self._rewrite_generic_response(user_input)
+        if direct:
+            self._save_to_memory(user_input, direct, "local")
+            yield direct
+            return
+
+        query_type = self._classify_query(user_input)
+        settings = self._generation_settings(query_type, council_packet=council_packet, voice_mode=voice_mode)
+
+        streamed = []
+        try:
+            stream = self._stream_route(user_input, query_type, settings, admin_unlocked=admin_unlocked)
+            if stream is None:
+                response = self._smart_route(user_input, query_type, settings, admin_unlocked=admin_unlocked)
+                if response:
+                    clean_response = self._postprocess(response)
+                    self._save_to_memory(user_input, clean_response, "brain")
+                    yield clean_response
+                    return
+                yield "I encountered a connection error. Please try again."
+                return
+
+            for chunk in stream:
+                if not chunk:
+                    continue
+                streamed.append(chunk)
+                yield chunk
+        except Exception:
+            if not streamed:
+                response = self._smart_route(user_input, query_type, settings, admin_unlocked=admin_unlocked)
+                if response:
+                    clean_response = self._postprocess(response)
+                    self._save_to_memory(user_input, clean_response, "brain")
+                    yield clean_response
+                    return
+                yield "I encountered a connection error. Please try again."
+                return
+
+        final_response = self._postprocess("".join(streamed))
+        if final_response:
+            self._save_to_memory(user_input, final_response, "brain")
+
+    def _ensemble_think(self, user_input: str, query_type: str, settings: dict, admin_unlocked: bool = False) -> str:
         """Calls APIs in parallel and selects the best answer."""
         self._active_admin_unlocked = admin_unlocked
         apis = self._get_apis_for_query(query_type)[:3]
         responses: Dict[str, str] = {}
 
         with ThreadPoolExecutor(max_workers=len(apis)) as executor:
-            futures = {executor.submit(self._call_api, api, user_input): api for api in apis}
+            futures = {executor.submit(self._call_api_with_settings, api, user_input, settings): api for api in apis}
             for future in futures:
                 api = futures[future]
                 try:
@@ -168,18 +219,31 @@ class Brain:
 
         if not responses: return "Cognitive failure."
         judge_prompt = f"Question: {user_input}\nAnswers: {responses}\nPick the best response. WINNER: "
-        judge_res = self._call_api("groq", judge_prompt)
+        judge_res = self._call_api_with_settings("groq", judge_prompt, settings)
         if judge_res and "WINNER:" in judge_res:
             return judge_res.split("WINNER:")[-1].strip()
         return next(iter(responses.values()))
 
-    def _smart_route(self, user_input, query_type, admin_unlocked: bool = False):
+    def _smart_route(self, user_input, query_type, settings: dict, admin_unlocked: bool = False):
         self._active_admin_unlocked = admin_unlocked
         order = self._get_apis_for_query(query_type)
         for api in order:
             if api not in self.available_apis: continue
-            resp = self._call_api(api, user_input)
+            resp = self._call_api_with_settings(api, user_input, settings)
             if resp: return resp
+        return None
+
+    def _stream_route(self, user_input, query_type, settings: dict, admin_unlocked: bool = False):
+        if getattr(Config, "USE_ENSEMBLE", False):
+            return None
+
+        self._active_admin_unlocked = admin_unlocked
+        for api in self._get_apis_for_query(query_type):
+            if api not in self.available_apis:
+                continue
+            if api == "groq":
+                return self._call_groq(user_input, settings, stream=True)
+            break
         return None
 
     # ─────────────────────────────────────────────────────────────
@@ -200,29 +264,68 @@ class Brain:
     # ─────────────────────────────────────────────────────────────
 
     def _call_api(self, api, prompt) -> Optional[str]:
+        call_ctx = getattr(self, "_call_ctx", None)
+        settings = getattr(call_ctx, "settings", None) if call_ctx is not None else None
         try:
-            if api == "groq": return self._call_groq(prompt)
-            if api == "claude": return self._call_claude(prompt)
-            if api == "gemini": return self._call_gemini(prompt)
-            if api == "perplexity": return self._call_perplexity(prompt)
-            if api == "llama_cpp": return self._call_ollama("llama_cpp", prompt)
-            if "ollama" in api: return self._call_ollama(api, prompt)
+            if api == "groq": return self._call_groq(prompt, settings)
+            if api == "claude": return self._call_claude(prompt, settings)
+            if api == "gemini": return self._call_gemini(prompt, settings)
+            if api == "perplexity": return self._call_perplexity(prompt, settings)
+            if api == "llama_cpp": return self._call_ollama("llama_cpp", prompt, settings)
+            if "ollama" in api: return self._call_ollama(api, prompt, settings)
         except Exception: pass
         return None
 
-    def _call_groq(self, prompt) -> str:
+    def _call_api_with_settings(self, api, prompt, settings: Optional[dict] = None) -> Optional[str]:
+        previous = getattr(self._call_ctx, "settings", None)
+        self._call_ctx.settings = settings
+        try:
+            return self._call_api(api, prompt)
+        finally:
+            self._call_ctx.settings = previous
+
+    def _call_groq(self, prompt, settings: Optional[dict] = None, stream: bool = False):
+        settings = settings or {}
         payload = {
             "model": Config.GROQ_MODEL,
-            "messages": self._build_msgs(prompt, self._active_admin_unlocked),
-            "temperature": 0.9,
-            "max_tokens": 300
+            "messages": self._build_msgs(prompt, self._active_admin_unlocked, settings),
+            "temperature": settings.get("temperature", 0.9),
+            "max_tokens": settings.get("max_tokens", 300),
+            "stream": stream,
         }
         resp = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers={"Authorization": f"Bearer {Config.GROQ_API_KEY}"},
             json=payload,
-            timeout=7
+            timeout=30 if stream else 7,
+            stream=stream,
         )
+        if stream:
+            resp.raise_for_status()
+
+            def chunk_stream():
+                try:
+                    for raw_line in resp.iter_lines(decode_unicode=True):
+                        if not raw_line:
+                            continue
+                        line = raw_line.strip()
+                        if not line.startswith("data:"):
+                            continue
+                        data_str = line[5:].strip()
+                        if data_str == "[DONE]":
+                            break
+                        try:
+                            data = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
+                        delta = data.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                        if delta:
+                            yield delta
+                finally:
+                    resp.close()
+
+            return chunk_stream()
+
         data = resp.json()
         if "choices" not in data:
             raise RuntimeError(f"Groq error: {data.get('error', data)}")
@@ -247,31 +350,49 @@ class Brain:
             return ""
         return data["choices"][0]["message"]["content"].strip()
 
-    def _call_claude(self, prompt) -> str:
+    def _call_claude(self, prompt, settings: Optional[dict] = None) -> str:
+        settings = settings or {}
+        messages = self._build_msgs(prompt, self._active_admin_unlocked, settings)
         headers = {"x-api-key": Config.CLAUDE_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"}
-        payload = {"model": Config.CLAUDE_MODEL, "max_tokens": 1024, "messages": [{"role": "user", "content": prompt}]}
+        payload = {
+            "model": Config.CLAUDE_MODEL,
+            "max_tokens": settings.get("max_tokens", 1024),
+            "system": messages[0]["content"],
+            "messages": messages[1:],
+        }
         resp = requests.post("https://api.anthropic.com/v1/messages", headers=headers, json=payload, timeout=12)
         return resp.json()["content"][0]["text"].strip()
 
-    def _call_gemini(self, prompt) -> str:
+    def _call_gemini(self, prompt, settings: Optional[dict] = None) -> str:
+        settings = settings or {}
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{Config.GEMINI_MODEL}:generateContent?key={Config.GEMINI_API_KEY}"
-        resp = requests.post(url, json={"contents": [{"parts": [{"text": prompt}]}]}, timeout=10)
+        system_text = self._build_msgs(prompt, self._active_admin_unlocked, settings)[0]["content"]
+        resp = requests.post(
+            url,
+            json={"contents": [{"parts": [{"text": f"{system_text}\n\nUser: {prompt}"}]}]},
+            timeout=10,
+        )
         return resp.json()['candidates'][0]['content']['parts'][0]['text'].strip()
 
-    def _call_perplexity(self, prompt) -> str:
-        payload = {"model": Config.PERPLEXITY_MODEL, "messages": [{"role": "user", "content": prompt}]}
+    def _call_perplexity(self, prompt, settings: Optional[dict] = None) -> str:
+        settings = settings or {}
+        payload = {
+            "model": Config.PERPLEXITY_MODEL,
+            "messages": self._build_msgs(prompt, self._active_admin_unlocked, settings),
+        }
         resp = requests.post("https://api.perplexity.ai/chat/completions", headers={"Authorization": f"Bearer {Config.PERPLEXITY_API_KEY}"}, json=payload, timeout=15)
         return resp.json()["choices"][0]["message"]["content"].strip()
 
-    def _call_ollama(self, api_key, prompt) -> str:
+    def _call_ollama(self, api_key, prompt, settings: Optional[dict] = None) -> str:
+        settings = settings or {}
         if api_key == "llama_cpp":
             if self.llm is None:
                 raise RuntimeError("C++ engine not loaded yet")
-            messages = self._build_msgs(prompt, self._active_admin_unlocked)
+            messages = self._build_msgs(prompt, self._active_admin_unlocked, settings)
             response = self.llm.create_chat_completion(
                 messages=messages,
-                max_tokens=1024,
-                temperature=0.6,
+                max_tokens=settings.get("max_tokens", 1024),
+                temperature=settings.get("temperature", 0.6),
             )
             return response["choices"][0]["message"]["content"].strip()
         model = getattr(Config, "OLLAMA_MODEL_FAST" if api_key == "ollama_fast" else "OLLAMA_MODEL_SMART", "phi3.5")
@@ -298,12 +419,56 @@ class Brain:
         if q_type == "code":       return ["groq", "llama_cpp", "claude"]
         return ["groq", "gemini", "claude"]
 
-    def _build_msgs(self, prompt, admin_unlocked: bool = False):
-        msgs = [{"role": "system", "content": self._get_persona(admin_unlocked)}]
-        for entry in self.memory.get_context(3):
+    def _build_msgs(self, prompt, admin_unlocked: bool = False, settings: Optional[dict] = None):
+        settings = settings or {}
+        system_prompt = self._get_persona(admin_unlocked)
+        extra_system = settings.get("extra_system", "").strip()
+        if extra_system:
+            system_prompt = f"{system_prompt}\n\n{extra_system}"
+
+        msgs = [{"role": "system", "content": system_prompt}]
+        context_turns = settings.get("context_turns", 3)
+        for entry in self.memory.get_context(context_turns):
             msgs.append({"role": entry["role"], "content": entry["content"]})
         msgs.append({"role": "user", "content": prompt})
         return msgs
+
+    def _generation_settings(self, query_type: str, council_packet=None, voice_mode: bool = False) -> dict:
+        settings = {
+            "temperature": 0.7,
+            "max_tokens": 160,
+            "context_turns": 3,
+            "extra_system": "",
+        }
+
+        if query_type == "web_search":
+            settings.update({"temperature": 0.3, "max_tokens": 180, "context_turns": 2})
+        elif query_type == "code":
+            settings.update({"temperature": 0.35, "max_tokens": 220, "context_turns": 3})
+        else:
+            settings.update({"temperature": 0.5, "max_tokens": 120, "context_turns": 2})
+
+        if council_packet is not None:
+            extra_system = getattr(council_packet, "extra_system", "").strip()
+            if extra_system:
+                settings["extra_system"] = extra_system
+            if getattr(council_packet, "allow_long_response", False):
+                settings["max_tokens"] = max(settings["max_tokens"], 220)
+
+        if voice_mode:
+            settings["temperature"] = min(settings["temperature"], 0.4)
+            settings["context_turns"] = 0 if query_type == "general" else min(settings["context_turns"], 2)
+            settings["max_tokens"] = min(settings["max_tokens"], 72 if query_type == "general" else 120)
+            voice_rules = (
+                "Voice mode rules:\n"
+                "- Answer in one short sentence unless detail is explicitly requested.\n"
+                "- Keep the response immediately actionable.\n"
+                "- Avoid filler, scene-setting, and rhetorical questions.\n"
+                "- If context is limited, offer the best practical next step instead of only asking for clarification."
+            )
+            settings["extra_system"] = f"{settings['extra_system']}\n\n{voice_rules}".strip()
+
+        return settings
 
     def _postprocess(self, text: str) -> str:
         # Strip DeepSeek-R1 chain-of-thought reasoning blocks
@@ -320,4 +485,6 @@ class Brain:
         if t in ["what time is it", "whats the time", "what is the time"]:
             from datetime import datetime
             return datetime.now().strftime("It is %I:%M %p.")
+        if any(phrase in t for phrase in ["what should i work on", "what should i focus on", "what do i do next"]):
+            return "Start with the single task that most moves your main project forward. Name the project and I'll narrow it down."
         return ""
