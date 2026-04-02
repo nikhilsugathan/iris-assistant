@@ -125,6 +125,15 @@ TYPO_MAP = {
 
 ALL_EXTENSIONS = list(VALID_EXTENSIONS.keys())
 
+_AUTOCORRECT_SKIP_WORDS = frozenset({
+    "yes", "no", "ok", "okay", "go ahead", "cancel", "stop", "proceed",
+    "confirm", "do it", "sure", "yep", "nope", "override", "abort"
+})
+
+_AUTOCORRECT_ACTION_STARTERS = (
+    "open ", "create ", "make ", "delete ", "run ", "launch ", "play "
+)
+
 
 class AutoCorrector:
 
@@ -132,6 +141,15 @@ class AutoCorrector:
         self.brain = brain
 
     def correct_input(self, text: str) -> tuple:
+        # Fast path: skip processing for short inputs, stop/confirm words, and
+        # simple action commands that are unlikely to contain typos
+        if not text or len(text.strip()) < 8:
+            return text, None
+        if text.strip().lower() in _AUTOCORRECT_SKIP_WORDS:
+            return text, None
+        if any(text.lower().startswith(s) for s in _AUTOCORRECT_ACTION_STARTERS) and len(text) < 40:
+            return text, None
+
         words = text.split()
         corrected = []
         changes = []

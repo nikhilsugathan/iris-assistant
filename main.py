@@ -53,6 +53,8 @@ _GREETINGS_ADMIN  = ["Aletheia online.", "Root access active.", "Admin session e
 _FAREWELLS_PUBLIC = ["Session closed.", "Goodbye.", "Standing down."]
 _FAREWELLS_ADMIN  = ["Aletheia signing off.", "Admin session terminated.", "Root session closed."]
 
+_FOLLOW_UP_STOP_WORDS = ("stop", "thanks", "bye", "that's all", "exit")
+
 def _generate_greeting(admin_unlocked: bool = False, brain=None) -> str:
     if brain is not None:
         try:
@@ -106,14 +108,14 @@ def show_status(voice: Voice, self_model: SelfModel) -> None:
     mode_label = "ROOT / ALETHEIA" if self_model.admin_unlocked else "PUBLIC / IRIS"
 
     table = Table(title=f"IRIS v5.1 Status - {mode_label}", border_style=color, box=None)
-table.add_column("Component", style="white")
-table.add_column("Status / Data", style=color)
+    table.add_column("Component", style="white")
+    table.add_column("Status / Data", style=color)
 
     table.add_row("Identity", Config.INNER_CODENAME if self_model.admin_unlocked else "IRIS")
-table.add_row("VRAM Usage", f"{v_p:.1f}% ({v_f:.0f}MB Free)")
-table.add_row("CPU Load", f"{cpu_p}%")
-table.add_row("Microphone", f"{mic_status} (Gate: {Config.WAKE_RMS_THRESHOLD})")
-table.add_row("Self Model", self_model.summary())
+    table.add_row("VRAM Usage", f"{v_p:.1f}% ({v_f:.0f}MB Free)")
+    table.add_row("CPU Load", f"{cpu_p}%")
+    table.add_row("Microphone", f"{mic_status} (Gate: {Config.WAKE_RMS_THRESHOLD})")
+    table.add_row("Self Model", self_model.summary())
 
     console.print(table)
 
@@ -166,7 +168,10 @@ def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, 
             response = f"Reasoning throttled. GPU Core critical at {temp}°C."
             console.print(f"[bold red]THERMAL OVERRIDE:[/bold red] {response}")
         else:
-            packet = council.deliberate(user_input, decision, self_model)
+            if decision.depth == "shallow" and decision.mode in ("chat", "action"):
+                packet = None
+            else:
+                packet = council.deliberate(user_input, decision, self_model)
             with console.status("[cyan]Thinking...[/cyan]", spinner="dots"):
                 response = brain.think(user_input, council_packet=packet, admin_unlocked=self_model.admin_unlocked)
 
@@ -254,6 +259,8 @@ def main() -> None:
                     if should_exit: break
                     continue
 
+                while voice.is_speaking():
+                    time.sleep(0.1)
                 heard_text = voice.listen_for_wake()
                 if not heard_text: continue
 
@@ -271,9 +278,18 @@ def main() -> None:
                     )
                     if should_exit: break
 
-                    for _ in range(5):
+                    silence_count = 0
+                    while True:
+                        while voice.is_speaking():
+                            time.sleep(0.1)
                         follow_up = voice.listen_for_command()
-                        if not follow_up or any(w in follow_up.lower() for w in ["stop", "thanks", "bye"]):
+                        if not follow_up:
+                            silence_count += 1
+                            if silence_count >= 2:
+                                break
+                            continue
+                        silence_count = 0
+                        if any(w in follow_up.lower() for w in _FOLLOW_UP_STOP_WORDS):
                             break
                         _, should_exit = handle_user_input(
                             follow_up, voice, autocorrect, executor, copilot,

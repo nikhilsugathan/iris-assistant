@@ -384,6 +384,27 @@ class ActionExecutor:
                 "is_dangerous": False
             }
 
+        # -- Create file (bare name, no "called/named" keyword required) --
+        bare_file_match = re.search(
+            r"(?:create|make|new)\s+(?:a\s+)?file\s+"
+            r"(?!(?:on|in|at|inside|called|named|as)\b)"
+            r"['\"]?([A-Za-z0-9 _\-\.]+?)['\"]?"
+            r"(?:\s+(?:in|on|at|inside)\s+(?:my\s+)?(.+))?$",
+            user_input,
+            re.IGNORECASE
+        )
+        if bare_file_match:
+            filename = bare_file_match.group(1).strip()
+            location = bare_file_match.group(2).strip() if bare_file_match.group(2) else "desktop"
+            filepath = self._resolve_location(location, filename)
+            return {
+                "action_type": "create_file",
+                "description": f"create file '{filename}'",
+                "filename": filepath,
+                "content": "",
+                "is_dangerous": False
+            }
+
         # -- Create subfolder inside existing folder --
         subfolder_match = re.search(
             r"(?:create|make)\s+(?:a\s+)?sub.?folder\s+"
@@ -410,6 +431,26 @@ class ActionExecutor:
             return {
                 "action_type": "create_folder",
                 "description": f"create subfolder '{subfoldername}' inside '{os.path.basename(parent_path)}'",
+                "filename": folderpath,
+                "is_dangerous": False
+            }
+
+        # -- Create folder (bare name, no "called/named" keyword required) --
+        bare_folder_match = re.search(
+            r"(?:create|make|new)\s+(?:a\s+)?(?:new\s+)?folder\s+"
+            r"(?!(?:on|in|at|inside|called|named|as)\b)"
+            r"['\"]?([A-Za-z0-9 _\-]+?)['\"]?"
+            r"(?:\s+(?:in|on|at|inside)\s+(?:my\s+)?(.+))?$",
+            user_input,
+            re.IGNORECASE
+        )
+        if bare_folder_match:
+            foldername = bare_folder_match.group(1).strip()
+            location   = bare_folder_match.group(2).strip() if bare_folder_match.group(2) else "desktop"
+            folderpath = self._resolve_location(location, foldername)
+            return {
+                "action_type": "create_folder",
+                "description": f"create folder '{foldername}'",
                 "filename": folderpath,
                 "is_dangerous": False
             }
