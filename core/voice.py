@@ -26,6 +26,9 @@ class Voice:
         self.mic = None
         self._piper_engine = None
         self._piper_disabled = False
+        self._piper_lock = threading.Lock()
+        self._resolved_piper_model_path = None
+        self._piper_ready_announced = False
         self._whisper_model = None
         self._whisper_disabled = False
         self._whisper_lock = threading.Lock()
@@ -51,6 +54,8 @@ class Voice:
             self._init_mic()
             if getattr(Config, "WAKE_STT_PRIORITY", "cloud_first") == "local_first":
                 threading.Thread(target=self._warm_local_stt, daemon=True).start()
+            if getattr(Config, "PIPER_TTS_WARMUP", False):
+                threading.Thread(target=self._warm_local_tts, daemon=True).start()
 
     def _init_mic(self):
         """Probes hardware for the Aletheia spec."""
@@ -226,22 +231,66 @@ class Voice:
         if self._piper_engine is not None:
             return self._piper_engine
 
-        piper_model = getattr(Config, "PIPER_MODEL_PATH", "")
-        if not piper_model or not os.path.exists(piper_model):
-            return None
+        with self._piper_lock:
+            if self._piper_engine is not None:
+                return self._piper_engine
 
+            piper_model = self._resolve_piper_model_path()
+            if not piper_model:
+                return None
+
+            try:
+                from core.piper_tts import PiperTTSEngine
+                self._piper_engine = PiperTTSEngine(
+                    model_path=piper_model,
+                    piper_exe=getattr(Config, "PIPER_EXE_PATH", "piper"),
+                )
+                if not self._piper_ready_announced:
+                    console.print(f"[bold green][Voice] Local TTS Active ({os.path.basename(piper_model)})[/bold green]")
+                    self._piper_ready_announced = True
+                return self._piper_engine
+            except Exception as e:
+                self._piper_disabled = True
+                logger.error(f"Piper TTS setup failed: {e}")
+                logger.warning("Falling back to Edge-TTS...")
+                return None
+
+    def _resolve_piper_model_path(self):
+        if self._resolved_piper_model_path is not None:
+            return self._resolved_piper_model_path
+
+        configured = getattr(Config, "PIPER_MODEL_PATH", "")
+        candidates = []
+        if configured:
+            candidates.append(configured)
+
+        project_root = os.path.dirname(os.path.dirname(__file__))
+        models_dir = os.path.join(project_root, "models")
+        if os.path.isdir(models_dir):
+            for name in sorted(os.listdir(models_dir)):
+                if name.endswith(".onnx"):
+                    candidates.append(os.path.join(models_dir, name))
+
+        for candidate in candidates:
+            if candidate and os.path.exists(candidate):
+                self._resolved_piper_model_path = candidate
+                if configured and candidate != configured:
+                    logger.warning(f"Configured Piper model missing; using fallback model: {candidate}")
+                return self._resolved_piper_model_path
+
+        if configured:
+            logger.warning(f"Configured Piper model not found: {configured}")
+        self._resolved_piper_model_path = ""
+        return None
+
+    def _warm_local_tts(self):
+        engine = self._get_piper_engine()
+        if engine is None:
+            return
         try:
-            from core.piper_tts import PiperTTSEngine
-            self._piper_engine = PiperTTSEngine(
-                model_path=piper_model,
-                piper_exe=getattr(Config, "PIPER_EXE_PATH", "piper"),
-            )
-            return self._piper_engine
+            engine.synthesize("Ready.")
         except Exception as e:
-            self._piper_disabled = True
-            logger.error(f"Piper TTS setup failed: {e}")
-            logger.warning("Falling back to Edge-TTS...")
-            return None
+            logger.warning(f"Local TTS warm-up failed: {e}")
 
     def listen_for_wake(self):
         """Listen for wake word using speech recognition."""

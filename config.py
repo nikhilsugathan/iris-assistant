@@ -23,6 +23,7 @@ class _Config:
     SPEAK_IN_TEXT_MODE = os.getenv("SPEAK_IN_TEXT_MODE", "false").lower() == "true"
     PIPER_MODEL_PATH   = os.getenv("PIPER_MODEL_PATH", "")
     PIPER_EXE_PATH     = os.getenv("PIPER_EXE_PATH", "piper")
+    PIPER_TTS_WARMUP   = os.getenv("PIPER_TTS_WARMUP", "false").lower() == "true"
     WAKE_STT_PRIORITY  = os.getenv("WAKE_STT_PRIORITY", "cloud_first").lower()
     STT_LANGUAGE       = os.getenv("STT_LANGUAGE", "en-US")
     LOCAL_WHISPER_MODEL = os.getenv("LOCAL_WHISPER_MODEL", "base")
