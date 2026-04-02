@@ -12,7 +12,7 @@ rich==13.9.4
 edge-tts==6.1.12
 pygame==2.6.1
 SpeechRecognition==3.11.0
-PyAudio==0.2.14
+PyAudio==0.2.14; platform_system == "Windows"
 
 # ── IRIS Hardware & VRAM Monitor ──
 numpy==1.26.4
