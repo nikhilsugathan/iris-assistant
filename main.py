@@ -15,6 +15,7 @@ os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
 import argparse
 import random
 import re
+import threading
 import time
 import sys
 import psutil
@@ -50,12 +51,31 @@ CRASH_LOG = os.path.join(LOGS_DIR, "crash.log")
 # ── GREETING / FAREWELL POOLS ───────────────────────────────────────────────
 _GREETINGS_PUBLIC = ["Online.", "Ready.", "Standing by.", "I'm here."]
 _GREETINGS_ADMIN  = ["Aletheia online.", "Root access active.", "Admin session established."]
-_WAKE_ACKS_PUBLIC = ["Yes. What's the task?", "Go on.", "What do you need?"]
-_WAKE_ACKS_ADMIN  = ["Proceed.", "State the task.", "What's the objective?"]
+_WAKE_ACKS_PUBLIC = [
+    "Yes, talk to me.",
+    "Go on.",
+    "What do you need?",
+    "I'm listening.",
+    "All right, what's up?",
+    "Hit me.",
+    "Talk.",
+    "What are we doing?",
+    "All right, let's hear it.",
+]
+_WAKE_ACKS_ADMIN  = [
+    "Proceed.",
+    "State the task.",
+    "What's the objective?",
+    "Go ahead.",
+    "Report.",
+    "Speak plainly.",
+]
 
 _FAREWELLS_PUBLIC = ["Session closed.", "Goodbye.", "Standing down."]
 _FAREWELLS_ADMIN  = ["Aletheia signing off.", "Admin session terminated.", "Root session closed."]
 _SENTENCE_RE = re.compile(r"^\s*(.+?[.!?])(?=(?:\s|$))(.*)$", re.DOTALL)
+_STREAM_SPEECH_MIN_CHARS = 110
+_STREAM_SPEECH_MAX_SENTENCES = 2
 
 def _generate_greeting(admin_unlocked: bool = False, brain=None) -> str:
     if brain is not None:
@@ -96,12 +116,49 @@ def _extract_complete_sentences(buffer: str):
             sentences.append(sentence)
     return sentences, remaining
 
+def _wait_for_voice_idle(voice: Voice, timeout: float = 8.0) -> None:
+    start = time.monotonic()
+    while voice.is_speaking() and (time.monotonic() - start) < timeout:
+        time.sleep(0.05)
+
+def _finalize_session(autonomist: Autonomist, logger: SessionLogger) -> None:
+    logger.finalize()
+
+    learn_error = []
+    learning_thread = threading.Thread(
+        target=lambda: _run_session_learning(autonomist, logger.filename, learn_error),
+        daemon=True,
+    )
+    learning_thread.start()
+    learning_thread.join(timeout=1.5)
+
+    if learning_thread.is_alive():
+        console.print("[dim yellow]Skipping slow shutdown learning to avoid exit stall.[/dim yellow]")
+    elif learn_error:
+        console.print(f"[dim yellow]Cleanup error: {learn_error[0]}[/dim yellow]")
+
+def _run_session_learning(autonomist: Autonomist, history_file: str, learn_error: list) -> None:
+    try:
+        autonomist.learn_from_session(history_file)
+    except Exception as e:
+        learn_error.append(e)
+
+def _force_exit() -> None:
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+    os._exit(0)
+
 def _stream_reasoning_response(user_input, voice, brain, self_model, decision, council_packet, logger):
     persona_label = "Aletheia" if self_model.admin_unlocked else "IRIS"
     label_color = "red" if self_model.admin_unlocked else "cyan"
     response_parts = []
     speech_buffer = ""
+    pending_sentences = []
     speech_started = False
+    local_tts_ready = voice._get_piper_engine() is not None
 
     console.print(f"\n[bold {label_color}]{persona_label}:[/bold {label_color}] ", end="")
     for chunk in brain.stream_think(
@@ -115,14 +172,25 @@ def _stream_reasoning_response(user_input, voice, brain, self_model, decision, c
         response_parts.append(chunk)
         console.print(chunk, end="", markup=False, highlight=False)
         speech_buffer += chunk
-        sentences, speech_buffer = _extract_complete_sentences(speech_buffer)
-        for sentence in sentences:
-            voice.speak(sentence, interrupt=not speech_started)
-            speech_started = True
+        if local_tts_ready:
+            sentences, speech_buffer = _extract_complete_sentences(speech_buffer)
+            pending_sentences.extend(sentences)
+            ready_text = " ".join(pending_sentences).strip()
+            if ready_text and (
+                len(ready_text) >= _STREAM_SPEECH_MIN_CHARS or
+                len(pending_sentences) >= _STREAM_SPEECH_MAX_SENTENCES
+            ):
+                voice.speak(ready_text, interrupt=not speech_started)
+                speech_started = True
+                pending_sentences.clear()
 
     final_response = "".join(response_parts).strip()
+    trailing_parts = pending_sentences[:]
     if speech_buffer.strip():
-        voice.speak(speech_buffer.strip(), interrupt=not speech_started)
+        trailing_parts.append(speech_buffer.strip())
+    trailing_text = " ".join(part for part in trailing_parts if part).strip()
+    if trailing_text:
+        voice.speak(trailing_text, interrupt=not speech_started)
         speech_started = True
 
     console.print("\n")
@@ -298,6 +366,7 @@ def main() -> None:
 
     try:
         while True:
+            should_exit = False
             try:
                 v_p, _ = get_vram_status()
                 is_safe, temp = diagnostics.check_thermal_integrity()
@@ -318,6 +387,7 @@ def main() -> None:
                     if should_exit: break
                     continue
 
+                _wait_for_voice_idle(voice)
                 heard_text = voice.listen_for_wake()
                 if not heard_text: continue
 
@@ -343,10 +413,18 @@ def main() -> None:
                         )
                         if should_exit: break
 
-                    for _ in range(5):
+                    missed_follow_ups = 0
+                    for _ in range(4):
+                        _wait_for_voice_idle(voice)
                         follow_up = voice.listen_for_command()
-                        if not follow_up or any(w in follow_up.lower() for w in ["stop", "thanks", "bye"]):
+                        if not follow_up or voice.should_ignore_transcript(follow_up):
+                            missed_follow_ups += 1
+                            if missed_follow_ups >= 2:
+                                break
+                            continue
+                        if any(w in follow_up.lower() for w in ["stop", "thanks", "bye"]):
                             break
+                        missed_follow_ups = 0
                         _, should_exit = handle_user_input(
                             follow_up, voice, autocorrect, executor, copilot,
                             brain, self_model, dialog_manager, council, diagnostics,
@@ -366,14 +444,11 @@ def main() -> None:
         farewell = _generate_farewell(self_model)
         console.print(f"\n[bold yellow]Exiting:[/bold yellow] {farewell}")
         voice.speak(farewell)
+        _wait_for_voice_idle(voice, timeout=2.5)
 
         console.print("\n[bold cyan]IRIS:[/bold cyan] Terminating. Finalizing memory...")
-        try:
-            autonomist.learn_from_session(logger.filename)
-            logger.finalize()
-        except Exception as e:
-            console.print(f"[dim yellow]Cleanup error: {e}[/dim yellow]")
-        sys.exit(0)
+        _finalize_session(autonomist, logger)
+        _force_exit()
 
 
 if __name__ == "__main__":

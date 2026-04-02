@@ -1,10 +1,12 @@
 import subprocess
 import os
+import shutil
 import time
 import threading
 import tempfile
 import queue
 import re
+from collections import deque
 import numpy as np
 import speech_recognition as sr
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "hide")
@@ -32,12 +34,15 @@ class Voice:
         self._piper_lock = threading.Lock()
         self._resolved_piper_model_path = None
         self._piper_ready_announced = False
+        self._piper_missing_announced = False
         self._whisper_model = None
         self._whisper_disabled = False
         self._whisper_lock = threading.Lock()
         self._whisper_loading = False
         self._whisper_ready_announced = False
         self._whisper_download_announced = False
+        self._recent_spoken = deque(maxlen=4)
+        self._recent_spoken_lock = threading.Lock()
         
         self._tts_lock = threading.Lock()
         self._active_stop_event = None
@@ -144,6 +149,7 @@ class Voice:
         clean_text = self._clean_for_speech(text)
         if not clean_text or stop_event.is_set():
             return
+        self._remember_spoken(clean_text)
         engine = self._get_piper_engine()
         if engine is not None:
             try:
@@ -216,8 +222,50 @@ class Voice:
     def _clean_for_speech(self, text):
         cleaned = re.sub(r'[*_`#>]+', '', text or '')
         cleaned = re.sub(r'\[(.*?)\]\((.*?)\)', r'\1', cleaned)
+        cleaned = re.sub(r'(?<=\d)\.(?=\d)', ' point ', cleaned)
         cleaned = re.sub(r'\s+', ' ', cleaned)
         return cleaned.strip()
+
+    def _normalize_text(self, text):
+        text = re.sub(r"[^a-z0-9\s]", " ", (text or "").lower())
+        return re.sub(r"\s+", " ", text).strip()
+
+    def _remember_spoken(self, text):
+        normalized = self._normalize_text(text)
+        if not normalized:
+            return
+        with self._recent_spoken_lock:
+            self._recent_spoken.append((time.monotonic(), normalized))
+
+    def should_ignore_transcript(self, text):
+        normalized = self._normalize_text(text)
+        if not normalized:
+            return True
+
+        tokens = normalized.split()
+        if len(tokens) == 1 and len(tokens[0]) <= 2:
+            return True
+
+        now = time.monotonic()
+        with self._recent_spoken_lock:
+            recent_spoken = list(self._recent_spoken)
+
+        for spoken_at, spoken in recent_spoken:
+            if now - spoken_at > 12.0:
+                continue
+            if normalized == spoken:
+                return True
+            if len(normalized) >= 18 and normalized in spoken:
+                return True
+            if len(spoken) >= 18 and spoken in normalized:
+                return True
+
+            spoken_tokens = set(spoken.split())
+            overlap = sum(1 for token in tokens if token in spoken_tokens)
+            if len(tokens) >= 4 and overlap / max(len(tokens), 1) >= 0.75:
+                return True
+
+        return False
 
     def _split_speech_chunks(self, text):
         if not text:
@@ -255,8 +303,10 @@ class Voice:
                 return self._piper_engine
             except Exception as e:
                 self._piper_disabled = True
-                logger.error(f"Piper TTS setup failed: {e}")
-                logger.warning("Falling back to Edge-TTS...")
+                if not self._piper_missing_announced:
+                    logger.warning(f"Local TTS unavailable: {e}")
+                    logger.warning("Falling back to Edge-TTS...")
+                    self._piper_missing_announced = True
                 return None
 
     def _resolve_piper_model_path(self):
@@ -294,6 +344,8 @@ class Voice:
         try:
             engine.synthesize("Ready.")
         except Exception as e:
+            self._piper_disabled = True
+            self._piper_engine = None
             logger.warning(f"Local TTS warm-up failed: {e}")
 
     def listen_for_wake(self):
@@ -314,7 +366,7 @@ class Voice:
         try:
             self.recognizer.energy_threshold = Config.COMMAND_RMS_THRESHOLD
             with self.mic as source:
-                audio = self.recognizer.listen(source, timeout=5, phrase_time_limit=7)
+                audio = self.recognizer.listen(source, timeout=5, phrase_time_limit=10)
             return self._transcribe_audio(audio, phrase_type="command")
         except Exception:
             return None
@@ -354,7 +406,7 @@ class Voice:
                 audio.get_raw_data(convert_rate=Config.MIC_SAMPLE_RATE, convert_width=2),
                 dtype=np.int16,
             ).astype(np.float32) / 32768.0
-            prompt = "iris aletheia protocol" if phrase_type == "wake" else "iris aletheia protocol command"
+            prompt = "iris" if phrase_type == "wake" else None
             beam_size = 1 if phrase_type == "wake" else 5
             segments, _ = model.transcribe(
                 samples,
@@ -366,12 +418,46 @@ class Voice:
                 condition_on_previous_text=False,
                 initial_prompt=prompt,
             )
+            segments = list(segments)
             text = " ".join(segment.text.strip() for segment in segments).strip()
+            if self._should_reject_local_transcript(text, segments, phrase_type):
+                return None
             return text or None
         except Exception as e:
             self._whisper_disabled = True
             logger.error(f"Local STT failed: {e}")
             raise RuntimeError("Local Whisper transcription failed") from e
+
+    def _should_reject_local_transcript(self, text, segments, phrase_type):
+        normalized = self._normalize_text(text)
+        if not normalized:
+            return True
+
+        if self.should_ignore_transcript(normalized):
+            return True
+
+        if phrase_type == "command":
+            rejected_phrases = {
+                "aletheia protocol",
+                "iris aletheia protocol",
+                "aletheia",
+            }
+            if normalized in rejected_phrases:
+                return True
+
+        meaningful_segments = [segment for segment in segments if getattr(segment, "text", "").strip()]
+        if not meaningful_segments:
+            return True
+
+        no_speech_probs = [getattr(segment, "no_speech_prob", 0.0) for segment in meaningful_segments]
+        avg_logprobs = [getattr(segment, "avg_logprob", -0.2) for segment in meaningful_segments]
+        high_no_speech = max(no_speech_probs) if no_speech_probs else 0.0
+        low_confidence = min(avg_logprobs) if avg_logprobs else -0.2
+
+        if high_no_speech >= 0.72 and low_confidence <= -0.85:
+            return True
+
+        return False
 
     def _warm_local_stt(self):
         self._get_whisper_model()

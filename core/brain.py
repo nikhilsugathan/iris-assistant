@@ -121,7 +121,10 @@ class Brain:
             if api in self.available_apis:
                 Config.PRIMARY_BRAIN = api
                 break
-        Config.FALLBACK_BRAIN = "gemini" if "gemini" in self.available_apis else "groq"
+        if "llama_cpp" in self.available_apis:
+            Config.FALLBACK_BRAIN = "llama_cpp"
+        else:
+            Config.FALLBACK_BRAIN = "gemini" if "gemini" in self.available_apis else "groq"
 
     # ─────────────────────────────────────────────────────────────
     # MAIN REASONING ENGINE
@@ -293,13 +296,24 @@ class Brain:
             "max_tokens": settings.get("max_tokens", 300),
             "stream": stream,
         }
-        resp = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {Config.GROQ_API_KEY}"},
-            json=payload,
-            timeout=30 if stream else 7,
-            stream=stream,
-        )
+        last_error = None
+        for attempt in range(2):
+            try:
+                resp = requests.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {Config.GROQ_API_KEY}"},
+                    json=payload,
+                    timeout=30 if stream else 7,
+                    stream=stream,
+                )
+                break
+            except requests.RequestException as e:
+                last_error = e
+                if attempt == 0:
+                    continue
+                raise RuntimeError(f"Groq request failed: {e}") from e
+        else:
+            raise RuntimeError(f"Groq request failed: {last_error}")
         if stream:
             resp.raise_for_status()
 
@@ -417,7 +431,7 @@ class Brain:
     def _get_apis_for_query(self, q_type: str) -> List[str]:
         if q_type == "web_search": return ["groq", "gemini", "perplexity"]
         if q_type == "code":       return ["groq", "llama_cpp", "claude"]
-        return ["groq", "gemini", "claude"]
+        return ["groq", "llama_cpp", "gemini", "claude"]
 
     def _build_msgs(self, prompt, admin_unlocked: bool = False, settings: Optional[dict] = None):
         settings = settings or {}
@@ -456,14 +470,15 @@ class Brain:
                 settings["max_tokens"] = max(settings["max_tokens"], 220)
 
         if voice_mode:
-            settings["temperature"] = min(settings["temperature"], 0.4)
-            settings["context_turns"] = 0 if query_type == "general" else min(settings["context_turns"], 2)
-            settings["max_tokens"] = min(settings["max_tokens"], 72 if query_type == "general" else 120)
+            settings["temperature"] = max(settings["temperature"], 0.65)
+            settings["context_turns"] = 1 if query_type == "general" else min(settings["context_turns"], 2)
+            settings["max_tokens"] = min(max(settings["max_tokens"], 96), 140 if query_type == "general" else 180)
             voice_rules = (
                 "Voice mode rules:\n"
-                "- Answer in one short sentence unless detail is explicitly requested.\n"
-                "- Keep the response immediately actionable.\n"
-                "- Avoid filler, scene-setting, and rhetorical questions.\n"
+                "- Sound like a person, not a scripted assistant.\n"
+                "- Vary your wording and do not recycle the same opening or clarification phrase across adjacent turns.\n"
+                "- Keep the response sharp and conversational, but allow richer language when it improves the answer.\n"
+                "- Match the emotional register to the user's tone and situation.\n"
                 "- If context is limited, offer the best practical next step instead of only asking for clarification."
             )
             settings["extra_system"] = f"{settings['extra_system']}\n\n{voice_rules}".strip()

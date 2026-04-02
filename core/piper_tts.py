@@ -5,6 +5,8 @@ IRIS Piper TTS Engine v2.0
 - Supports queued producer/consumer streaming in Voice
 - In-memory playback via sounddevice
 """
+import os
+import shutil
 import subprocess
 import threading
 
@@ -18,11 +20,57 @@ class PiperTTSEngine:
 
     def __init__(self, model_path: str, piper_exe: str = "piper"):
         self.model_path = model_path
-        self.piper_exe = piper_exe
+        self.piper_exe = self._resolve_piper_exe(piper_exe)
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._sd = None
         self._np = None
+
+    def _resolve_piper_exe(self, piper_exe: str) -> str:
+        """Resolve Piper CLI location once up front so missing executables fail fast."""
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        names = []
+        if piper_exe:
+            names.append(piper_exe)
+            if os.name == "nt" and not piper_exe.lower().endswith(".exe"):
+                names.append(f"{piper_exe}.exe")
+            basename = os.path.basename(piper_exe)
+            if basename and basename not in names:
+                names.append(basename)
+                if os.name == "nt" and not basename.lower().endswith(".exe"):
+                    names.append(f"{basename}.exe")
+        for default_name in ["piper", "piper.exe"]:
+            if default_name not in names:
+                names.append(default_name)
+
+        candidates = []
+        for name in names:
+            if os.path.isabs(name):
+                candidates.append(name)
+            else:
+                candidates.append(name)
+                candidates.append(os.path.join(project_root, name))
+                candidates.append(os.path.join(project_root, "piper", name))
+                candidates.append(os.path.join(project_root, "piper", "bin", name))
+
+        seen = set()
+        ordered_candidates = []
+        for candidate in candidates:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            ordered_candidates.append(candidate)
+
+        for candidate in ordered_candidates:
+            if os.path.isfile(candidate):
+                return candidate
+            resolved = shutil.which(candidate)
+            if resolved:
+                return resolved
+
+        raise FileNotFoundError(
+            f"Piper executable not found. Looked for: {', '.join(ordered_candidates)}"
+        )
 
     def synthesize(self, text: str) -> bytes:
         """Run Piper and return raw PCM bytes for a single text chunk."""
