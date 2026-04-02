@@ -81,6 +81,10 @@ class Memory:
 
         self.conversation.append(entry)
         
+        # Trim to prevent unbounded memory growth
+        if len(self.conversation) > Config.MAX_MEMORY_TURNS:
+            self.conversation = self.conversation[-Config.MAX_MEMORY_TURNS:]
+        
         # Real-time de-duplication integrated here
         self._self_clean() 
         

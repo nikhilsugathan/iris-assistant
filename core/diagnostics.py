@@ -88,6 +88,10 @@ class BootDiagnostics:
             requests.get(f"{url}/api/tags", timeout=2).raise_for_status()
             return True
         except Exception:
+            # Only spawn Ollama if we're not using the local GGUF model
+            if os.path.exists(Config.LOCAL_MODEL_PATH):
+                return False
+
             # Check if ollama is installed before trying to serve
             if not shutil.which("ollama"):
                 return False

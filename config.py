@@ -53,8 +53,10 @@ class _Config:
     # ── ROUTING LOGIC ────────────────────────────────────────
     BRAIN_PRIORITY = ["llama_cpp", "groq", "ollama_smart", "claude", "gemini"]
     PRIMARY_BRAIN  = "llama_cpp"
+    FALLBACK_BRAIN = "groq"
     USE_ENSEMBLE   = False
     MEMORY_FILE    = "iris_memory.json"
+    MAX_MEMORY_TURNS = 200
 
     # ── AUDIO GATES ──────────────────────────────────────────
     WAKE_WORDS            = ["iris", "ares"]

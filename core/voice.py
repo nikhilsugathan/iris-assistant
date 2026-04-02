@@ -35,10 +35,14 @@ class Voice:
         """Probes hardware for the Aletheia spec."""
         try:
             self.recognizer = sr.Recognizer()
+            self.recognizer.dynamic_energy_threshold = False
             self.recognizer.energy_threshold = Config.WAKE_RMS_THRESHOLD
             self.mic = sr.Microphone()
             with self.mic as source:
                 self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
+            self.recognizer.energy_threshold = max(
+                self.recognizer.energy_threshold, Config.WAKE_RMS_THRESHOLD
+            )
             self.mic_ready = True
         except Exception as e:
             logger.error(f"Microphone init failed: {e}")
@@ -96,6 +100,7 @@ class Voice:
     def listen_for_command(self):
         """Listen for a follow-up command."""
         if not self.mic_ready: return None
+        self.recognizer.energy_threshold = Config.COMMAND_RMS_THRESHOLD
         try:
             with self.mic as source:
                 audio = self.recognizer.listen(source, timeout=8, phrase_time_limit=10)
