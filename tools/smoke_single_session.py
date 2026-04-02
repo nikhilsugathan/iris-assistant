@@ -21,6 +21,8 @@ try:
     from core.dialog_manager import DialogManager
     from core.self_model import SelfModel
     from core.diagnostics import SelfDiagnostics
+    from core.executor import ActionExecutor
+    from core.copilot import CoPilot
 except ImportError as exc:
     print(f"FAIL  import error: {exc}")
     sys.exit(1)
@@ -34,17 +36,14 @@ try:
     dialog_manager = DialogManager()
     self_model = SelfModel()
     diagnostics = SelfDiagnostics()
-    _ = council
+    executor = ActionExecutor(voice, brain)
+    copilot = CoPilot(brain, voice, memory)
+    assert council is not None and executor is not None and copilot is not None
 except Exception as exc:
     print(f"FAIL  session setup error: {exc}")
     sys.exit(1)
 
 try:
-    from core.executor import ActionExecutor
-    from core.copilot import CoPilot
-
-    executor = ActionExecutor(voice, brain)
-    copilot = CoPilot(brain, voice, memory)
     decision = dialog_manager.analyze("hello", executor, copilot, diagnostics, self_model)
     assert hasattr(decision, "mode"), "DialogManager.analyze must return an object with a 'mode' attribute"
 except Exception as exc:

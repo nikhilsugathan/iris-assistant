@@ -15,7 +15,10 @@ from config import Config
 
 class Memory:
     def __init__(self, memory_file: str):
-        self.memory_file = memory_file
+        if os.path.isabs(memory_file):
+            self.memory_file = memory_file
+        else:
+            self.memory_file = os.path.join(Config.PROJECT_ROOT, memory_file)
         self.conversation: List[Dict] = []
         self.session_start = datetime.now().strftime("%Y-%m-%d %H:%M")
         self._load()

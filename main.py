@@ -301,7 +301,7 @@ def main() -> None:
             try:
                 v_p, _ = get_vram_status()
                 is_safe, temp = diagnostics.check_thermal_integrity()
-                if v_p > 96:
+                if v_p > Config.VRAM_CRITICAL_PERCENT:
                     console.print("[bold red]VRAM CRITICAL - System throttled.[/bold red]")
                 if not is_safe:
                     console.print(f"[bold red]THERMAL WARNING - GPU: {temp}°C.[/bold red]")

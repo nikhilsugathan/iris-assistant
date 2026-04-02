@@ -7,6 +7,7 @@ import queue
 import re
 import numpy as np
 import speech_recognition as sr
+os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "hide")
 from pygame import mixer
 from rich.console import Console
 from config import Config
@@ -300,6 +301,7 @@ class Voice:
         if not self.mic_ready: 
             import time; time.sleep(0.5); return None
         try:
+            self.recognizer.energy_threshold = Config.WAKE_RMS_THRESHOLD
             with self.mic as source:
                 audio = self.recognizer.listen(source, timeout=4, phrase_time_limit=4)
             return self._transcribe_audio(audio, phrase_type="wake")
@@ -309,25 +311,30 @@ class Voice:
     def listen_for_command(self):
         """Listen for a follow-up command."""
         if not self.mic_ready: return None
-        self.recognizer.energy_threshold = Config.COMMAND_RMS_THRESHOLD
         try:
+            self.recognizer.energy_threshold = Config.COMMAND_RMS_THRESHOLD
             with self.mic as source:
                 audio = self.recognizer.listen(source, timeout=5, phrase_time_limit=7)
             return self._transcribe_audio(audio, phrase_type="command")
         except Exception:
             return None
+        finally:
+            self.recognizer.energy_threshold = Config.WAKE_RMS_THRESHOLD
 
     def _transcribe_audio(self, audio, phrase_type="command"):
         priority = getattr(Config, "WAKE_STT_PRIORITY", "cloud_first")
         if priority == "local_first":
-            text = self._transcribe_local(audio, phrase_type=phrase_type)
-            if text:
-                return text
-            return self._transcribe_google(audio)
+            try:
+                return self._transcribe_local(audio, phrase_type=phrase_type)
+            except RuntimeError:
+                return self._transcribe_google(audio)
         text = self._transcribe_google(audio)
         if text:
             return text
-        return self._transcribe_local(audio, phrase_type=phrase_type)
+        try:
+            return self._transcribe_local(audio, phrase_type=phrase_type)
+        except RuntimeError:
+            return None
 
     def _transcribe_google(self, audio):
         try:
@@ -337,20 +344,21 @@ class Voice:
 
     def _transcribe_local(self, audio, phrase_type="command"):
         if self._whisper_loading and self._whisper_model is None:
-            return None
+            raise RuntimeError("Local Whisper model still loading")
         model = self._get_whisper_model()
         if model is None:
-            return None
+            raise RuntimeError("Local Whisper model unavailable")
 
         try:
             samples = np.frombuffer(
-                audio.get_raw_data(convert_rate=16000, convert_width=2),
+                audio.get_raw_data(convert_rate=Config.MIC_SAMPLE_RATE, convert_width=2),
                 dtype=np.int16,
             ).astype(np.float32) / 32768.0
-            prompt = "iris" if phrase_type == "wake" else None
+            prompt = "iris aletheia protocol" if phrase_type == "wake" else "iris aletheia protocol command"
+            beam_size = 1 if phrase_type == "wake" else 5
             segments, _ = model.transcribe(
                 samples,
-                beam_size=1,
+                beam_size=beam_size,
                 best_of=1,
                 temperature=0.0,
                 language=getattr(Config, "LOCAL_WHISPER_LANGUAGE_HINT", "en") or None,
@@ -363,7 +371,7 @@ class Voice:
         except Exception as e:
             self._whisper_disabled = True
             logger.error(f"Local STT failed: {e}")
-            return None
+            raise RuntimeError("Local Whisper transcription failed") from e
 
     def _warm_local_stt(self):
         self._get_whisper_model()
@@ -381,7 +389,11 @@ class Voice:
             try:
                 self._whisper_loading = True
                 from faster_whisper import WhisperModel
-                cache_root = os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", ".cache")
+                cache_root = getattr(
+                    Config,
+                    "LOCAL_WHISPER_CACHE_DIR",
+                    os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", ".cache"),
+                )
                 os.makedirs(cache_root, exist_ok=True)
                 download_needed = self._reset_incomplete_whisper_downloads(cache_root)
                 if not download_needed:

@@ -72,7 +72,7 @@ class ActionExecutor:
         self.voice    = voice
         self.brain    = brain
         self.security = SecurityGuard(brain)
-        self.log_file    = "iris_actions.log"
+        self.log_file    = os.path.join(Config.PROJECT_ROOT, "iris_actions.log")
         self.is_windows  = platform.system() == "Windows"
         self.pending_action         = None
         self.pending_verdict        = None
@@ -90,6 +90,15 @@ class ActionExecutor:
         if self._browser is None:
             self._browser = BrowserAutomation()
         return self._browser
+
+    def _build_security_header(self, verdict: str) -> str:
+        if verdict == BLOCKED:
+            return "Security refusal."
+        if verdict == NEED_ADMIN:
+            return "Admin confirmation required."
+        if verdict == WARNING:
+            return "Security warning."
+        return "Security check."
 
     # ------------------------------------------------------------------
     # DETECTION: Does this input want an action?
@@ -292,6 +301,7 @@ class ActionExecutor:
 
         # -- Run security assessment --
         verdict, security_msg = self.security.assess(plan, admin_unlocked=admin_unlocked)
+        header = self._build_security_header(verdict)
 
         if verdict == BLOCKED:
             self._log(f"BLOCKED: {plan.get('command','?')} - {security_msg}")
@@ -1104,6 +1114,6 @@ Be specific and practical. No preamble."""
         """Log every action to file for transparency."""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if not getattr(self, "log_file", None):
-            self.log_file = "iris_actions.log"
+            self.log_file = os.path.join(Config.PROJECT_ROOT, "iris_actions.log")
         with open(self.log_file, "a", encoding="utf-8") as f:
             f.write(f"[{timestamp}] {message}\n")
