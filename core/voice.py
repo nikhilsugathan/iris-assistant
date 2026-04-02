@@ -21,6 +21,8 @@ class Voice:
 
     def __init__(self, text_mode=False):
         self.text_mode = text_mode
+        self._force_io_disabled = os.getenv("IRIS_DISABLE_VOICE_IO", "false").lower() == "true"
+        self.io_disabled = text_mode or self._force_io_disabled
         self.mic_ready = False
         self.recognizer = None
         self.mic = None
@@ -44,13 +46,13 @@ class Voice:
         self._speech_worker = threading.Thread(target=self._run_speech_worker, daemon=True)
         self._speech_worker.start()
         
-        if not self.text_mode or getattr(Config, "SPEAK_IN_TEXT_MODE", False):
+        if not self._force_io_disabled and (not self.text_mode or getattr(Config, "SPEAK_IN_TEXT_MODE", False)):
             try:
                 mixer.init()
             except Exception as e:
                 logger.error(f"Audio Warning: Could not initialize pygame mixer - {e}")
 
-        if not self.text_mode:
+        if not self._force_io_disabled and not self.text_mode:
             self._init_mic()
             if getattr(Config, "WAKE_STT_PRIORITY", "cloud_first") == "local_first":
                 threading.Thread(target=self._warm_local_stt, daemon=True).start()
@@ -110,6 +112,7 @@ class Voice:
 
     def speak(self, text, interrupt=True):
         if not text: return
+        if self._force_io_disabled: return
         if self.text_mode and not getattr(Config, "SPEAK_IN_TEXT_MODE", False): return
         
         with self._tts_lock:

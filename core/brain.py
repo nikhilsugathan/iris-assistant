@@ -25,7 +25,7 @@ console = Console()
 _DEFAULT_IRIS_PERSONA = """
 You are Iris: a sharp, witty, slightly irreverent AI chief of staff.
 You are direct, confident, and occasionally dry-humoured — think less corporate assistant, more brilliant friend who happens to know everything.
-Your public name is Iris. Your internal codename is Aletheia.
+Your public name is IRIS.
 Rules:
 - Speak like a real person. Short, punchy, natural sentences.
 - Be warm but never sycophantic. Tease the user lightly when appropriate.
@@ -63,6 +63,7 @@ class Brain:
         self.memory = memory
         self.llm = None
         self._active_admin_unlocked: bool = False
+        self._call_ctx = threading.local()
         self.available_apis = self._detect_apis()
         self._update_priority()
         local_model = Config.LOCAL_MODEL_PATH
@@ -208,7 +209,7 @@ class Brain:
         responses: Dict[str, str] = {}
 
         with ThreadPoolExecutor(max_workers=len(apis)) as executor:
-            futures = {executor.submit(self._call_api, api, user_input, settings): api for api in apis}
+            futures = {executor.submit(self._call_api_with_settings, api, user_input, settings): api for api in apis}
             for future in futures:
                 api = futures[future]
                 try:
@@ -218,7 +219,7 @@ class Brain:
 
         if not responses: return "Cognitive failure."
         judge_prompt = f"Question: {user_input}\nAnswers: {responses}\nPick the best response. WINNER: "
-        judge_res = self._call_api("groq", judge_prompt, settings)
+        judge_res = self._call_api_with_settings("groq", judge_prompt, settings)
         if judge_res and "WINNER:" in judge_res:
             return judge_res.split("WINNER:")[-1].strip()
         return next(iter(responses.values()))
@@ -228,7 +229,7 @@ class Brain:
         order = self._get_apis_for_query(query_type)
         for api in order:
             if api not in self.available_apis: continue
-            resp = self._call_api(api, user_input, settings)
+            resp = self._call_api_with_settings(api, user_input, settings)
             if resp: return resp
         return None
 
@@ -262,7 +263,9 @@ class Brain:
     # API HANDLERS
     # ─────────────────────────────────────────────────────────────
 
-    def _call_api(self, api, prompt, settings: Optional[dict] = None) -> Optional[str]:
+    def _call_api(self, api, prompt) -> Optional[str]:
+        call_ctx = getattr(self, "_call_ctx", None)
+        settings = getattr(call_ctx, "settings", None) if call_ctx is not None else None
         try:
             if api == "groq": return self._call_groq(prompt, settings)
             if api == "claude": return self._call_claude(prompt, settings)
@@ -272,6 +275,14 @@ class Brain:
             if "ollama" in api: return self._call_ollama(api, prompt, settings)
         except Exception: pass
         return None
+
+    def _call_api_with_settings(self, api, prompt, settings: Optional[dict] = None) -> Optional[str]:
+        previous = getattr(self._call_ctx, "settings", None)
+        self._call_ctx.settings = settings
+        try:
+            return self._call_api(api, prompt)
+        finally:
+            self._call_ctx.settings = previous
 
     def _call_groq(self, prompt, settings: Optional[dict] = None, stream: bool = False):
         settings = settings or {}
