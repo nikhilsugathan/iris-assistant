@@ -122,6 +122,13 @@ def _matches_program_exit(text: str, voice_mode: bool = False) -> bool:
     }
     if normalized in exact:
         return True
+    if voice_mode:
+        # Voice STT often clips "terminate" into partial forms like "termin".
+        if re.fullmatch(r"termin\w*", normalized):
+            return True
+        first_token = normalized.split()[0] if normalized else ""
+        if re.fullmatch(r"termin\w*", first_token):
+            return True
     if voice_mode and normalized in {"dominate", "terminated", "termination", "germinate"}:
         return True
     return False
