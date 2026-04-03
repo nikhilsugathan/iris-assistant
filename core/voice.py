@@ -234,8 +234,23 @@ class Voice:
             return [text]
 
         sentences = re.split(r'(?<=[.!?])\s+', text)
-        chunks = [sentence.strip() for sentence in sentences if sentence.strip()]
-        return chunks if len(chunks) > 1 else [text]
+        sentences = [sentence.strip() for sentence in sentences if sentence.strip()]
+        if len(sentences) <= 2 and len(text) <= 420:
+            return [text]
+
+        chunks = []
+        current = []
+        current_len = 0
+        for sentence in sentences:
+            current.append(sentence)
+            current_len += len(sentence)
+            if len(current) >= 3 or current_len >= 280:
+                chunks.append(" ".join(current).strip())
+                current = []
+                current_len = 0
+        if current:
+            chunks.append(" ".join(current).strip())
+        return chunks or [text]
 
     def _get_piper_engine(self):
         if self._piper_disabled:

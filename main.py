@@ -58,6 +58,20 @@ _FAREWELLS_PUBLIC = ["Session closed.", "Goodbye.", "Standing down."]
 _FAREWELLS_ADMIN  = ["Aletheia signing off.", "Admin session terminated.", "Root session closed."]
 _SENTENCE_RE = re.compile(r"^\s*(.+?[.!?])(?=(?:\s|$))(.*)$", re.DOTALL)
 
+def _normalize_command_text(text: str) -> str:
+    normalized = re.sub(r"[^a-z0-9\s]", " ", (text or "").lower())
+    return re.sub(r"\s+", " ", normalized).strip()
+
+def _strip_wake_words(text: str) -> str:
+    cleaned = text or ""
+    for wake_word in Config.WAKE_WORDS:
+        cleaned = re.sub(rf"\b{re.escape(wake_word)}\b", "", cleaned, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+def _is_interrupt_phrase(text: str) -> bool:
+    normalized = _normalize_command_text(text)
+    return normalized in {"stop", "wait", "hold on", "hold", "quiet"}
+
 def _generate_greeting(admin_unlocked: bool = False, brain=None) -> str:
     if brain is not None:
         try:
@@ -434,13 +448,21 @@ def main() -> None:
                         if voice.is_speaking():
                             follow_up = voice.listen_for_interrupt()
                         else:
-                            follow_up = voice.listen_for_command(timeout=4.0, phrase_time_limit=5.0)
+                            follow_up = voice.listen_for_command(timeout=6.0, phrase_time_limit=6.0)
 
                         if not follow_up or voice.should_ignore_transcript(follow_up):
                             if not voice.is_speaking():
                                 missed_follow_ups += 1
-                                if missed_follow_ups >= 2:
+                                if missed_follow_ups >= 3:
                                     break
+                            continue
+
+                        cleaned_follow_up = _strip_wake_words(follow_up)
+                        normalized_follow_up = _normalize_command_text(cleaned_follow_up or follow_up)
+                        if normalized_follow_up in {"thanks", "thank you", "bye", "goodbye"}:
+                            break
+                        if _is_interrupt_phrase(normalized_follow_up) or not cleaned_follow_up:
+                            missed_follow_ups = 0
                             continue
 
                         if any(w in follow_up.lower() for w in ["stop", "thanks", "bye"]):
@@ -450,7 +472,7 @@ def main() -> None:
                             voice.stop_speaking()
 
                         _, should_exit = handle_user_input(
-                            follow_up, voice, autocorrect, executor, copilot,
+                            cleaned_follow_up, voice, autocorrect, executor, copilot,
                             brain, self_model, dialog_manager, council, diagnostics,
                             logger, researcher, autonomist, evolution, voice_mode=True
                         )
