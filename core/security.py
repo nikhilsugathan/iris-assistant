@@ -134,13 +134,16 @@ _PUBLIC_RESTRICTED_ACTIONS = {
 _PATH_GATED_ACTIONS = {"create_file", "create_folder", "write_to_file", "delete_item"}
 
 # Protected system paths blocked for public write/delete actions.
+# Cross-platform Windows-path normalisation.
+# Converts backslashes to forward slashes and lowercases for matching.
+# Works correctly on both Windows runtime and Linux CI runners.
 _PROTECTED_PATH_PREFIXES: tuple = (
-    os.path.normcase(os.path.expandvars(r"C:\Windows")),
-    os.path.normcase(os.path.expandvars(r"C:\Program Files")),
-    os.path.normcase(os.path.expandvars(r"C:\Program Files (x86)")),
-    os.path.normcase(os.path.expandvars(r"C:\ProgramData")),
-    os.path.normcase(os.path.expandvars("%APPDATA%")),
-    os.path.normcase(os.path.expandvars("%LOCALAPPDATA%")),
+    "c:/windows",
+    "c:/program files",
+    "c:/program files (x86)",
+    "c:/programdata",
+    os.environ.get("APPDATA",      r"C:\Users\Default\AppData\Roaming").replace("\\", "/").lower(),
+    os.environ.get("LOCALAPPDATA", r"C:\Users\Default\AppData\Local").replace("\\", "/").lower(),
 )
 
 
@@ -183,11 +186,11 @@ class SecurityGuard:
                 "To unlock full system control, activate Aletheia admin mode."
             )
 
-        # Layer 0b: Path protection in public mode.
+        # Layer 0b: Path protection — public mode only
         if not admin_unlocked and action in _PATH_GATED_ACTIONS:
             target = plan.get("filename", "") or plan.get("command", "")
             if target:
-                target_norm = os.path.normcase(os.path.abspath(target))
+                target_norm = target.replace("\\", "/").lower()
                 for prefix in _PROTECTED_PATH_PREFIXES:
                     if target_norm.startswith(prefix):
                         return BLOCKED, (

@@ -411,7 +411,7 @@ class TestPhase7AletheiaProtocol(unittest.TestCase):
             "command": "",
             "description": "delete a system file",
             "url": "",
-            "filename": os.path.expandvars(r"C:\Windows\system32\test.dll"),
+            "filename": r"C:\Windows\system32\test.dll",
             "is_dangerous": False,
         }
         verdict_protected, msg_protected = guard.assess(protected_delete_plan, admin_unlocked=False)
