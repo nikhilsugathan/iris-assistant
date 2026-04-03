@@ -669,7 +669,7 @@ def main() -> None:
                         cleaned = _strip_active_wake_word(cleaned, self_model)
                     _voice_debug("interrupt_route", cleaned=cleaned or "")
 
-                    if interrupt_only or not cleaned.strip():
+                    if interrupt_only:
                         post_interrupt = _extract_interrupt_followup(cleaned)
                         should_exit = _run_voice_followup_window(
                             voice,
@@ -689,7 +689,7 @@ def main() -> None:
                             max_turns=4,
                             missed_limit=3,
                         )
-                    else:
+                    elif is_wake:
                         should_exit = _run_voice_followup_window(
                             voice,
                             autocorrect,
@@ -708,6 +708,9 @@ def main() -> None:
                             max_turns=4,
                             missed_limit=3,
                         )
+                    else:
+                        _voice_debug("interrupt_ignored", heard_text=heard_text, reason="non_wake_non_interrupt")
+                        continue
                     if should_exit:
                         break
                     continue

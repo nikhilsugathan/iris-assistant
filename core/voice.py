@@ -5,6 +5,7 @@ import threading
 import tempfile
 import queue
 import re
+import difflib
 import collections
 import numpy as np
 import speech_recognition as sr
@@ -355,6 +356,28 @@ class Voice:
         text = re.sub(r"[^a-z0-9\s]", " ", (text or "").lower())
         return re.sub(r"\s+", " ", text).strip()
 
+    def _looks_like_wake_transcript(self, text: str) -> bool:
+        normalized = self._normalize_text(text)
+        if not normalized:
+            return False
+        tokens = normalized.split()
+        if not tokens:
+            return False
+        wake_words = {w.lower() for w in getattr(Config, "WAKE_WORDS", [])}
+        wake_words.add("aletheia")
+        if any(token in wake_words for token in tokens):
+            return True
+        if any(
+            difflib.get_close_matches(wake_word, tokens, n=1, cutoff=0.78)
+            for wake_word in wake_words
+        ):
+            return True
+        compact = normalized.replace(" ", "")
+        return bool(
+            difflib.get_close_matches("iris", [compact], n=1, cutoff=0.72)
+            or difflib.get_close_matches("aletheia", [compact], n=1, cutoff=0.6)
+        )
+
     def record_spoken(self, text: str) -> None:
         """Record a phrase IRIS just spoke so it can be suppressed from STT input."""
         normalized = self._normalize_text(text)
@@ -453,6 +476,18 @@ class Voice:
         if priority == "local_first":
             try:
                 text = self._transcribe_local(audio, phrase_type=phrase_type)
+                if phrase_type == "wake" and not self._looks_like_wake_transcript(text or ""):
+                    google_text = self._transcribe_google(audio)
+                    self._debug_trace(
+                        "transcribe",
+                        source=source,
+                        phrase_type=phrase_type,
+                        priority=priority,
+                        engine="local_then_google",
+                        transcript=(google_text or ""),
+                        local_transcript=text or "",
+                    )
+                    return google_text or None
                 self._debug_trace(
                     "transcribe",
                     source=source,
