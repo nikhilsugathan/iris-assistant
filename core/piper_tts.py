@@ -52,18 +52,10 @@ class PiperTTSEngine:
         """Signal the engine to stop current playback.
 
         Sets the stop event so the chunk loop exits at the next write boundary.
-        Does NOT call stream.abort() — that discards buffered frames and causes
-        an audible crackle/pop. The chunk loop exits cleanly within one chunk
-        (~46ms at 22050Hz) after the stop event is set.
+        Does not call sd.stop() or stream.abort() — both cause audible artefacts
+        on interrupt. The chunk loop drains within one chunk (~46ms at 22050Hz).
         """
         self._stop_event.set()
-        # stream.abort() deliberately removed — causes audio crackle on interrupt.
-        # sd.stop() kept only as a last-resort safety net.
-        if self._sd is not None:
-            try:
-                self._sd.stop()
-            except Exception:
-                pass
 
     def _synthesize(self, text: str) -> bytes:
         """Run piper CLI and capture raw WAV bytes from stdout."""

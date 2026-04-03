@@ -408,8 +408,8 @@ def main() -> None:
 
         import threading as _threading
         t = _threading.Thread(
-            target=lambda: (_run_session_learning(autonomist, logger.filename),
-                            _finalize_session(logger)),
+            target=lambda: (_finalize_session(logger),
+                            _run_session_learning(autonomist, logger.filename)),
             daemon=True,
             name="iris-shutdown-cleanup",
         )
