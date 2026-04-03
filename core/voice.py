@@ -519,6 +519,16 @@ class Voice:
                 transcript=text,
             )
             return text
+        if phrase_type == "wake":
+            self._debug_trace(
+                "transcribe",
+                source=source,
+                phrase_type=phrase_type,
+                priority=priority,
+                engine="google_only_wake_none",
+                transcript="",
+            )
+            return None
         # In cloud_first mode, never trigger a late Whisper load/activation.
         if self._whisper_loading or self._whisper_disabled or self._whisper_model is None:
             self._debug_trace(

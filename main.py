@@ -298,7 +298,8 @@ def _run_voice_followup_window(
 
     while turns_used < max_turns:
         if current_input is None:
-            if voice.is_speaking():
+            speaking_now = voice.is_speaking()
+            if speaking_now:
                 heard_text = voice.listen_for_interrupt()
             else:
                 heard_text = voice.listen_for_command(timeout=6.0, phrase_time_limit=6.0)
@@ -310,9 +311,11 @@ def _run_voice_followup_window(
                 ignored=ignored,
                 turns_used=turns_used,
                 missed_follow_ups=missed_follow_ups,
-                speaking=voice.is_speaking(),
+                speaking=speaking_now,
             )
             if not heard_text or ignored:
+                if speaking_now:
+                    continue
                 missed_follow_ups += 1
                 if missed_follow_ups >= missed_limit:
                     _voice_debug("followup_end", reason="missed_limit", turns_used=turns_used, missed_follow_ups=missed_follow_ups)
