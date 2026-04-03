@@ -83,7 +83,7 @@ Generate three distinct approaches:
 Respond ONLY with this JSON structure:
 {{
   "plan_a": {{
-    "action_type": "run_command | create_file | create_folder | open_app | search_web | install_package | write_to_file",
+    "action_type": "run_command | create_file | create_folder | open_app | search_web | manage_package | write_to_file",
     "description": "one sentence plain English",
     "command": "exact Windows command if needed",
     "filename": "full path if file/folder operation",
