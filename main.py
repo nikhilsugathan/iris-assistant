@@ -109,6 +109,9 @@ def _matches_program_exit(text: str, voice_mode: bool = False) -> bool:
         return True
     return False
 
+def _active_wake_words(self_model: SelfModel) -> list[str]:
+    return ["aletheia"] if getattr(self_model, "admin_unlocked", False) else list(Config.WAKE_WORDS)
+
 def _matches_active_wake_word(text: str, self_model: SelfModel) -> bool:
     normalized = _normalize_command_text(text)
     tokens = normalized.split()
@@ -576,16 +579,72 @@ def main() -> None:
                     if should_exit: break
                     continue
 
-                heard_text = voice.listen_for_wake()
+                during_speech = voice.is_speaking()
+                active_wake_words = _active_wake_words(self_model)
+                if during_speech:
+                    heard_text = voice.listen_for_interrupt()
+                else:
+                    heard_text = voice.listen_for_wake()
                 if not heard_text: continue
                 if voice.should_ignore_transcript(heard_text):
                     continue
 
-                heard_lower = heard_text.lower()
+                if voice.is_speaking():
+                    voice.stop_speaking()
+
+                lowered_heard = heard_text.lower()
                 is_wake = _matches_active_wake_word(heard_text, self_model)
+                interrupt_only = during_speech and any(token in lowered_heard for token in ["stop", "wait", "hold on", "quiet"]) and not is_wake
+
+                if during_speech:
+                    cleaned = heard_text
+                    if is_wake:
+                        cleaned = _strip_active_wake_word(cleaned, self_model)
+
+                    if interrupt_only or not cleaned.strip():
+                        post_interrupt = _extract_interrupt_followup(cleaned)
+                        should_exit = _run_voice_followup_window(
+                            voice,
+                            autocorrect,
+                            executor,
+                            copilot,
+                            brain,
+                            self_model,
+                            dialog_manager,
+                            council,
+                            diagnostics,
+                            logger,
+                            researcher,
+                            autonomist,
+                            evolution,
+                            initial_input=post_interrupt or None,
+                            max_turns=4,
+                            missed_limit=3,
+                        )
+                    else:
+                        should_exit = _run_voice_followup_window(
+                            voice,
+                            autocorrect,
+                            executor,
+                            copilot,
+                            brain,
+                            self_model,
+                            dialog_manager,
+                            council,
+                            diagnostics,
+                            logger,
+                            researcher,
+                            autonomist,
+                            evolution,
+                            initial_input=cleaned,
+                            max_turns=4,
+                            missed_limit=3,
+                        )
+                    if should_exit:
+                        break
+                    continue
+
                 if is_wake:
-                    should_exit = False
-                    if voice.is_speaking(): voice.stop_speaking()
                     cleaned = _strip_active_wake_word(heard_text, self_model)
 
                     if not cleaned:
@@ -614,7 +673,8 @@ def main() -> None:
                         max_turns=4,
                         missed_limit=3,
                     )
-                    if should_exit: break
+                    if should_exit:
+                        break
 
             except EOFError:
                 break
