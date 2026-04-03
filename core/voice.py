@@ -5,6 +5,8 @@ import threading
 import tempfile
 import queue
 import re
+import difflib
+import collections
 import numpy as np
 import speech_recognition as sr
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "hide")
@@ -22,6 +24,7 @@ class Voice:
 
     def __init__(self, text_mode=False):
         self.text_mode = text_mode
+        self._debug_transcripts = os.getenv("VOICE_DEBUG_TRANSCRIPTS", "false").lower() == "true"
         self._force_io_disabled = os.getenv("IRIS_DISABLE_VOICE_IO", "false").lower() == "true"
         self.io_disabled = text_mode or self._force_io_disabled
         self.mic_ready = False
@@ -38,7 +41,9 @@ class Voice:
         self._whisper_loading = False
         self._whisper_ready_announced = False
         self._whisper_download_announced = False
-        
+        self._recent_spoken: collections.deque = collections.deque(maxlen=10)
+        self._recent_spoken_lock = threading.Lock()
+
         self._tts_lock = threading.Lock()
         self._active_stop_event = None
         self._utterance_queue = queue.Queue()
@@ -55,10 +60,32 @@ class Voice:
 
         if not self._force_io_disabled and not self.text_mode:
             self._init_mic()
-            if getattr(Config, "WAKE_STT_PRIORITY", "cloud_first") == "local_first":
+            priority = getattr(Config, "WAKE_STT_PRIORITY", "cloud_first")
+            if priority == "local_first":
                 threading.Thread(target=self._warm_local_stt, daemon=True).start()
+            elif priority == "cloud_first" and self._local_whisper_cached():
+                # Preload a cached local model so cloud-first mode has stable fallback
+                # without kicking off a late download/activation mid-session.
+                self._warm_local_stt()
             if getattr(Config, "PIPER_TTS_WARMUP", False):
                 threading.Thread(target=self._warm_local_tts, daemon=True).start()
+
+    def _preview_text(self, text: str | None, limit: int = 120) -> str:
+        cleaned = re.sub(r"\s+", " ", (text or "")).strip()
+        if len(cleaned) <= limit:
+            return cleaned
+        return cleaned[: limit - 3] + "..."
+
+    def _debug_trace(self, event: str, **fields) -> None:
+        if not self._debug_transcripts:
+            return
+        payload = []
+        for key, value in fields.items():
+            if isinstance(value, str):
+                payload.append(f"{key}={self._preview_text(value)!r}")
+            else:
+                payload.append(f"{key}={value!r}")
+        logger.debug("[VOICE_DEBUG] %s %s", event, " ".join(payload))
 
     def _init_mic(self):
         """Probes hardware for the Aletheia spec."""
@@ -76,6 +103,11 @@ class Voice:
                 self.recognizer.energy_threshold, Config.WAKE_RMS_THRESHOLD
             )
             self.mic_ready = True
+            self._debug_trace(
+                "mic_init",
+                configured_gate=Config.WAKE_RMS_THRESHOLD,
+                actual_threshold=round(float(self.recognizer.energy_threshold), 2),
+            )
         except Exception as e:
             logger.error(f"Microphone init failed: {e}")
             self.mic_ready = False
@@ -148,6 +180,13 @@ class Voice:
         if engine is not None:
             try:
                 chunks = self._split_speech_chunks(clean_text)
+                self._debug_trace(
+                    "tts_dispatch",
+                    engine="piper",
+                    chunk_count=len(chunks),
+                    chars=len(clean_text),
+                    text=clean_text,
+                )
                 if len(chunks) == 1:
                     engine.speak(chunks[0])
                 else:
@@ -160,6 +199,13 @@ class Voice:
                 logger.warning("Falling back to Edge-TTS...")
 
         if not stop_event.is_set():
+            self._debug_trace(
+                "tts_dispatch",
+                engine="edge_tts",
+                chunk_count=1,
+                chars=len(clean_text),
+                text=clean_text,
+            )
             self._speak_edge_tts(clean_text, stop_event)
 
     def _stream_piper_chunks(self, engine, chunks, stop_event):
@@ -226,8 +272,23 @@ class Voice:
             return [text]
 
         sentences = re.split(r'(?<=[.!?])\s+', text)
-        chunks = [sentence.strip() for sentence in sentences if sentence.strip()]
-        return chunks if len(chunks) > 1 else [text]
+        sentences = [sentence.strip() for sentence in sentences if sentence.strip()]
+        if len(sentences) <= 2 and len(text) <= 420:
+            return [text]
+
+        chunks = []
+        current = []
+        current_len = 0
+        for sentence in sentences:
+            current.append(sentence)
+            current_len += len(sentence)
+            if len(current) >= 3 or current_len >= 280:
+                chunks.append(" ".join(current).strip())
+                current = []
+                current_len = 0
+        if current:
+            chunks.append(" ".join(current).strip())
+        return chunks or [text]
 
     def _get_piper_engine(self):
         if self._piper_disabled:
@@ -296,44 +357,241 @@ class Voice:
         except Exception as e:
             logger.warning(f"Local TTS warm-up failed: {e}")
 
-    def listen_for_wake(self):
+    def _normalize_text(self, text: str) -> str:
+        text = re.sub(r"[^a-z0-9\s]", " ", (text or "").lower())
+        return re.sub(r"\s+", " ", text).strip()
+
+    def _looks_like_wake_transcript(self, text: str) -> bool:
+        normalized = self._normalize_text(text)
+        if not normalized:
+            return False
+        tokens = normalized.split()
+        if not tokens:
+            return False
+        wake_words = {w.lower() for w in getattr(Config, "WAKE_WORDS", [])}
+        wake_words.add("aletheia")
+        if any(token in wake_words for token in tokens):
+            return True
+        if any(
+            difflib.get_close_matches(wake_word, tokens, n=1, cutoff=0.78)
+            for wake_word in wake_words
+        ):
+            return True
+        compact = normalized.replace(" ", "")
+        return bool(
+            difflib.get_close_matches("iris", [compact], n=1, cutoff=0.72)
+            or difflib.get_close_matches("aletheia", [compact], n=1, cutoff=0.6)
+        )
+
+    def record_spoken(self, text: str) -> None:
+        """Record a phrase IRIS just spoke so it can be suppressed from STT input."""
+        normalized = self._normalize_text(text)
+        if not normalized:
+            return
+        with self._recent_spoken_lock:
+            self._recent_spoken.append((time.monotonic(), normalized))
+
+    def should_ignore_transcript(self, transcript: str) -> bool:
+        normalized = self._normalize_text(transcript)
+        if not normalized:
+            return True
+
+        tokens = normalized.split()
+        if not tokens:
+            return True
+        if len(tokens) == 1 and (len(tokens[0]) <= 2 or tokens[0] in {"uh", "um", "hmm"}):
+            return True
+
+        now = time.monotonic()
+        with self._recent_spoken_lock:
+            recent_spoken = list(self._recent_spoken)
+
+        for spoken_at, spoken in recent_spoken:
+            if now - spoken_at > 12.0:
+                continue
+            if normalized == spoken:
+                return True
+            if len(normalized) >= 18 and normalized in spoken:
+                return True
+            if len(spoken) >= 18 and spoken in normalized:
+                return True
+
+            spoken_tokens = set(spoken.split())
+            overlap = sum(1 for token in tokens if token in spoken_tokens)
+            if len(tokens) >= 4 and overlap / max(len(tokens), 1) >= 0.75:
+                return True
+        return False
+
+    def listen_for_wake(self, timeout=None, phrase_time_limit=None):
         """Listen for wake word using speech recognition."""
         if not self.mic_ready: 
             import time; time.sleep(0.5); return None
         try:
             self.recognizer.energy_threshold = Config.WAKE_RMS_THRESHOLD
+            self._debug_trace(
+                "listen_start",
+                source="wake",
+                configured_gate=Config.WAKE_RMS_THRESHOLD,
+                actual_threshold=round(float(self.recognizer.energy_threshold), 2),
+                timeout=4 if timeout is None else timeout,
+                phrase_time_limit=4 if phrase_time_limit is None else phrase_time_limit,
+            )
             with self.mic as source:
-                audio = self.recognizer.listen(source, timeout=4, phrase_time_limit=4)
-            return self._transcribe_audio(audio, phrase_type="wake")
+                audio = self.recognizer.listen(
+                    source,
+                    timeout=4 if timeout is None else timeout,
+                    phrase_time_limit=4 if phrase_time_limit is None else phrase_time_limit,
+                )
+            return self._transcribe_audio(audio, phrase_type="wake", source="wake")
         except Exception:
             return None
 
-    def listen_for_command(self):
+    def listen_for_command(self, timeout=None, phrase_time_limit=None):
         """Listen for a follow-up command."""
         if not self.mic_ready: return None
         try:
             self.recognizer.energy_threshold = Config.COMMAND_RMS_THRESHOLD
+            self._debug_trace(
+                "listen_start",
+                source="command",
+                configured_gate=Config.COMMAND_RMS_THRESHOLD,
+                actual_threshold=round(float(self.recognizer.energy_threshold), 2),
+                timeout=5 if timeout is None else timeout,
+                phrase_time_limit=7 if phrase_time_limit is None else phrase_time_limit,
+            )
             with self.mic as source:
-                audio = self.recognizer.listen(source, timeout=5, phrase_time_limit=7)
-            return self._transcribe_audio(audio, phrase_type="command")
+                audio = self.recognizer.listen(
+                    source,
+                    timeout=5 if timeout is None else timeout,
+                    phrase_time_limit=7 if phrase_time_limit is None else phrase_time_limit,
+                )
+            return self._transcribe_audio(audio, phrase_type="command", source="command")
         except Exception:
             return None
         finally:
             self.recognizer.energy_threshold = Config.WAKE_RMS_THRESHOLD
 
-    def _transcribe_audio(self, audio, phrase_type="command"):
+    def listen_for_interrupt(self, timeout=None, phrase_time_limit=None):
+        """Listen briefly for a barge-in phrase while IRIS is speaking."""
+        if not self.mic_ready:
+            return None
+        try:
+            self.recognizer.energy_threshold = min(
+                Config.WAKE_RMS_THRESHOLD,
+                Config.COMMAND_RMS_THRESHOLD,
+            )
+            self._debug_trace(
+                "listen_start",
+                source="interrupt",
+                configured_gate=min(Config.WAKE_RMS_THRESHOLD, Config.COMMAND_RMS_THRESHOLD),
+                actual_threshold=round(float(self.recognizer.energy_threshold), 2),
+                timeout=1.0 if timeout is None else timeout,
+                phrase_time_limit=2.2 if phrase_time_limit is None else phrase_time_limit,
+            )
+            with self.mic as source:
+                audio = self.recognizer.listen(
+                    source,
+                    timeout=1.0 if timeout is None else timeout,
+                    phrase_time_limit=2.2 if phrase_time_limit is None else phrase_time_limit,
+                )
+            return self._transcribe_audio(audio, phrase_type="command", source="interrupt")
+        except Exception:
+            return None
+        finally:
+            self.recognizer.energy_threshold = Config.WAKE_RMS_THRESHOLD
+
+    def _transcribe_audio(self, audio, phrase_type="command", source="command"):
         priority = getattr(Config, "WAKE_STT_PRIORITY", "cloud_first")
         if priority == "local_first":
             try:
-                return self._transcribe_local(audio, phrase_type=phrase_type)
+                text = self._transcribe_local(audio, phrase_type=phrase_type)
+                if phrase_type == "wake" and not self._looks_like_wake_transcript(text or ""):
+                    google_text = self._transcribe_google(audio)
+                    self._debug_trace(
+                        "transcribe",
+                        source=source,
+                        phrase_type=phrase_type,
+                        priority=priority,
+                        engine="local_then_google",
+                        transcript=(google_text or ""),
+                        local_transcript=text or "",
+                    )
+                    return google_text or None
+                self._debug_trace(
+                    "transcribe",
+                    source=source,
+                    phrase_type=phrase_type,
+                    priority=priority,
+                    engine="local",
+                    transcript=text or "",
+                )
+                return text
             except RuntimeError:
-                return self._transcribe_google(audio)
+                text = self._transcribe_google(audio)
+                self._debug_trace(
+                    "transcribe",
+                    source=source,
+                    phrase_type=phrase_type,
+                    priority=priority,
+                    engine="google_fallback",
+                    transcript=text or "",
+                )
+                return text
         text = self._transcribe_google(audio)
         if text:
+            self._debug_trace(
+                "transcribe",
+                source=source,
+                phrase_type=phrase_type,
+                priority=priority,
+                engine="google",
+                transcript=text,
+            )
             return text
+        if priority == "cloud_first":
+            self._debug_trace(
+                "transcribe",
+                source=source,
+                phrase_type=phrase_type,
+                priority=priority,
+                engine="google_only_wake_none" if phrase_type == "wake" else "google_only_command_none",
+                transcript="",
+            )
+            return None
+        # In cloud_first mode, never trigger a late Whisper load/activation.
+        if self._whisper_loading or self._whisper_disabled or self._whisper_model is None:
+            self._debug_trace(
+                "transcribe",
+                source=source,
+                phrase_type=phrase_type,
+                priority=priority,
+                engine="none",
+                transcript="",
+                whisper_loading=self._whisper_loading,
+                whisper_disabled=self._whisper_disabled,
+                whisper_ready=self._whisper_model is not None,
+            )
+            return None
         try:
-            return self._transcribe_local(audio, phrase_type=phrase_type)
+            text = self._transcribe_local(audio, phrase_type=phrase_type)
+            self._debug_trace(
+                "transcribe",
+                source=source,
+                phrase_type=phrase_type,
+                priority=priority,
+                engine="local_fallback",
+                transcript=text or "",
+            )
+            return text
         except RuntimeError:
+            self._debug_trace(
+                "transcribe",
+                source=source,
+                phrase_type=phrase_type,
+                priority=priority,
+                engine="local_fallback_error",
+                transcript="",
+            )
             return None
 
     def _transcribe_google(self, audio):
@@ -354,15 +612,17 @@ class Voice:
                 audio.get_raw_data(convert_rate=Config.MIC_SAMPLE_RATE, convert_width=2),
                 dtype=np.int16,
             ).astype(np.float32) / 32768.0
-            prompt = "iris aletheia protocol" if phrase_type == "wake" else "iris aletheia protocol command"
-            beam_size = 1 if phrase_type == "wake" else 5
+            prompt = "iris" if phrase_type == "wake" else ""
+            beam_size = 3 if phrase_type == "wake" else 5
+            best_of = 3 if phrase_type == "wake" else 1
+            vad_filter = False if phrase_type == "wake" else True
             segments, _ = model.transcribe(
                 samples,
                 beam_size=beam_size,
-                best_of=1,
+                best_of=best_of,
                 temperature=0.0,
                 language=getattr(Config, "LOCAL_WHISPER_LANGUAGE_HINT", "en") or None,
-                vad_filter=True,
+                vad_filter=vad_filter,
                 condition_on_previous_text=False,
                 initial_prompt=prompt,
             )
@@ -375,6 +635,18 @@ class Voice:
 
     def _warm_local_stt(self):
         self._get_whisper_model()
+
+    def _local_whisper_cached(self):
+        cache_root = getattr(
+            Config,
+            "LOCAL_WHISPER_CACHE_DIR",
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", ".cache"),
+        )
+        try:
+            os.makedirs(cache_root, exist_ok=True)
+        except OSError:
+            return False
+        return self._has_whisper_weights(cache_root)
 
     def _get_whisper_model(self):
         if self._whisper_disabled:

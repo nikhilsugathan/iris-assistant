@@ -49,19 +49,13 @@ class PiperTTSEngine:
             raise RuntimeError(f"Piper TTS playback failed: {e}")
 
     def stop(self) -> None:
-        """Signal the engine to stop current playback."""
+        """Signal the engine to stop current playback.
+
+        Sets the stop event so the chunk loop exits at the next write boundary.
+        Does not call sd.stop() or stream.abort() — both cause audible artefacts
+        on interrupt. The chunk loop drains within one chunk (~46ms at 22050Hz).
+        """
         self._stop_event.set()
-        stream = self._active_stream
-        if stream is not None:
-            try:
-                stream.abort()
-            except Exception:
-                pass
-        if self._sd is not None:
-            try:
-                self._sd.stop()
-            except Exception:
-                pass
 
     def _synthesize(self, text: str) -> bytes:
         """Run piper CLI and capture raw WAV bytes from stdout."""

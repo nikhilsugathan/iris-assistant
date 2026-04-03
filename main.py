@@ -13,10 +13,12 @@ import os
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
 
 import argparse
+import difflib
 import random
 import re
 import time
 import sys
+import threading
 import psutil
 from datetime import datetime
 
@@ -39,8 +41,11 @@ from core.session_logger import SessionLogger
 from core.evolution import EvolutionEngine
 from tools.researcher import Researcher
 from core.autonomist import Autonomist
+from core.logger import get_logger
 
 console = Console()
+voice_trace_logger = get_logger("VoiceFlow")
+_VOICE_DEBUG_TRANSCRIPTS = os.getenv("VOICE_DEBUG_TRANSCRIPTS", "false").lower() == "true"
 
 # ── LOGGING PERSISTENCE ─────────────────────────────────────────────────────
 LOGS_DIR = os.path.join(os.path.dirname(__file__), "logs")
@@ -56,6 +61,121 @@ _WAKE_ACKS_ADMIN  = ["Proceed.", "State the task.", "What's the objective?"]
 _FAREWELLS_PUBLIC = ["Session closed.", "Goodbye.", "Standing down."]
 _FAREWELLS_ADMIN  = ["Aletheia signing off.", "Admin session terminated.", "Root session closed."]
 _SENTENCE_RE = re.compile(r"^\s*(.+?[.!?])(?=(?:\s|$))(.*)$", re.DOTALL)
+_INTERRUPT_PREFIX_RE = re.compile(
+    r"^\s*(?:(?:iris|aletheia)\s+)?(?:wait|hold on|stop|quiet)\b[\s,.:;-]*(.*)$",
+    re.IGNORECASE,
+)
+
+def _voice_debug(event: str, **fields) -> None:
+    if not _VOICE_DEBUG_TRANSCRIPTS:
+        return
+    payload = []
+    for key, value in fields.items():
+        if isinstance(value, str):
+            cleaned = re.sub(r"\s+", " ", value).strip()
+            if len(cleaned) > 120:
+                cleaned = cleaned[:117] + "..."
+            payload.append(f"{key}={cleaned!r}")
+        else:
+            payload.append(f"{key}={value!r}")
+    voice_trace_logger.debug("[VOICE_FLOW] %s %s", event, " ".join(payload))
+
+def _normalize_command_text(text: str) -> str:
+    normalized = re.sub(r"[^a-z0-9\s]", " ", (text or "").lower())
+    return re.sub(r"\s+", " ", normalized).strip()
+
+def _strip_wake_words(text: str) -> str:
+    cleaned = text or ""
+    for wake_word in Config.WAKE_WORDS:
+        cleaned = re.sub(rf"\b{re.escape(wake_word)}\b", "", cleaned, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+def _is_interrupt_phrase(text: str) -> bool:
+    normalized = _normalize_command_text(text)
+    return normalized in {"stop", "wait", "hold on", "hold", "quiet"}
+
+def _has_aletheia_token(text: str) -> bool:
+    normalized = _normalize_command_text(text)
+    tokens = [token for token in normalized.split() if len(token) >= 5]
+    if "aletheia" in tokens:
+        return True
+    return bool(difflib.get_close_matches("aletheia", tokens, n=1, cutoff=0.55))
+
+def _matches_program_exit(text: str, voice_mode: bool = False) -> bool:
+    normalized = _normalize_command_text(text)
+    exact = {
+        "terminate",
+        "shutdown",
+        "exit system",
+        "terminate system",
+        "shutdown system",
+        "quit program",
+        "exit program",
+        "iris exit",
+        "exit iris",
+        "iris quit",
+        "quit iris",
+        "iris shutdown",
+        "shutdown iris",
+        "iris terminate",
+        "terminate iris",
+    }
+    if normalized in exact:
+        return True
+    if voice_mode:
+        # Voice STT often clips "terminate" into partial forms like "termin".
+        if re.fullmatch(r"termin\w*", normalized):
+            return True
+        first_token = normalized.split()[0] if normalized else ""
+        if re.fullmatch(r"termin\w*", first_token):
+            return True
+    if voice_mode and normalized in {"dominate", "terminated", "termination", "germinate"}:
+        return True
+    return False
+
+def _active_wake_words(self_model: SelfModel) -> list[str]:
+    return ["aletheia"] if getattr(self_model, "admin_unlocked", False) else list(Config.WAKE_WORDS)
+
+def _matches_active_wake_word(text: str, self_model: SelfModel) -> bool:
+    normalized = _normalize_command_text(text)
+    tokens = normalized.split()
+    if getattr(self_model, "admin_unlocked", False):
+        return _has_aletheia_token(text)
+    if any(w.lower() in tokens for w in Config.WAKE_WORDS):
+        return True
+    return any(difflib.get_close_matches("iris", [token], n=1, cutoff=0.75) for token in tokens if len(token) >= 3)
+
+def _strip_active_wake_word(text: str, self_model: SelfModel) -> str:
+    if not text:
+        return ""
+    if getattr(self_model, "admin_unlocked", False):
+        tokens = re.findall(r"[A-Za-z0-9']+", text)
+        filtered = []
+        removed = False
+        for token in tokens:
+            lowered = token.lower()
+            if not removed and (lowered == "aletheia" or difflib.get_close_matches("aletheia", [lowered], n=1, cutoff=0.55)):
+                removed = True
+                continue
+            filtered.append(token)
+        return " ".join(filtered).strip()
+
+    tokens = re.findall(r"[A-Za-z0-9']+", text)
+    filtered = []
+    removed = False
+    for token in tokens:
+        lowered = token.lower()
+        if not removed and (lowered in {w.lower() for w in Config.WAKE_WORDS} or difflib.get_close_matches("iris", [lowered], n=1, cutoff=0.75)):
+            removed = True
+            continue
+        filtered.append(token)
+    return " ".join(filtered).strip()
+
+def _extract_interrupt_followup(text: str) -> str:
+    match = _INTERRUPT_PREFIX_RE.match(text or "")
+    if not match:
+        return ""
+    return re.sub(r"\s+", " ", match.group(1)).strip()
 
 def _generate_greeting(admin_unlocked: bool = False, brain=None) -> str:
     if brain is not None:
@@ -96,12 +216,26 @@ def _extract_complete_sentences(buffer: str):
             sentences.append(sentence)
     return sentences, remaining
 
+def _drain_speech_chunks(pending_chunks: list[str], voice: Voice, speech_started: bool) -> bool:
+    if not pending_chunks:
+        return speech_started
+    chunk_count = len(pending_chunks)
+    chunk = " ".join(part.strip() for part in pending_chunks if part and part.strip()).strip()
+    pending_chunks.clear()
+    if chunk:
+        _voice_debug("stream_flush", chunk_count=chunk_count, chars=len(chunk), speech_started=speech_started, text=chunk)
+        voice.speak(chunk, interrupt=not speech_started)
+        voice.record_spoken(chunk)
+        return True
+    return speech_started
+
 def _stream_reasoning_response(user_input, voice, brain, self_model, decision, council_packet, logger):
     persona_label = "Aletheia" if self_model.admin_unlocked else "IRIS"
     label_color = "red" if self_model.admin_unlocked else "cyan"
     response_parts = []
     speech_buffer = ""
     speech_started = False
+    pending_speech_chunks = []
 
     console.print(f"\n[bold {label_color}]{persona_label}:[/bold {label_color}] ", end="")
     for chunk in brain.stream_think(
@@ -117,18 +251,144 @@ def _stream_reasoning_response(user_input, voice, brain, self_model, decision, c
         speech_buffer += chunk
         sentences, speech_buffer = _extract_complete_sentences(speech_buffer)
         for sentence in sentences:
-            voice.speak(sentence, interrupt=not speech_started)
-            speech_started = True
+            pending_speech_chunks.append(sentence)
+            pending_chars = sum(len(part) for part in pending_speech_chunks)
+            if not speech_started:
+                should_flush = len(pending_speech_chunks) >= 2 or pending_chars >= 240
+            else:
+                should_flush = len(pending_speech_chunks) >= 4 or pending_chars >= 420
+            if should_flush:
+                speech_started = _drain_speech_chunks(pending_speech_chunks, voice, speech_started)
 
     final_response = "".join(response_parts).strip()
     if speech_buffer.strip():
-        voice.speak(speech_buffer.strip(), interrupt=not speech_started)
-        speech_started = True
+        pending_speech_chunks.append(speech_buffer.strip())
+        _voice_debug(
+            "stream_flush_tail",
+            chars=len(speech_buffer.strip()),
+            speech_started=speech_started,
+            text=speech_buffer.strip(),
+        )
+    if pending_speech_chunks:
+        speech_started = _drain_speech_chunks(pending_speech_chunks, voice, speech_started)
 
     console.print("\n")
     self_model.note_response(final_response, source=decision.mode)
     logger.log_turn(persona_label, final_response)
     return final_response
+
+def _run_voice_followup_window(
+    voice,
+    autocorrect,
+    executor,
+    copilot,
+    brain,
+    self_model,
+    dialog_manager,
+    council,
+    diagnostics,
+    logger,
+    researcher,
+    autonomist,
+    evolution,
+    initial_input: str | None = None,
+    max_turns: int = 8,
+    missed_limit: int = 3,
+) -> bool:
+    current_input = (initial_input or "").strip() or None
+    missed_follow_ups = 0
+    turns_used = 0
+    _voice_debug(
+        "followup_start",
+        initial_input=current_input or "",
+        max_turns=max_turns,
+        missed_limit=missed_limit,
+        admin_unlocked=getattr(self_model, "admin_unlocked", False),
+    )
+
+    while turns_used < max_turns:
+        if current_input is None:
+            speaking_now = voice.is_speaking()
+            if speaking_now:
+                heard_text = voice.listen_for_interrupt()
+            else:
+                heard_text = voice.listen_for_command(timeout=6.0, phrase_time_limit=6.0)
+
+            ignored = voice.should_ignore_transcript(heard_text) if heard_text else False
+            _voice_debug(
+                "followup_heard",
+                heard_text=heard_text or "",
+                ignored=ignored,
+                turns_used=turns_used,
+                missed_follow_ups=missed_follow_ups,
+                speaking=speaking_now,
+            )
+            if not heard_text or ignored:
+                if speaking_now:
+                    continue
+                missed_follow_ups += 1
+                if missed_follow_ups >= missed_limit:
+                    _voice_debug("followup_end", reason="missed_limit", turns_used=turns_used, missed_follow_ups=missed_follow_ups)
+                    break
+                continue
+
+            if voice.is_speaking():
+                voice.stop_speaking()
+
+            cleaned = _strip_active_wake_word(heard_text, self_model)
+            if _is_interrupt_phrase(cleaned) or not cleaned:
+                post_interrupt = _extract_interrupt_followup(heard_text)
+                current_input = post_interrupt.strip() or None
+                missed_follow_ups = 0
+                _voice_debug("followup_interrupt", cleaned=cleaned or "", post_interrupt=post_interrupt or "")
+                if current_input is None:
+                    continue
+            else:
+                current_input = cleaned.strip() or None
+                _voice_debug("followup_cleaned", cleaned=current_input or "")
+                if current_input is None:
+                    missed_follow_ups += 1
+                    if missed_follow_ups >= missed_limit:
+                        _voice_debug("followup_end", reason="cleaned_empty", turns_used=turns_used, missed_follow_ups=missed_follow_ups)
+                        break
+                    continue
+
+        normalized = _normalize_command_text(current_input)
+        if normalized in {"thanks", "thank you", "bye", "goodbye"}:
+            _voice_debug("followup_end", reason="polite_exit", normalized=normalized, turns_used=turns_used)
+            break
+        if _is_interrupt_phrase(normalized):
+            _voice_debug("followup_interrupt_phrase", normalized=normalized)
+            current_input = None
+            continue
+
+        _voice_debug("followup_dispatch", current_input=current_input, normalized=normalized, turn=turns_used + 1)
+        _, should_exit = handle_user_input(
+            current_input,
+            voice,
+            autocorrect,
+            executor,
+            copilot,
+            brain,
+            self_model,
+            dialog_manager,
+            council,
+            diagnostics,
+            logger,
+            researcher,
+            autonomist,
+            evolution,
+            voice_mode=True,
+        )
+        turns_used += 1
+        current_input = None
+        missed_follow_ups = 0
+        if should_exit:
+            _voice_debug("followup_end", reason="should_exit", turns_used=turns_used)
+            return True
+
+    _voice_debug("followup_end", reason="complete", turns_used=turns_used, missed_follow_ups=missed_follow_ups)
+    return False
 
 # ── BANNER ──────────────────────────────────────────────────────────────────
 _RAW_BANNER = rf"""
@@ -174,9 +434,12 @@ def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, 
 
     logger.log_turn("User", user_input)
     lowered = user_input.lower()
+    normalized = _normalize_command_text(user_input)
     persona_label = "Aletheia" if self_model.admin_unlocked else "IRIS"
+    _voice_debug("handle_input", text=user_input, normalized=normalized, voice_mode=voice_mode, admin_unlocked=self_model.admin_unlocked)
 
-    if any(cmd in lowered for cmd in ["terminate", "shutdown", "exit system"]):
+    if _matches_program_exit(user_input, voice_mode=voice_mode) or normalized in {"terminate", "shutdown", "exit system"}:
+        _voice_debug("handle_exit_match", text=user_input, normalized=normalized, voice_mode=voice_mode)
         return "EXIT", True
 
     if lowered.strip() == "authorize protocol aletheia":
@@ -186,12 +449,16 @@ def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, 
             resp = _generate_greeting(admin_unlocked=True)
             console.print("\n[bold red][🔒 ROOT ACCESS GRANTED][/bold red]")
             voice.speak(resp)
+            voice.record_spoken(resp)
+            _voice_debug("handle_admin_unlock", response=resp)
         return "UNLOCKED", False
     elif lowered.strip() in ["lock protocol", "revert to iris"]:
         self_model.admin_unlocked = False
         resp = _generate_greeting(admin_unlocked=False)
         console.print("\n[bold green][🔒 ROOT ACCESS REVOKED][/bold green]")
         voice.speak(resp)
+        voice.record_spoken(resp)
+        _voice_debug("handle_admin_lock", response=resp)
         return "LOCKED", False
 
     corrected, _ = autocorrect.correct_input(user_input)
@@ -240,6 +507,7 @@ def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, 
         # Print immediately so text appears before audio starts
         console.print(f"\n[bold {label_color}]{persona_label}:[/bold {label_color}] {response}\n")
         voice.speak(response)
+        voice.record_spoken(response)
 
     return response, False
 
@@ -250,6 +518,60 @@ def _wait_for_engine(brain: Brain, timeout: int = 30) -> bool:
         time.sleep(0.5)
         waited += 0.5
     return brain.llm is not None
+
+
+def _wait_for_voice_idle(voice, timeout: float = 2.5) -> None:
+    """Wait for any in-progress speech to finish, with a hard timeout."""
+    import time
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if not voice.is_speaking():
+                break
+        except Exception:
+            break
+        time.sleep(0.05)
+
+
+def _run_session_learning(autonomist, log_path: str, learn_error: list) -> None:
+    """Run session learning on a daemon thread and capture errors."""
+    try:
+        autonomist.learn_from_session(log_path)
+    except Exception as e:
+        learn_error.append(e)
+
+
+def _finalize_session(autonomist, logger) -> None:
+    """Finalize the session and bound shutdown learning."""
+    try:
+        logger.finalize()
+    except Exception as e:
+        console.print(f"[dim yellow]Cleanup error: {e}[/dim yellow]")
+        return
+
+    learn_error = []
+    learning_thread = threading.Thread(
+        target=lambda: _run_session_learning(autonomist, logger.filename, learn_error),
+        daemon=True,
+        name="iris-shutdown-learning",
+    )
+    learning_thread.start()
+    learning_thread.join(timeout=1.5)
+
+    if learning_thread.is_alive():
+        console.print("[dim yellow]Skipping slow shutdown learning to avoid exit stall.[/dim yellow]")
+    elif learn_error:
+        console.print(f"[dim yellow]Cleanup error: {learn_error[0]}[/dim yellow]")
+
+
+def _force_exit(code: int = 0) -> None:
+    """Hard exit after cleanup — ensures the process always terminates."""
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+    os._exit(code)
 
 
 def main() -> None:
@@ -295,6 +617,7 @@ def main() -> None:
         console.print(f"\n[bold green]⌨️  Text Mode — type your command[/bold green]")
     console.print(f"[bold cyan]IRIS:[/bold cyan] {greeting}")
     voice.speak(greeting)
+    voice.record_spoken(greeting)
 
     try:
         while True:
@@ -318,15 +641,96 @@ def main() -> None:
                     if should_exit: break
                     continue
 
-                heard_text = voice.listen_for_wake()
-                if not heard_text: continue
+                during_speech = voice.is_speaking()
+                active_wake_words = _active_wake_words(self_model)
+                if during_speech:
+                    heard_text = voice.listen_for_interrupt()
+                else:
+                    heard_text = voice.listen_for_wake()
+                if not heard_text:
+                    _voice_debug("wake_loop_heard", source="interrupt" if during_speech else "wake", heard_text="", action="empty")
+                    continue
+                ignored = voice.should_ignore_transcript(heard_text)
+                _voice_debug(
+                    "wake_loop_heard",
+                    source="interrupt" if during_speech else "wake",
+                    heard_text=heard_text,
+                    ignored=ignored,
+                    during_speech=during_speech,
+                    active_wake_words=",".join(active_wake_words),
+                )
+                if ignored:
+                    continue
 
-                is_wake = any(w.lower() in heard_text.lower() for w in Config.WAKE_WORDS)
-                if is_wake:
-                    if voice.is_speaking(): voice.stop_speaking()
+                if voice.is_speaking():
+                    voice.stop_speaking()
+
+                lowered_heard = heard_text.lower()
+                is_wake = _matches_active_wake_word(heard_text, self_model)
+                interrupt_only = during_speech and any(token in lowered_heard for token in ["stop", "wait", "hold on", "quiet"]) and not is_wake
+                _voice_debug(
+                    "wake_loop_route",
+                    heard_text=heard_text,
+                    is_wake=is_wake,
+                    interrupt_only=interrupt_only,
+                    during_speech=during_speech,
+                )
+
+                if during_speech:
                     cleaned = heard_text
-                    for w in Config.WAKE_WORDS:
-                        cleaned = cleaned.lower().replace(w.lower(), "").strip()
+                    if is_wake:
+                        cleaned = _strip_active_wake_word(cleaned, self_model)
+                    _voice_debug("interrupt_route", cleaned=cleaned or "")
+
+                    if interrupt_only:
+                        post_interrupt = _extract_interrupt_followup(cleaned)
+                        should_exit = _run_voice_followup_window(
+                            voice,
+                            autocorrect,
+                            executor,
+                            copilot,
+                            brain,
+                            self_model,
+                            dialog_manager,
+                            council,
+                            diagnostics,
+                            logger,
+                            researcher,
+                            autonomist,
+                            evolution,
+                            initial_input=post_interrupt or None,
+                            max_turns=8,
+                            missed_limit=3,
+                        )
+                    elif is_wake:
+                        should_exit = _run_voice_followup_window(
+                            voice,
+                            autocorrect,
+                            executor,
+                            copilot,
+                            brain,
+                            self_model,
+                            dialog_manager,
+                            council,
+                            diagnostics,
+                            logger,
+                            researcher,
+                            autonomist,
+                            evolution,
+                            initial_input=cleaned,
+                            max_turns=8,
+                            missed_limit=3,
+                        )
+                    else:
+                        _voice_debug("interrupt_ignored", heard_text=heard_text, reason="non_wake_non_interrupt")
+                        continue
+                    if should_exit:
+                        break
+                    continue
+
+                if is_wake:
+                    cleaned = _strip_active_wake_word(heard_text, self_model)
+                    _voice_debug("wake_match", heard_text=heard_text, cleaned=cleaned or "")
 
                     if not cleaned:
                         label_color = "red" if self_model.admin_unlocked else "cyan"
@@ -335,25 +739,28 @@ def main() -> None:
                         wake_ack = random.choice(ack_pool)
                         console.print(f"\n[bold {label_color}]{persona_label}:[/bold {label_color}] {wake_ack}\n")
                         voice.speak(wake_ack)
-                    else:
-                        _, should_exit = handle_user_input(
-                            cleaned, voice, autocorrect, executor, copilot,
-                            brain, self_model, dialog_manager, council, diagnostics,
-                            logger, researcher, autonomist, evolution, voice_mode=True
-                        )
-                        if should_exit: break
-
-                    for _ in range(5):
-                        follow_up = voice.listen_for_command()
-                        if not follow_up or any(w in follow_up.lower() for w in ["stop", "thanks", "bye"]):
-                            break
-                        _, should_exit = handle_user_input(
-                            follow_up, voice, autocorrect, executor, copilot,
-                            brain, self_model, dialog_manager, council, diagnostics,
-                            logger, researcher, autonomist, evolution, voice_mode=True
-                        )
-                        if should_exit: break
-                    if should_exit: break
+                        voice.record_spoken(wake_ack)
+                        _voice_debug("wake_ack", wake_ack=wake_ack)
+                    should_exit = _run_voice_followup_window(
+                        voice,
+                        autocorrect,
+                        executor,
+                        copilot,
+                        brain,
+                        self_model,
+                        dialog_manager,
+                        council,
+                        diagnostics,
+                        logger,
+                        researcher,
+                        autonomist,
+                        evolution,
+                        initial_input=cleaned or None,
+                        max_turns=8,
+                        missed_limit=3,
+                    )
+                    if should_exit:
+                        break
 
             except EOFError:
                 break
@@ -366,14 +773,13 @@ def main() -> None:
         farewell = _generate_farewell(self_model)
         console.print(f"\n[bold yellow]Exiting:[/bold yellow] {farewell}")
         voice.speak(farewell)
+        voice.record_spoken(farewell)
+        _wait_for_voice_idle(voice)
 
         console.print("\n[bold cyan]IRIS:[/bold cyan] Terminating. Finalizing memory...")
-        try:
-            autonomist.learn_from_session(logger.filename)
-            logger.finalize()
-        except Exception as e:
-            console.print(f"[dim yellow]Cleanup error: {e}[/dim yellow]")
-        sys.exit(0)
+
+        _finalize_session(autonomist, logger)
+        _force_exit(0)
 
 
 if __name__ == "__main__":
