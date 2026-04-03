@@ -574,14 +574,16 @@ class Voice:
                 dtype=np.int16,
             ).astype(np.float32) / 32768.0
             prompt = "iris" if phrase_type == "wake" else ""
-            beam_size = 1 if phrase_type == "wake" else 5
+            beam_size = 3 if phrase_type == "wake" else 5
+            best_of = 3 if phrase_type == "wake" else 1
+            vad_filter = False if phrase_type == "wake" else True
             segments, _ = model.transcribe(
                 samples,
                 beam_size=beam_size,
-                best_of=1,
+                best_of=best_of,
                 temperature=0.0,
                 language=getattr(Config, "LOCAL_WHISPER_LANGUAGE_HINT", "en") or None,
-                vad_filter=True,
+                vad_filter=vad_filter,
                 condition_on_previous_text=False,
                 initial_prompt=prompt,
             )
