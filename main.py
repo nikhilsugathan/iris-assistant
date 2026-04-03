@@ -369,6 +369,7 @@ def main() -> None:
                 heard_tokens = re.split(r'\W+', heard_lower)
                 is_wake = any(w.lower() in heard_tokens for w in Config.WAKE_WORDS)
                 if is_wake:
+                    should_exit = False
                     if voice.is_speaking(): voice.stop_speaking()
                     cleaned = heard_text
                     for w in Config.WAKE_WORDS:
