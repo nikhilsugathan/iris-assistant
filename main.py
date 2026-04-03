@@ -252,6 +252,42 @@ def _wait_for_engine(brain: Brain, timeout: int = 30) -> bool:
     return brain.llm is not None
 
 
+def _wait_for_voice_idle(voice, timeout: float = 3.0) -> None:
+    """Wait for any in-progress speech to finish, with a hard timeout."""
+    import time
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if not voice.is_speaking():
+                break
+        except Exception:
+            break
+        time.sleep(0.05)
+
+
+def _run_session_learning(autonomist, log_path: str) -> None:
+    """Run session learning — called from a daemon thread, never on main thread."""
+    try:
+        autonomist.learn_from_session(log_path)
+    except Exception:
+        pass
+
+
+def _finalize_session(logger) -> None:
+    """Finalize the session logger — called from a daemon thread."""
+    try:
+        logger.finalize()
+    except Exception:
+        pass
+
+
+def _force_exit(code: int = 0) -> None:
+    """Hard exit after cleanup — ensures the process always terminates."""
+    import os as _os
+    _os.kill(_os.getpid(), 0)   # verify process is still alive
+    sys.exit(code)
+
+
 def main() -> None:
     Config.validate()
 
@@ -365,14 +401,23 @@ def main() -> None:
     finally:
         farewell = _generate_farewell(self_model)
         console.print(f"\n[bold yellow]Exiting:[/bold yellow] {farewell}")
+        _wait_for_voice_idle(voice)
         voice.speak(farewell)
 
         console.print("\n[bold cyan]IRIS:[/bold cyan] Terminating. Finalizing memory...")
-        try:
-            autonomist.learn_from_session(logger.filename)
-            logger.finalize()
-        except Exception as e:
-            console.print(f"[dim yellow]Cleanup error: {e}[/dim yellow]")
+
+        import threading as _threading
+        t = _threading.Thread(
+            target=lambda: (_run_session_learning(autonomist, logger.filename),
+                            _finalize_session(logger)),
+            daemon=True,
+            name="iris-shutdown-cleanup",
+        )
+        t.start()
+        t.join(timeout=5)
+        if t.is_alive():
+            console.print("[dim yellow]Cleanup timed out — exiting anyway.[/dim yellow]")
+
         sys.exit(0)
 
 
