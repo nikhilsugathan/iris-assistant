@@ -13,6 +13,7 @@ import os
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
 
 import argparse
+import difflib
 import random
 import re
 import time
@@ -57,6 +58,10 @@ _WAKE_ACKS_ADMIN  = ["Proceed.", "State the task.", "What's the objective?"]
 _FAREWELLS_PUBLIC = ["Session closed.", "Goodbye.", "Standing down."]
 _FAREWELLS_ADMIN  = ["Aletheia signing off.", "Admin session terminated.", "Root session closed."]
 _SENTENCE_RE = re.compile(r"^\s*(.+?[.!?])(?=(?:\s|$))(.*)$", re.DOTALL)
+_INTERRUPT_PREFIX_RE = re.compile(
+    r"^\s*(?:(?:iris|aletheia)\s+)?(?:wait|hold on|stop|quiet)\b[\s,.:;-]*(.*)$",
+    re.IGNORECASE,
+)
 
 def _normalize_command_text(text: str) -> str:
     normalized = re.sub(r"[^a-z0-9\s]", " ", (text or "").lower())
@@ -71,6 +76,79 @@ def _strip_wake_words(text: str) -> str:
 def _is_interrupt_phrase(text: str) -> bool:
     normalized = _normalize_command_text(text)
     return normalized in {"stop", "wait", "hold on", "hold", "quiet"}
+
+def _has_aletheia_token(text: str) -> bool:
+    normalized = _normalize_command_text(text)
+    tokens = [token for token in normalized.split() if len(token) >= 5]
+    if "aletheia" in tokens:
+        return True
+    return bool(difflib.get_close_matches("aletheia", tokens, n=1, cutoff=0.55))
+
+def _matches_program_exit(text: str, voice_mode: bool = False) -> bool:
+    normalized = _normalize_command_text(text)
+    exact = {
+        "terminate",
+        "shutdown",
+        "exit system",
+        "terminate system",
+        "shutdown system",
+        "quit program",
+        "exit program",
+        "iris exit",
+        "exit iris",
+        "iris quit",
+        "quit iris",
+        "iris shutdown",
+        "shutdown iris",
+        "iris terminate",
+        "terminate iris",
+    }
+    if normalized in exact:
+        return True
+    if voice_mode and normalized in {"dominate", "terminated", "termination", "germinate"}:
+        return True
+    return False
+
+def _matches_active_wake_word(text: str, self_model: SelfModel) -> bool:
+    normalized = _normalize_command_text(text)
+    tokens = normalized.split()
+    if getattr(self_model, "admin_unlocked", False):
+        return _has_aletheia_token(text)
+    if any(w.lower() in tokens for w in Config.WAKE_WORDS):
+        return True
+    return any(difflib.get_close_matches("iris", [token], n=1, cutoff=0.75) for token in tokens if len(token) >= 3)
+
+def _strip_active_wake_word(text: str, self_model: SelfModel) -> str:
+    if not text:
+        return ""
+    if getattr(self_model, "admin_unlocked", False):
+        tokens = re.findall(r"[A-Za-z0-9']+", text)
+        filtered = []
+        removed = False
+        for token in tokens:
+            lowered = token.lower()
+            if not removed and (lowered == "aletheia" or difflib.get_close_matches("aletheia", [lowered], n=1, cutoff=0.55)):
+                removed = True
+                continue
+            filtered.append(token)
+        return " ".join(filtered).strip()
+
+    tokens = re.findall(r"[A-Za-z0-9']+", text)
+    filtered = []
+    removed = False
+    for token in tokens:
+        lowered = token.lower()
+        if not removed and (lowered in {w.lower() for w in Config.WAKE_WORDS} or difflib.get_close_matches("iris", [lowered], n=1, cutoff=0.75)):
+            removed = True
+            continue
+        filtered.append(token)
+    return " ".join(filtered).strip()
+
+def _extract_interrupt_followup(text: str) -> str:
+    match = _INTERRUPT_PREFIX_RE.match(text or "")
+    if not match:
+        return ""
+    return re.sub(r"\s+", " ", match.group(1)).strip()
 
 def _generate_greeting(admin_unlocked: bool = False, brain=None) -> str:
     if brain is not None:
@@ -166,6 +244,91 @@ def _stream_reasoning_response(user_input, voice, brain, self_model, decision, c
     logger.log_turn(persona_label, final_response)
     return final_response
 
+def _run_voice_followup_window(
+    voice,
+    autocorrect,
+    executor,
+    copilot,
+    brain,
+    self_model,
+    dialog_manager,
+    council,
+    diagnostics,
+    logger,
+    researcher,
+    autonomist,
+    evolution,
+    initial_input: str | None = None,
+    max_turns: int = 4,
+    missed_limit: int = 3,
+) -> bool:
+    current_input = (initial_input or "").strip() or None
+    missed_follow_ups = 0
+    turns_used = 0
+
+    while turns_used < max_turns:
+        if current_input is None:
+            if voice.is_speaking():
+                heard_text = voice.listen_for_interrupt()
+            else:
+                heard_text = voice.listen_for_command(timeout=6.0, phrase_time_limit=6.0)
+
+            if not heard_text or voice.should_ignore_transcript(heard_text):
+                missed_follow_ups += 1
+                if missed_follow_ups >= missed_limit:
+                    break
+                continue
+
+            if voice.is_speaking():
+                voice.stop_speaking()
+
+            cleaned = _strip_active_wake_word(heard_text, self_model)
+            if _is_interrupt_phrase(cleaned) or not cleaned:
+                post_interrupt = _extract_interrupt_followup(heard_text)
+                current_input = post_interrupt.strip() or None
+                missed_follow_ups = 0
+                if current_input is None:
+                    continue
+            else:
+                current_input = cleaned.strip() or None
+                if current_input is None:
+                    missed_follow_ups += 1
+                    if missed_follow_ups >= missed_limit:
+                        break
+                    continue
+
+        normalized = _normalize_command_text(current_input)
+        if normalized in {"thanks", "thank you", "bye", "goodbye"}:
+            break
+        if _is_interrupt_phrase(normalized):
+            current_input = None
+            continue
+
+        _, should_exit = handle_user_input(
+            current_input,
+            voice,
+            autocorrect,
+            executor,
+            copilot,
+            brain,
+            self_model,
+            dialog_manager,
+            council,
+            diagnostics,
+            logger,
+            researcher,
+            autonomist,
+            evolution,
+            voice_mode=True,
+        )
+        turns_used += 1
+        current_input = None
+        missed_follow_ups = 0
+        if should_exit:
+            return True
+
+    return False
+
 # ── BANNER ──────────────────────────────────────────────────────────────────
 _RAW_BANNER = rf"""
   ██╗██████╗ ██╗███████╗
@@ -210,9 +373,10 @@ def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, 
 
     logger.log_turn("User", user_input)
     lowered = user_input.lower()
+    normalized = _normalize_command_text(user_input)
     persona_label = "Aletheia" if self_model.admin_unlocked else "IRIS"
 
-    if any(cmd in lowered for cmd in ["terminate", "shutdown", "exit system"]):
+    if _matches_program_exit(user_input, voice_mode=voice_mode) or normalized in {"terminate", "shutdown", "exit system"}:
         return "EXIT", True
 
     if lowered.strip() == "authorize protocol aletheia":
@@ -418,14 +582,11 @@ def main() -> None:
                     continue
 
                 heard_lower = heard_text.lower()
-                heard_tokens = re.split(r'\W+', heard_lower)
-                is_wake = any(w.lower() in heard_tokens for w in Config.WAKE_WORDS)
+                is_wake = _matches_active_wake_word(heard_text, self_model)
                 if is_wake:
                     should_exit = False
                     if voice.is_speaking(): voice.stop_speaking()
-                    cleaned = heard_text
-                    for w in Config.WAKE_WORDS:
-                        cleaned = cleaned.lower().replace(w.lower(), "").strip()
+                    cleaned = _strip_active_wake_word(heard_text, self_model)
 
                     if not cleaned:
                         label_color = "red" if self_model.admin_unlocked else "cyan"
@@ -435,49 +596,24 @@ def main() -> None:
                         console.print(f"\n[bold {label_color}]{persona_label}:[/bold {label_color}] {wake_ack}\n")
                         voice.speak(wake_ack)
                         voice.record_spoken(wake_ack)
-                    else:
-                        _, should_exit = handle_user_input(
-                            cleaned, voice, autocorrect, executor, copilot,
-                            brain, self_model, dialog_manager, council, diagnostics,
-                            logger, researcher, autonomist, evolution, voice_mode=True
-                        )
-                        if should_exit: break
-
-                    missed_follow_ups = 0
-                    for _ in range(5):
-                        if voice.is_speaking():
-                            follow_up = voice.listen_for_interrupt()
-                        else:
-                            follow_up = voice.listen_for_command(timeout=6.0, phrase_time_limit=6.0)
-
-                        if not follow_up or voice.should_ignore_transcript(follow_up):
-                            if not voice.is_speaking():
-                                missed_follow_ups += 1
-                                if missed_follow_ups >= 3:
-                                    break
-                            continue
-
-                        cleaned_follow_up = _strip_wake_words(follow_up)
-                        normalized_follow_up = _normalize_command_text(cleaned_follow_up or follow_up)
-                        if normalized_follow_up in {"thanks", "thank you", "bye", "goodbye"}:
-                            break
-                        if _is_interrupt_phrase(normalized_follow_up) or not cleaned_follow_up:
-                            missed_follow_ups = 0
-                            continue
-
-                        if any(w in follow_up.lower() for w in ["stop", "thanks", "bye"]):
-                            break
-
-                        if voice.is_speaking():
-                            voice.stop_speaking()
-
-                        _, should_exit = handle_user_input(
-                            cleaned_follow_up, voice, autocorrect, executor, copilot,
-                            brain, self_model, dialog_manager, council, diagnostics,
-                            logger, researcher, autonomist, evolution, voice_mode=True
-                        )
-                        missed_follow_ups = 0
-                        if should_exit: break
+                    should_exit = _run_voice_followup_window(
+                        voice,
+                        autocorrect,
+                        executor,
+                        copilot,
+                        brain,
+                        self_model,
+                        dialog_manager,
+                        council,
+                        diagnostics,
+                        logger,
+                        researcher,
+                        autonomist,
+                        evolution,
+                        initial_input=cleaned or None,
+                        max_turns=4,
+                        missed_limit=3,
+                    )
                     if should_exit: break
 
             except EOFError:
