@@ -466,7 +466,10 @@ class Voice:
                     mixer.music.load(temp_file)
                     mixer.music.play()
                     while mixer.music.get_busy():
-                        time.sleep(0.1)
+                        if stop_event is not None and stop_event.is_set():
+                            mixer.music.stop()
+                            break
+                        time.sleep(0.05)
                 except Exception as e:
                     logger.error(f"Playback failed: {e}")
         finally:
