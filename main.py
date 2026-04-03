@@ -249,18 +249,21 @@ def _stream_reasoning_response(user_input, voice, brain, self_model, decision, c
             if not speech_started:
                 should_flush = len(pending_speech_chunks) >= 2 or pending_chars >= 240
             else:
-                should_flush = len(pending_speech_chunks) >= 3 or pending_chars >= 320
+                should_flush = len(pending_speech_chunks) >= 4 or pending_chars >= 420
             if should_flush:
                 speech_started = _drain_speech_chunks(pending_speech_chunks, voice, speech_started)
 
     final_response = "".join(response_parts).strip()
+    if speech_buffer.strip():
+        pending_speech_chunks.append(speech_buffer.strip())
+        _voice_debug(
+            "stream_flush_tail",
+            chars=len(speech_buffer.strip()),
+            speech_started=speech_started,
+            text=speech_buffer.strip(),
+        )
     if pending_speech_chunks:
         speech_started = _drain_speech_chunks(pending_speech_chunks, voice, speech_started)
-    if speech_buffer.strip():
-        _voice_debug("stream_flush_tail", chars=len(speech_buffer.strip()), speech_started=speech_started, text=speech_buffer.strip())
-        voice.speak(speech_buffer.strip(), interrupt=not speech_started)
-        voice.record_spoken(speech_buffer.strip())
-        speech_started = True
 
     console.print("\n")
     self_model.note_response(final_response, source=decision.mode)
@@ -282,7 +285,7 @@ def _run_voice_followup_window(
     autonomist,
     evolution,
     initial_input: str | None = None,
-    max_turns: int = 4,
+    max_turns: int = 8,
     missed_limit: int = 3,
 ) -> bool:
     current_input = (initial_input or "").strip() or None
@@ -689,7 +692,7 @@ def main() -> None:
                             autonomist,
                             evolution,
                             initial_input=post_interrupt or None,
-                            max_turns=4,
+                            max_turns=8,
                             missed_limit=3,
                         )
                     elif is_wake:
@@ -708,7 +711,7 @@ def main() -> None:
                             autonomist,
                             evolution,
                             initial_input=cleaned,
-                            max_turns=4,
+                            max_turns=8,
                             missed_limit=3,
                         )
                     else:
@@ -746,7 +749,7 @@ def main() -> None:
                         autonomist,
                         evolution,
                         initial_input=cleaned or None,
-                        max_turns=4,
+                        max_turns=8,
                         missed_limit=3,
                     )
                     if should_exit:
