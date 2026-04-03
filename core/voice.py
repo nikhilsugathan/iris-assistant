@@ -58,8 +58,13 @@ class Voice:
 
         if not self._force_io_disabled and not self.text_mode:
             self._init_mic()
-            if getattr(Config, "WAKE_STT_PRIORITY", "cloud_first") == "local_first":
+            priority = getattr(Config, "WAKE_STT_PRIORITY", "cloud_first")
+            if priority == "local_first":
                 threading.Thread(target=self._warm_local_stt, daemon=True).start()
+            elif priority == "cloud_first" and self._local_whisper_cached():
+                # Preload a cached local model so cloud-first mode has stable fallback
+                # without kicking off a late download/activation mid-session.
+                self._warm_local_stt()
             if getattr(Config, "PIPER_TTS_WARMUP", False):
                 threading.Thread(target=self._warm_local_tts, daemon=True).start()
 
@@ -424,6 +429,18 @@ class Voice:
 
     def _warm_local_stt(self):
         self._get_whisper_model()
+
+    def _local_whisper_cached(self):
+        cache_root = getattr(
+            Config,
+            "LOCAL_WHISPER_CACHE_DIR",
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), "models", ".cache"),
+        )
+        try:
+            os.makedirs(cache_root, exist_ok=True)
+        except OSError:
+            return False
+        return self._has_whisper_weights(cache_root)
 
     def _get_whisper_model(self):
         if self._whisper_disabled:
