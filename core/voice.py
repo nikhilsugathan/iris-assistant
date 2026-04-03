@@ -23,6 +23,7 @@ class Voice:
 
     def __init__(self, text_mode=False):
         self.text_mode = text_mode
+        self._debug_transcripts = os.getenv("VOICE_DEBUG_TRANSCRIPTS", "false").lower() == "true"
         self._force_io_disabled = os.getenv("IRIS_DISABLE_VOICE_IO", "false").lower() == "true"
         self.io_disabled = text_mode or self._force_io_disabled
         self.mic_ready = False
@@ -67,6 +68,23 @@ class Voice:
                 self._warm_local_stt()
             if getattr(Config, "PIPER_TTS_WARMUP", False):
                 threading.Thread(target=self._warm_local_tts, daemon=True).start()
+
+    def _preview_text(self, text: str | None, limit: int = 120) -> str:
+        cleaned = re.sub(r"\s+", " ", (text or "")).strip()
+        if len(cleaned) <= limit:
+            return cleaned
+        return cleaned[: limit - 3] + "..."
+
+    def _debug_trace(self, event: str, **fields) -> None:
+        if not self._debug_transcripts:
+            return
+        payload = []
+        for key, value in fields.items():
+            if isinstance(value, str):
+                payload.append(f"{key}={self._preview_text(value)!r}")
+            else:
+                payload.append(f"{key}={value!r}")
+        logger.debug("[VOICE_DEBUG] %s %s", event, " ".join(payload))
 
     def _init_mic(self):
         """Probes hardware for the Aletheia spec."""
@@ -156,6 +174,13 @@ class Voice:
         if engine is not None:
             try:
                 chunks = self._split_speech_chunks(clean_text)
+                self._debug_trace(
+                    "tts_dispatch",
+                    engine="piper",
+                    chunk_count=len(chunks),
+                    chars=len(clean_text),
+                    text=clean_text,
+                )
                 if len(chunks) == 1:
                     engine.speak(chunks[0])
                 else:
@@ -168,6 +193,13 @@ class Voice:
                 logger.warning("Falling back to Edge-TTS...")
 
         if not stop_event.is_set():
+            self._debug_trace(
+                "tts_dispatch",
+                engine="edge_tts",
+                chunk_count=1,
+                chars=len(clean_text),
+                text=clean_text,
+            )
             self._speak_edge_tts(clean_text, stop_event)
 
     def _stream_piper_chunks(self, engine, chunks, stop_event):
@@ -374,7 +406,7 @@ class Voice:
                     timeout=4 if timeout is None else timeout,
                     phrase_time_limit=4 if phrase_time_limit is None else phrase_time_limit,
                 )
-            return self._transcribe_audio(audio, phrase_type="wake")
+            return self._transcribe_audio(audio, phrase_type="wake", source="wake")
         except Exception:
             return None
 
@@ -389,7 +421,7 @@ class Voice:
                     timeout=5 if timeout is None else timeout,
                     phrase_time_limit=7 if phrase_time_limit is None else phrase_time_limit,
                 )
-            return self._transcribe_audio(audio, phrase_type="command")
+            return self._transcribe_audio(audio, phrase_type="command", source="command")
         except Exception:
             return None
         finally:
@@ -410,28 +442,82 @@ class Voice:
                     timeout=1.0 if timeout is None else timeout,
                     phrase_time_limit=2.2 if phrase_time_limit is None else phrase_time_limit,
                 )
-            return self._transcribe_audio(audio, phrase_type="command")
+            return self._transcribe_audio(audio, phrase_type="command", source="interrupt")
         except Exception:
             return None
         finally:
             self.recognizer.energy_threshold = Config.WAKE_RMS_THRESHOLD
 
-    def _transcribe_audio(self, audio, phrase_type="command"):
+    def _transcribe_audio(self, audio, phrase_type="command", source="command"):
         priority = getattr(Config, "WAKE_STT_PRIORITY", "cloud_first")
         if priority == "local_first":
             try:
-                return self._transcribe_local(audio, phrase_type=phrase_type)
+                text = self._transcribe_local(audio, phrase_type=phrase_type)
+                self._debug_trace(
+                    "transcribe",
+                    source=source,
+                    phrase_type=phrase_type,
+                    priority=priority,
+                    engine="local",
+                    transcript=text or "",
+                )
+                return text
             except RuntimeError:
-                return self._transcribe_google(audio)
+                text = self._transcribe_google(audio)
+                self._debug_trace(
+                    "transcribe",
+                    source=source,
+                    phrase_type=phrase_type,
+                    priority=priority,
+                    engine="google_fallback",
+                    transcript=text or "",
+                )
+                return text
         text = self._transcribe_google(audio)
         if text:
+            self._debug_trace(
+                "transcribe",
+                source=source,
+                phrase_type=phrase_type,
+                priority=priority,
+                engine="google",
+                transcript=text,
+            )
             return text
         # In cloud_first mode, never trigger a late Whisper load/activation.
         if self._whisper_loading or self._whisper_disabled or self._whisper_model is None:
+            self._debug_trace(
+                "transcribe",
+                source=source,
+                phrase_type=phrase_type,
+                priority=priority,
+                engine="none",
+                transcript="",
+                whisper_loading=self._whisper_loading,
+                whisper_disabled=self._whisper_disabled,
+                whisper_ready=self._whisper_model is not None,
+            )
             return None
         try:
-            return self._transcribe_local(audio, phrase_type=phrase_type)
+            text = self._transcribe_local(audio, phrase_type=phrase_type)
+            self._debug_trace(
+                "transcribe",
+                source=source,
+                phrase_type=phrase_type,
+                priority=priority,
+                engine="local_fallback",
+                transcript=text or "",
+            )
+            return text
         except RuntimeError:
+            self._debug_trace(
+                "transcribe",
+                source=source,
+                phrase_type=phrase_type,
+                priority=priority,
+                engine="local_fallback_error",
+                transcript="",
+            )
             return None
 
     def _transcribe_google(self, audio):

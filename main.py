@@ -41,8 +41,11 @@ from core.session_logger import SessionLogger
 from core.evolution import EvolutionEngine
 from tools.researcher import Researcher
 from core.autonomist import Autonomist
+from core.logger import get_logger
 
 console = Console()
+voice_trace_logger = get_logger("VoiceFlow")
+_VOICE_DEBUG_TRANSCRIPTS = os.getenv("VOICE_DEBUG_TRANSCRIPTS", "false").lower() == "true"
 
 # ── LOGGING PERSISTENCE ─────────────────────────────────────────────────────
 LOGS_DIR = os.path.join(os.path.dirname(__file__), "logs")
@@ -62,6 +65,20 @@ _INTERRUPT_PREFIX_RE = re.compile(
     r"^\s*(?:(?:iris|aletheia)\s+)?(?:wait|hold on|stop|quiet)\b[\s,.:;-]*(.*)$",
     re.IGNORECASE,
 )
+
+def _voice_debug(event: str, **fields) -> None:
+    if not _VOICE_DEBUG_TRANSCRIPTS:
+        return
+    payload = []
+    for key, value in fields.items():
+        if isinstance(value, str):
+            cleaned = re.sub(r"\s+", " ", value).strip()
+            if len(cleaned) > 120:
+                cleaned = cleaned[:117] + "..."
+            payload.append(f"{key}={cleaned!r}")
+        else:
+            payload.append(f"{key}={value!r}")
+    voice_trace_logger.debug("[VOICE_FLOW] %s %s", event, " ".join(payload))
 
 def _normalize_command_text(text: str) -> str:
     normalized = re.sub(r"[^a-z0-9\s]", " ", (text or "").lower())
@@ -195,9 +212,11 @@ def _extract_complete_sentences(buffer: str):
 def _drain_speech_chunks(pending_chunks: list[str], voice: Voice, speech_started: bool) -> bool:
     if not pending_chunks:
         return speech_started
+    chunk_count = len(pending_chunks)
     chunk = " ".join(part.strip() for part in pending_chunks if part and part.strip()).strip()
     pending_chunks.clear()
     if chunk:
+        _voice_debug("stream_flush", chunk_count=chunk_count, chars=len(chunk), speech_started=speech_started, text=chunk)
         voice.speak(chunk, interrupt=not speech_started)
         voice.record_spoken(chunk)
         return True
@@ -238,6 +257,7 @@ def _stream_reasoning_response(user_input, voice, brain, self_model, decision, c
     if pending_speech_chunks:
         speech_started = _drain_speech_chunks(pending_speech_chunks, voice, speech_started)
     if speech_buffer.strip():
+        _voice_debug("stream_flush_tail", chars=len(speech_buffer.strip()), speech_started=speech_started, text=speech_buffer.strip())
         voice.speak(speech_buffer.strip(), interrupt=not speech_started)
         voice.record_spoken(speech_buffer.strip())
         speech_started = True
@@ -268,6 +288,13 @@ def _run_voice_followup_window(
     current_input = (initial_input or "").strip() or None
     missed_follow_ups = 0
     turns_used = 0
+    _voice_debug(
+        "followup_start",
+        initial_input=current_input or "",
+        max_turns=max_turns,
+        missed_limit=missed_limit,
+        admin_unlocked=getattr(self_model, "admin_unlocked", False),
+    )
 
     while turns_used < max_turns:
         if current_input is None:
@@ -276,9 +303,19 @@ def _run_voice_followup_window(
             else:
                 heard_text = voice.listen_for_command(timeout=6.0, phrase_time_limit=6.0)
 
-            if not heard_text or voice.should_ignore_transcript(heard_text):
+            ignored = voice.should_ignore_transcript(heard_text) if heard_text else False
+            _voice_debug(
+                "followup_heard",
+                heard_text=heard_text or "",
+                ignored=ignored,
+                turns_used=turns_used,
+                missed_follow_ups=missed_follow_ups,
+                speaking=voice.is_speaking(),
+            )
+            if not heard_text or ignored:
                 missed_follow_ups += 1
                 if missed_follow_ups >= missed_limit:
+                    _voice_debug("followup_end", reason="missed_limit", turns_used=turns_used, missed_follow_ups=missed_follow_ups)
                     break
                 continue
 
@@ -290,23 +327,29 @@ def _run_voice_followup_window(
                 post_interrupt = _extract_interrupt_followup(heard_text)
                 current_input = post_interrupt.strip() or None
                 missed_follow_ups = 0
+                _voice_debug("followup_interrupt", cleaned=cleaned or "", post_interrupt=post_interrupt or "")
                 if current_input is None:
                     continue
             else:
                 current_input = cleaned.strip() or None
+                _voice_debug("followup_cleaned", cleaned=current_input or "")
                 if current_input is None:
                     missed_follow_ups += 1
                     if missed_follow_ups >= missed_limit:
+                        _voice_debug("followup_end", reason="cleaned_empty", turns_used=turns_used, missed_follow_ups=missed_follow_ups)
                         break
                     continue
 
         normalized = _normalize_command_text(current_input)
         if normalized in {"thanks", "thank you", "bye", "goodbye"}:
+            _voice_debug("followup_end", reason="polite_exit", normalized=normalized, turns_used=turns_used)
             break
         if _is_interrupt_phrase(normalized):
+            _voice_debug("followup_interrupt_phrase", normalized=normalized)
             current_input = None
             continue
 
+        _voice_debug("followup_dispatch", current_input=current_input, normalized=normalized, turn=turns_used + 1)
         _, should_exit = handle_user_input(
             current_input,
             voice,
@@ -328,8 +371,10 @@ def _run_voice_followup_window(
         current_input = None
         missed_follow_ups = 0
         if should_exit:
+            _voice_debug("followup_end", reason="should_exit", turns_used=turns_used)
             return True
 
+    _voice_debug("followup_end", reason="complete", turns_used=turns_used, missed_follow_ups=missed_follow_ups)
     return False
 
 # ── BANNER ──────────────────────────────────────────────────────────────────
@@ -378,8 +423,10 @@ def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, 
     lowered = user_input.lower()
     normalized = _normalize_command_text(user_input)
     persona_label = "Aletheia" if self_model.admin_unlocked else "IRIS"
+    _voice_debug("handle_input", text=user_input, normalized=normalized, voice_mode=voice_mode, admin_unlocked=self_model.admin_unlocked)
 
     if _matches_program_exit(user_input, voice_mode=voice_mode) or normalized in {"terminate", "shutdown", "exit system"}:
+        _voice_debug("handle_exit_match", text=user_input, normalized=normalized, voice_mode=voice_mode)
         return "EXIT", True
 
     if lowered.strip() == "authorize protocol aletheia":
@@ -390,6 +437,7 @@ def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, 
             console.print("\n[bold red][🔒 ROOT ACCESS GRANTED][/bold red]")
             voice.speak(resp)
             voice.record_spoken(resp)
+            _voice_debug("handle_admin_unlock", response=resp)
         return "UNLOCKED", False
     elif lowered.strip() in ["lock protocol", "revert to iris"]:
         self_model.admin_unlocked = False
@@ -397,6 +445,7 @@ def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, 
         console.print("\n[bold green][🔒 ROOT ACCESS REVOKED][/bold green]")
         voice.speak(resp)
         voice.record_spoken(resp)
+        _voice_debug("handle_admin_lock", response=resp)
         return "LOCKED", False
 
     corrected, _ = autocorrect.correct_input(user_input)
@@ -585,8 +634,19 @@ def main() -> None:
                     heard_text = voice.listen_for_interrupt()
                 else:
                     heard_text = voice.listen_for_wake()
-                if not heard_text: continue
-                if voice.should_ignore_transcript(heard_text):
+                if not heard_text:
+                    _voice_debug("wake_loop_heard", source="interrupt" if during_speech else "wake", heard_text="", action="empty")
+                    continue
+                ignored = voice.should_ignore_transcript(heard_text)
+                _voice_debug(
+                    "wake_loop_heard",
+                    source="interrupt" if during_speech else "wake",
+                    heard_text=heard_text,
+                    ignored=ignored,
+                    during_speech=during_speech,
+                    active_wake_words=",".join(active_wake_words),
+                )
+                if ignored:
                     continue
 
                 if voice.is_speaking():
@@ -595,11 +655,19 @@ def main() -> None:
                 lowered_heard = heard_text.lower()
                 is_wake = _matches_active_wake_word(heard_text, self_model)
                 interrupt_only = during_speech and any(token in lowered_heard for token in ["stop", "wait", "hold on", "quiet"]) and not is_wake
+                _voice_debug(
+                    "wake_loop_route",
+                    heard_text=heard_text,
+                    is_wake=is_wake,
+                    interrupt_only=interrupt_only,
+                    during_speech=during_speech,
+                )
 
                 if during_speech:
                     cleaned = heard_text
                     if is_wake:
                         cleaned = _strip_active_wake_word(cleaned, self_model)
+                    _voice_debug("interrupt_route", cleaned=cleaned or "")
 
                     if interrupt_only or not cleaned.strip():
                         post_interrupt = _extract_interrupt_followup(cleaned)
@@ -646,6 +714,7 @@ def main() -> None:
 
                 if is_wake:
                     cleaned = _strip_active_wake_word(heard_text, self_model)
+                    _voice_debug("wake_match", heard_text=heard_text, cleaned=cleaned or "")
 
                     if not cleaned:
                         label_color = "red" if self_model.admin_unlocked else "cyan"
@@ -655,6 +724,7 @@ def main() -> None:
                         console.print(f"\n[bold {label_color}]{persona_label}:[/bold {label_color}] {wake_ack}\n")
                         voice.speak(wake_ack)
                         voice.record_spoken(wake_ack)
+                        _voice_debug("wake_ack", wake_ack=wake_ack)
                     should_exit = _run_voice_followup_window(
                         voice,
                         autocorrect,
