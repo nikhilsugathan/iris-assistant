@@ -97,12 +97,24 @@ def _extract_complete_sentences(buffer: str):
             sentences.append(sentence)
     return sentences, remaining
 
+def _drain_speech_chunks(pending_chunks: list[str], voice: Voice, speech_started: bool) -> bool:
+    if not pending_chunks:
+        return speech_started
+    chunk = " ".join(part.strip() for part in pending_chunks if part and part.strip()).strip()
+    pending_chunks.clear()
+    if chunk:
+        voice.speak(chunk, interrupt=not speech_started)
+        voice.record_spoken(chunk)
+        return True
+    return speech_started
+
 def _stream_reasoning_response(user_input, voice, brain, self_model, decision, council_packet, logger):
     persona_label = "Aletheia" if self_model.admin_unlocked else "IRIS"
     label_color = "red" if self_model.admin_unlocked else "cyan"
     response_parts = []
     speech_buffer = ""
     speech_started = False
+    pending_speech_chunks = []
 
     console.print(f"\n[bold {label_color}]{persona_label}:[/bold {label_color}] ", end="")
     for chunk in brain.stream_think(
@@ -118,11 +130,18 @@ def _stream_reasoning_response(user_input, voice, brain, self_model, decision, c
         speech_buffer += chunk
         sentences, speech_buffer = _extract_complete_sentences(speech_buffer)
         for sentence in sentences:
-            voice.speak(sentence, interrupt=not speech_started)
-            voice.record_spoken(sentence)
-            speech_started = True
+            pending_speech_chunks.append(sentence)
+            pending_chars = sum(len(part) for part in pending_speech_chunks)
+            if not speech_started:
+                should_flush = len(pending_speech_chunks) >= 2 or pending_chars >= 240
+            else:
+                should_flush = len(pending_speech_chunks) >= 3 or pending_chars >= 320
+            if should_flush:
+                speech_started = _drain_speech_chunks(pending_speech_chunks, voice, speech_started)
 
     final_response = "".join(response_parts).strip()
+    if pending_speech_chunks:
+        speech_started = _drain_speech_chunks(pending_speech_chunks, voice, speech_started)
     if speech_buffer.strip():
         voice.speak(speech_buffer.strip(), interrupt=not speech_started)
         voice.record_spoken(speech_buffer.strip())
