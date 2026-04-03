@@ -5,6 +5,7 @@ import threading
 import tempfile
 import queue
 import re
+import collections
 import numpy as np
 import speech_recognition as sr
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "hide")
@@ -38,7 +39,9 @@ class Voice:
         self._whisper_loading = False
         self._whisper_ready_announced = False
         self._whisper_download_announced = False
-        
+        self._recent_spoken: collections.deque = collections.deque(maxlen=10)
+        self._recent_spoken_lock = threading.Lock()
+
         self._tts_lock = threading.Lock()
         self._active_stop_event = None
         self._utterance_queue = queue.Queue()
@@ -296,6 +299,32 @@ class Voice:
         except Exception as e:
             logger.warning(f"Local TTS warm-up failed: {e}")
 
+    def record_spoken(self, text: str) -> None:
+        """Record a phrase IRIS just spoke so it can be suppressed from STT input."""
+        if not text:
+            return
+        cleaned = re.sub(r'\s+', ' ', text.lower().strip())
+        with self._recent_spoken_lock:
+            self._recent_spoken.append((cleaned, time.monotonic()))
+
+    def should_ignore_transcript(self, transcript: str, window: float = 4.0) -> bool:
+        """Return True if transcript looks like IRIS hearing its own speech.
+
+        Checks whether the transcript is a substring of (or highly overlaps with)
+        any phrase spoken by IRIS in the last `window` seconds.
+        """
+        if not transcript:
+            return False
+        t_clean = re.sub(r'\s+', ' ', transcript.lower().strip())
+        now = time.monotonic()
+        with self._recent_spoken_lock:
+            for spoken, ts in self._recent_spoken:
+                if now - ts > window:
+                    continue
+                if t_clean in spoken or spoken in t_clean:
+                    return True
+        return False
+
     def listen_for_wake(self):
         """Listen for wake word using speech recognition."""
         if not self.mic_ready: 
@@ -331,6 +360,9 @@ class Voice:
         text = self._transcribe_google(audio)
         if text:
             return text
+        # Skip local fallback if Whisper is still loading, disabled, or not yet cached
+        if self._whisper_loading or self._whisper_disabled:
+            return None
         try:
             return self._transcribe_local(audio, phrase_type=phrase_type)
         except RuntimeError:
@@ -354,7 +386,7 @@ class Voice:
                 audio.get_raw_data(convert_rate=Config.MIC_SAMPLE_RATE, convert_width=2),
                 dtype=np.int16,
             ).astype(np.float32) / 32768.0
-            prompt = "iris aletheia protocol" if phrase_type == "wake" else "iris aletheia protocol command"
+            prompt = "iris" if phrase_type == "wake" else ""
             beam_size = 1 if phrase_type == "wake" else 5
             segments, _ = model.transcribe(
                 samples,
