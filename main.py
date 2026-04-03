@@ -401,8 +401,8 @@ def main() -> None:
     finally:
         farewell = _generate_farewell(self_model)
         console.print(f"\n[bold yellow]Exiting:[/bold yellow] {farewell}")
-        _wait_for_voice_idle(voice)
         voice.speak(farewell)
+        _wait_for_voice_idle(voice)
 
         console.print("\n[bold cyan]IRIS:[/bold cyan] Terminating. Finalizing memory...")
 
