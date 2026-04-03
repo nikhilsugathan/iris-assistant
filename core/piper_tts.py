@@ -21,6 +21,8 @@ class PiperTTSEngine:
         self.piper_exe = piper_exe
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
+        self._playback_lock = threading.Lock()
+        self._active_stream = None
         self._sd = None
         self._np = None
 
@@ -49,6 +51,12 @@ class PiperTTSEngine:
     def stop(self) -> None:
         """Signal the engine to stop current playback."""
         self._stop_event.set()
+        stream = self._active_stream
+        if stream is not None:
+            try:
+                stream.abort()
+            except Exception:
+                pass
         if self._sd is not None:
             try:
                 self._sd.stop()
@@ -87,9 +95,48 @@ class PiperTTSEngine:
         return self._sd, self._np
 
     def _play_wav_bytes(self, raw_bytes: bytes, sd, np) -> None:
-        """Play raw PCM bytes via sounddevice."""
+        """Play raw PCM bytes via an owned OutputStream with stop checks."""
         if self._stop_event.is_set():
             return
+
         audio_array = np.frombuffer(raw_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-        sd.play(audio_array, samplerate=self.SAMPLE_RATE)
-        sd.wait()
+        target_rate = self.SAMPLE_RATE
+
+        try:
+            from config import Config
+            import scipy.signal
+
+            target_rate = int(getattr(Config, "TTS_OUTPUT_SAMPLE_RATE", self.SAMPLE_RATE))
+            if target_rate != self.SAMPLE_RATE:
+                audio_array = scipy.signal.resample_poly(
+                    audio_array, target_rate, self.SAMPLE_RATE
+                ).astype(np.float32, copy=False)
+        except Exception:
+            target_rate = self.SAMPLE_RATE
+
+        with self._playback_lock:
+            if self._stop_event.is_set():
+                return
+
+            stream = sd.OutputStream(
+                samplerate=target_rate,
+                channels=1,
+                dtype="float32",
+            )
+            self._active_stream = stream
+
+            try:
+                stream.start()
+                chunk_size = 2048
+                for start in range(0, len(audio_array), chunk_size):
+                    if self._stop_event.is_set():
+                        break
+                    chunk = audio_array[start:start + chunk_size].reshape(-1, 1)
+                    stream.write(chunk)
+            finally:
+                self._active_stream = None
+                try:
+                    stream.stop()
+                    stream.close()
+                except Exception:
+                    pass
