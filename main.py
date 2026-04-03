@@ -17,6 +17,7 @@ import random
 import re
 import time
 import sys
+import threading
 import psutil
 from datetime import datetime
 
@@ -257,7 +258,7 @@ def _wait_for_engine(brain: Brain, timeout: int = 30) -> bool:
     return brain.llm is not None
 
 
-def _wait_for_voice_idle(voice, timeout: float = 3.0) -> None:
+def _wait_for_voice_idle(voice, timeout: float = 2.5) -> None:
     """Wait for any in-progress speech to finish, with a hard timeout."""
     import time
     deadline = time.monotonic() + timeout
@@ -270,27 +271,45 @@ def _wait_for_voice_idle(voice, timeout: float = 3.0) -> None:
         time.sleep(0.05)
 
 
-def _run_session_learning(autonomist, log_path: str) -> None:
-    """Run session learning — called from a daemon thread, never on main thread."""
+def _run_session_learning(autonomist, log_path: str, learn_error: list) -> None:
+    """Run session learning on a daemon thread and capture errors."""
     try:
         autonomist.learn_from_session(log_path)
-    except Exception:
-        pass
+    except Exception as e:
+        learn_error.append(e)
 
 
-def _finalize_session(logger) -> None:
-    """Finalize the session logger — called from a daemon thread."""
+def _finalize_session(autonomist, logger) -> None:
+    """Finalize the session and bound shutdown learning."""
     try:
         logger.finalize()
-    except Exception:
-        pass
+    except Exception as e:
+        console.print(f"[dim yellow]Cleanup error: {e}[/dim yellow]")
+        return
+
+    learn_error = []
+    learning_thread = threading.Thread(
+        target=lambda: _run_session_learning(autonomist, logger.filename, learn_error),
+        daemon=True,
+        name="iris-shutdown-learning",
+    )
+    learning_thread.start()
+    learning_thread.join(timeout=1.5)
+
+    if learning_thread.is_alive():
+        console.print("[dim yellow]Skipping slow shutdown learning to avoid exit stall.[/dim yellow]")
+    elif learn_error:
+        console.print(f"[dim yellow]Cleanup error: {learn_error[0]}[/dim yellow]")
 
 
 def _force_exit(code: int = 0) -> None:
     """Hard exit after cleanup — ensures the process always terminates."""
-    import os as _os
-    _os.kill(_os.getpid(), 0)   # verify process is still alive
-    sys.exit(code)
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+    os._exit(code)
 
 
 def main() -> None:
@@ -391,15 +410,32 @@ def main() -> None:
                         )
                         if should_exit: break
 
+                    missed_follow_ups = 0
                     for _ in range(5):
-                        follow_up = voice.listen_for_command()
-                        if not follow_up or voice.should_ignore_transcript(follow_up) or any(w in follow_up.lower() for w in ["stop", "thanks", "bye"]):
+                        if voice.is_speaking():
+                            follow_up = voice.listen_for_interrupt()
+                        else:
+                            follow_up = voice.listen_for_command(timeout=4.0, phrase_time_limit=5.0)
+
+                        if not follow_up or voice.should_ignore_transcript(follow_up):
+                            if not voice.is_speaking():
+                                missed_follow_ups += 1
+                                if missed_follow_ups >= 2:
+                                    break
+                            continue
+
+                        if any(w in follow_up.lower() for w in ["stop", "thanks", "bye"]):
                             break
+
+                        if voice.is_speaking():
+                            voice.stop_speaking()
+
                         _, should_exit = handle_user_input(
                             follow_up, voice, autocorrect, executor, copilot,
                             brain, self_model, dialog_manager, council, diagnostics,
                             logger, researcher, autonomist, evolution, voice_mode=True
                         )
+                        missed_follow_ups = 0
                         if should_exit: break
                     if should_exit: break
 
@@ -419,19 +455,8 @@ def main() -> None:
 
         console.print("\n[bold cyan]IRIS:[/bold cyan] Terminating. Finalizing memory...")
 
-        import threading as _threading
-        t = _threading.Thread(
-            target=lambda: (_finalize_session(logger),
-                            _run_session_learning(autonomist, logger.filename)),
-            daemon=True,
-            name="iris-shutdown-cleanup",
-        )
-        t.start()
-        t.join(timeout=5)
-        if t.is_alive():
-            console.print("[dim yellow]Cleanup timed out — exiting anyway.[/dim yellow]")
-
-        sys.exit(0)
+        _finalize_session(autonomist, logger)
+        _force_exit(0)
 
 
 if __name__ == "__main__":

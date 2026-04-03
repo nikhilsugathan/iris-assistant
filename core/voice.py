@@ -347,25 +347,54 @@ class Voice:
                 return True
         return False
 
-    def listen_for_wake(self):
+    def listen_for_wake(self, timeout=None, phrase_time_limit=None):
         """Listen for wake word using speech recognition."""
         if not self.mic_ready: 
             import time; time.sleep(0.5); return None
         try:
             self.recognizer.energy_threshold = Config.WAKE_RMS_THRESHOLD
             with self.mic as source:
-                audio = self.recognizer.listen(source, timeout=4, phrase_time_limit=4)
+                audio = self.recognizer.listen(
+                    source,
+                    timeout=4 if timeout is None else timeout,
+                    phrase_time_limit=4 if phrase_time_limit is None else phrase_time_limit,
+                )
             return self._transcribe_audio(audio, phrase_type="wake")
         except Exception:
             return None
 
-    def listen_for_command(self):
+    def listen_for_command(self, timeout=None, phrase_time_limit=None):
         """Listen for a follow-up command."""
         if not self.mic_ready: return None
         try:
             self.recognizer.energy_threshold = Config.COMMAND_RMS_THRESHOLD
             with self.mic as source:
-                audio = self.recognizer.listen(source, timeout=5, phrase_time_limit=7)
+                audio = self.recognizer.listen(
+                    source,
+                    timeout=5 if timeout is None else timeout,
+                    phrase_time_limit=7 if phrase_time_limit is None else phrase_time_limit,
+                )
+            return self._transcribe_audio(audio, phrase_type="command")
+        except Exception:
+            return None
+        finally:
+            self.recognizer.energy_threshold = Config.WAKE_RMS_THRESHOLD
+
+    def listen_for_interrupt(self, timeout=None, phrase_time_limit=None):
+        """Listen briefly for a barge-in phrase while IRIS is speaking."""
+        if not self.mic_ready:
+            return None
+        try:
+            self.recognizer.energy_threshold = min(
+                Config.WAKE_RMS_THRESHOLD,
+                Config.COMMAND_RMS_THRESHOLD,
+            )
+            with self.mic as source:
+                audio = self.recognizer.listen(
+                    source,
+                    timeout=1.0 if timeout is None else timeout,
+                    phrase_time_limit=2.2 if phrase_time_limit is None else phrase_time_limit,
+                )
             return self._transcribe_audio(audio, phrase_type="command")
         except Exception:
             return None
