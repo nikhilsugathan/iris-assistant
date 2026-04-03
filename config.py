@@ -14,7 +14,7 @@ class _Config:
     # ── IDENTITY & BRANDING ──────────────────────────────────
     PUBLIC_NAME     = os.getenv("IRIS_PUBLIC_NAME", "Iris")
     SYSTEM_NAME     = os.getenv("IRIS_SYSTEM_NAME", "IRIS")
-    INNER_CODENAME  = "Aletheia"
+    INNER_CODENAME  = os.getenv("IRIS_INNER_CODENAME", "Aletheia")
     COUNCIL_NAME    = os.getenv("IRIS_COUNCIL_NAME", "Aletheia Council")
     SYSTEM_MOTTO    = "Intelligence. Redefined."
     VERSION         = "5.2.5-STABLE"
@@ -26,11 +26,11 @@ class _Config:
     PIPER_MODEL_PATH   = os.getenv("PIPER_MODEL_PATH", "")
     PIPER_EXE_PATH     = os.getenv("PIPER_EXE_PATH", "piper")
     PIPER_TTS_WARMUP   = os.getenv("PIPER_TTS_WARMUP", "false").lower() == "true"
-    WAKE_STT_PRIORITY  = os.getenv("WAKE_STT_PRIORITY", "cloud_first").lower()
+    WAKE_STT_PRIORITY  = os.getenv("WAKE_STT_PRIORITY", "local_first").lower()
     STT_LANGUAGE       = os.getenv("STT_LANGUAGE", "en-US")
     LOCAL_WHISPER_MODEL = os.getenv("LOCAL_WHISPER_MODEL", "base")
-    LOCAL_WHISPER_DEVICE = os.getenv("LOCAL_WHISPER_DEVICE", "cpu")
-    LOCAL_WHISPER_COMPUTE_TYPE = os.getenv("LOCAL_WHISPER_COMPUTE_TYPE", "int8")
+    LOCAL_WHISPER_DEVICE = os.getenv("LOCAL_WHISPER_DEVICE", "cuda")
+    LOCAL_WHISPER_COMPUTE_TYPE = os.getenv("LOCAL_WHISPER_COMPUTE_TYPE", "float16")
     LOCAL_WHISPER_LANGUAGE_HINT = os.getenv("LOCAL_WHISPER_LANGUAGE_HINT", "en")
     LOCAL_WHISPER_CACHE_DIR = os.getenv(
         "LOCAL_WHISPER_CACHE_DIR",
@@ -44,8 +44,8 @@ class _Config:
 
     # ── C++ LLM ENGINE ───────────────────────────────────────
     LOCAL_MODEL_PATH = os.getenv("LOCAL_MODEL_PATH", "D:/IRIS/models/DeepSeek-R1-Distill-Llama-8B-Q4_K_M.gguf")
-    N_GPU_LAYERS     = 32
-    N_CTX            = 4096
+    N_GPU_LAYERS     = int(os.getenv("N_GPU_LAYERS", "32"))
+    N_CTX            = int(os.getenv("N_CTX", "4096"))
     USE_FLASH_ATTN   = os.getenv("USE_FLASH_ATTN", "true").lower() == "true"
 
     # ── AI BACKENDS ──────────────────────────────────────────
@@ -56,10 +56,10 @@ class _Config:
     OLLAMA_BASE_URL    = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
     # ── MODEL NAMES ──────────────────────────────────────────
-    GROQ_MODEL         = "llama-3.3-70b-versatile"
-    GEMINI_MODEL       = "gemini-2.0-flash"
-    CLAUDE_MODEL       = "claude-3-5-sonnet-20241022"
-    PERPLEXITY_MODEL   = "llama-3.1-sonar-large-128k-online"
+    GROQ_MODEL         = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    GEMINI_MODEL       = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+    CLAUDE_MODEL       = os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet-20241022")
+    PERPLEXITY_MODEL   = os.getenv("PERPLEXITY_MODEL", "llama-3.1-sonar-large-128k-online")
     OLLAMA_MODEL_FAST  = "llama3.2:3b"
     OLLAMA_MODEL_SMART = "deepseek-r1:8b"
 
@@ -73,9 +73,12 @@ class _Config:
 
     # ── AUDIO GATES ──────────────────────────────────────────
     WAKE_WORDS            = ["iris"]
-    WAKE_RMS_THRESHOLD    = 400
-    COMMAND_RMS_THRESHOLD = 550
+    WAKE_RMS_THRESHOLD    = int(os.getenv("WAKE_RMS_THRESHOLD", "400"))
+    COMMAND_RMS_THRESHOLD = int(os.getenv("COMMAND_RMS_THRESHOLD", "550"))
     MIC_SAMPLE_RATE       = int(os.getenv("MIC_SAMPLE_RATE", "16000"))
+    TTS_OUTPUT_SAMPLE_RATE = int(os.getenv("TTS_OUTPUT_SAMPLE_RATE", "48000"))
+    PUBLIC_WAKE_WORD       = os.getenv("PUBLIC_WAKE_WORD", "iris").strip().lower()
+    ADMIN_WAKE_WORD        = os.getenv("ADMIN_WAKE_WORD", "aletheia").strip().lower()
 
     # ── SECURITY & ROUTING ───────────────────────────────────
     WEB_KEYWORDS = ["search", "lookup", "find out", "check the web", "current weather",
