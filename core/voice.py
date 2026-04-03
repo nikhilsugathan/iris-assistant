@@ -103,6 +103,11 @@ class Voice:
                 self.recognizer.energy_threshold, Config.WAKE_RMS_THRESHOLD
             )
             self.mic_ready = True
+            self._debug_trace(
+                "mic_init",
+                configured_gate=Config.WAKE_RMS_THRESHOLD,
+                actual_threshold=round(float(self.recognizer.energy_threshold), 2),
+            )
         except Exception as e:
             logger.error(f"Microphone init failed: {e}")
             self.mic_ready = False
@@ -423,6 +428,14 @@ class Voice:
             import time; time.sleep(0.5); return None
         try:
             self.recognizer.energy_threshold = Config.WAKE_RMS_THRESHOLD
+            self._debug_trace(
+                "listen_start",
+                source="wake",
+                configured_gate=Config.WAKE_RMS_THRESHOLD,
+                actual_threshold=round(float(self.recognizer.energy_threshold), 2),
+                timeout=4 if timeout is None else timeout,
+                phrase_time_limit=4 if phrase_time_limit is None else phrase_time_limit,
+            )
             with self.mic as source:
                 audio = self.recognizer.listen(
                     source,
@@ -438,6 +451,14 @@ class Voice:
         if not self.mic_ready: return None
         try:
             self.recognizer.energy_threshold = Config.COMMAND_RMS_THRESHOLD
+            self._debug_trace(
+                "listen_start",
+                source="command",
+                configured_gate=Config.COMMAND_RMS_THRESHOLD,
+                actual_threshold=round(float(self.recognizer.energy_threshold), 2),
+                timeout=5 if timeout is None else timeout,
+                phrase_time_limit=7 if phrase_time_limit is None else phrase_time_limit,
+            )
             with self.mic as source:
                 audio = self.recognizer.listen(
                     source,
@@ -458,6 +479,14 @@ class Voice:
             self.recognizer.energy_threshold = min(
                 Config.WAKE_RMS_THRESHOLD,
                 Config.COMMAND_RMS_THRESHOLD,
+            )
+            self._debug_trace(
+                "listen_start",
+                source="interrupt",
+                configured_gate=min(Config.WAKE_RMS_THRESHOLD, Config.COMMAND_RMS_THRESHOLD),
+                actual_threshold=round(float(self.recognizer.energy_threshold), 2),
+                timeout=1.0 if timeout is None else timeout,
+                phrase_time_limit=2.2 if phrase_time_limit is None else phrase_time_limit,
             )
             with self.mic as source:
                 audio = self.recognizer.listen(
