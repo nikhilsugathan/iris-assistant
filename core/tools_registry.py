@@ -187,6 +187,35 @@ TOOLS: dict[str, ToolSpec] = {
     ),
 }
 
+# Executor-supported actions that were missing from the registry.
+TOOLS["delete_item"] = ToolSpec(
+    name="delete_item",
+    description="Move a file or folder to the Recycle Bin.",
+    required_fields=("filename",),
+    optional_fields=(),
+    risk="warning",
+)
+TOOLS["play_music"] = ToolSpec(
+    name="play_music",
+    description="Play music via browser (YouTube Music / Spotify).",
+    required_fields=("search_query",),
+    optional_fields=(),
+    risk="normal",
+)
+
+# Explicit tool allowlists - not risk-derived.
+ACTIVE_TOOL_NAMES: frozenset[str] = frozenset({
+    "open_app", "search_web", "play_music",
+    "delete_item",
+    "active_window", "list_windows",
+    "focus_window", "window_state",
+    "focus_mode_start", "focus_mode_status", "focus_mode_stop",
+    "background_status",
+    "unsupported",
+})
+
+ADMIN_TOOL_NAMES: frozenset[str] = frozenset(TOOLS.keys())
+
 
 def tool_names() -> list[str]:
     return sorted(TOOLS.keys())
@@ -194,6 +223,11 @@ def tool_names() -> list[str]:
 
 def tool_union_string() -> str:
     return " | ".join(tool_names())
+
+
+def tool_union_for(names: frozenset[str]) -> str:
+    """Pipe-separated action_type union string for a specific allowlist."""
+    return " | ".join(sorted(names))
 
 
 def tool_schema_lines() -> str:
