@@ -519,13 +519,13 @@ class Voice:
                 transcript=text,
             )
             return text
-        if phrase_type == "wake":
+        if priority == "cloud_first":
             self._debug_trace(
                 "transcribe",
                 source=source,
                 phrase_type=phrase_type,
                 priority=priority,
-                engine="google_only_wake_none",
+                engine="google_only_wake_none" if phrase_type == "wake" else "google_only_command_none",
                 transcript="",
             )
             return None
