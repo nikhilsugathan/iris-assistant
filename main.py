@@ -118,11 +118,13 @@ def _stream_reasoning_response(user_input, voice, brain, self_model, decision, c
         sentences, speech_buffer = _extract_complete_sentences(speech_buffer)
         for sentence in sentences:
             voice.speak(sentence, interrupt=not speech_started)
+            voice.record_spoken(sentence)
             speech_started = True
 
     final_response = "".join(response_parts).strip()
     if speech_buffer.strip():
         voice.speak(speech_buffer.strip(), interrupt=not speech_started)
+        voice.record_spoken(speech_buffer.strip())
         speech_started = True
 
     console.print("\n")
@@ -186,12 +188,14 @@ def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, 
             resp = _generate_greeting(admin_unlocked=True)
             console.print("\n[bold red][🔒 ROOT ACCESS GRANTED][/bold red]")
             voice.speak(resp)
+            voice.record_spoken(resp)
         return "UNLOCKED", False
     elif lowered.strip() in ["lock protocol", "revert to iris"]:
         self_model.admin_unlocked = False
         resp = _generate_greeting(admin_unlocked=False)
         console.print("\n[bold green][🔒 ROOT ACCESS REVOKED][/bold green]")
         voice.speak(resp)
+        voice.record_spoken(resp)
         return "LOCKED", False
 
     corrected, _ = autocorrect.correct_input(user_input)
@@ -240,6 +244,7 @@ def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, 
         # Print immediately so text appears before audio starts
         console.print(f"\n[bold {label_color}]{persona_label}:[/bold {label_color}] {response}\n")
         voice.speak(response)
+        voice.record_spoken(response)
 
     return response, False
 
@@ -331,6 +336,7 @@ def main() -> None:
         console.print(f"\n[bold green]⌨️  Text Mode — type your command[/bold green]")
     console.print(f"[bold cyan]IRIS:[/bold cyan] {greeting}")
     voice.speak(greeting)
+    voice.record_spoken(greeting)
 
     try:
         while True:
@@ -356,8 +362,12 @@ def main() -> None:
 
                 heard_text = voice.listen_for_wake()
                 if not heard_text: continue
+                if voice.should_ignore_transcript(heard_text):
+                    continue
 
-                is_wake = any(w.lower() in heard_text.lower() for w in Config.WAKE_WORDS)
+                heard_lower = heard_text.lower()
+                heard_tokens = re.split(r'\W+', heard_lower)
+                is_wake = any(w.lower() in heard_tokens for w in Config.WAKE_WORDS)
                 if is_wake:
                     if voice.is_speaking(): voice.stop_speaking()
                     cleaned = heard_text
@@ -371,6 +381,7 @@ def main() -> None:
                         wake_ack = random.choice(ack_pool)
                         console.print(f"\n[bold {label_color}]{persona_label}:[/bold {label_color}] {wake_ack}\n")
                         voice.speak(wake_ack)
+                        voice.record_spoken(wake_ack)
                     else:
                         _, should_exit = handle_user_input(
                             cleaned, voice, autocorrect, executor, copilot,
@@ -381,7 +392,7 @@ def main() -> None:
 
                     for _ in range(5):
                         follow_up = voice.listen_for_command()
-                        if not follow_up or any(w in follow_up.lower() for w in ["stop", "thanks", "bye"]):
+                        if not follow_up or voice.should_ignore_transcript(follow_up) or any(w in follow_up.lower() for w in ["stop", "thanks", "bye"]):
                             break
                         _, should_exit = handle_user_input(
                             follow_up, voice, autocorrect, executor, copilot,
@@ -402,6 +413,7 @@ def main() -> None:
         farewell = _generate_farewell(self_model)
         console.print(f"\n[bold yellow]Exiting:[/bold yellow] {farewell}")
         voice.speak(farewell)
+        voice.record_spoken(farewell)
         _wait_for_voice_idle(voice)
 
         console.print("\n[bold cyan]IRIS:[/bold cyan] Terminating. Finalizing memory...")

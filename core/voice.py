@@ -5,6 +5,7 @@ import threading
 import tempfile
 import queue
 import re
+import collections
 import numpy as np
 import speech_recognition as sr
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "hide")
@@ -38,7 +39,9 @@ class Voice:
         self._whisper_loading = False
         self._whisper_ready_announced = False
         self._whisper_download_announced = False
-        
+        self._recent_spoken: collections.deque = collections.deque(maxlen=10)
+        self._recent_spoken_lock = threading.Lock()
+
         self._tts_lock = threading.Lock()
         self._active_stop_event = None
         self._utterance_queue = queue.Queue()
@@ -296,6 +299,49 @@ class Voice:
         except Exception as e:
             logger.warning(f"Local TTS warm-up failed: {e}")
 
+    def _normalize_text(self, text: str) -> str:
+        text = re.sub(r"[^a-z0-9\s]", " ", (text or "").lower())
+        return re.sub(r"\s+", " ", text).strip()
+
+    def record_spoken(self, text: str) -> None:
+        """Record a phrase IRIS just spoke so it can be suppressed from STT input."""
+        normalized = self._normalize_text(text)
+        if not normalized:
+            return
+        with self._recent_spoken_lock:
+            self._recent_spoken.append((time.monotonic(), normalized))
+
+    def should_ignore_transcript(self, transcript: str) -> bool:
+        normalized = self._normalize_text(transcript)
+        if not normalized:
+            return True
+
+        tokens = normalized.split()
+        if not tokens:
+            return True
+        if len(tokens) == 1 and (len(tokens[0]) <= 2 or tokens[0] in {"uh", "um", "hmm"}):
+            return True
+
+        now = time.monotonic()
+        with self._recent_spoken_lock:
+            recent_spoken = list(self._recent_spoken)
+
+        for spoken_at, spoken in recent_spoken:
+            if now - spoken_at > 12.0:
+                continue
+            if normalized == spoken:
+                return True
+            if len(normalized) >= 18 and normalized in spoken:
+                return True
+            if len(spoken) >= 18 and spoken in normalized:
+                return True
+
+            spoken_tokens = set(spoken.split())
+            overlap = sum(1 for token in tokens if token in spoken_tokens)
+            if len(tokens) >= 4 and overlap / max(len(tokens), 1) >= 0.75:
+                return True
+        return False
+
     def listen_for_wake(self):
         """Listen for wake word using speech recognition."""
         if not self.mic_ready: 
@@ -331,6 +377,9 @@ class Voice:
         text = self._transcribe_google(audio)
         if text:
             return text
+        # In cloud_first mode, never trigger a late Whisper load/activation.
+        if self._whisper_loading or self._whisper_disabled or self._whisper_model is None:
+            return None
         try:
             return self._transcribe_local(audio, phrase_type=phrase_type)
         except RuntimeError:
@@ -354,7 +403,7 @@ class Voice:
                 audio.get_raw_data(convert_rate=Config.MIC_SAMPLE_RATE, convert_width=2),
                 dtype=np.int16,
             ).astype(np.float32) / 32768.0
-            prompt = "iris aletheia protocol" if phrase_type == "wake" else "iris aletheia protocol command"
+            prompt = "iris" if phrase_type == "wake" else ""
             beam_size = 1 if phrase_type == "wake" else 5
             segments, _ = model.transcribe(
                 samples,
