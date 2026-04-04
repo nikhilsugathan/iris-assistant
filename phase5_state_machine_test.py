@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib
+import re
 import sys
 import types
 import unittest
@@ -34,6 +35,9 @@ class _DummySelfModel:
 
     def summary(self) -> str:
         return "Aletheia" if self.admin_unlocked else "IRIS"
+
+    def note_response(self, response: str, source: str = "") -> None:
+        return None
 
 
 ROOT = Path(__file__).resolve().parent
@@ -98,6 +102,16 @@ def _make_brain() -> MagicMock:
     brain._call_groq_simple.return_value = ""
     brain.memory = MagicMock()
     brain.memory.conversation = ["stale"]
+    def _postprocess(text: str) -> str:
+        cleaned = re.sub(r"(?is)<think\b[^>]*>.*?(?:</think>|$)", " ", text or "")
+        cleaned = re.sub(r"(?i)</?think\b[^>]*>?", " ", cleaned)
+        for sentence in (
+            "Hello! How can I assist you today?",
+            "Please let me know your task so I can help you effectively.",
+        ):
+            cleaned = re.sub(re.escape(sentence), " ", cleaned, flags=re.IGNORECASE)
+        return re.sub(r"\s+", " ", cleaned).strip()
+    brain._postprocess.side_effect = _postprocess
     return brain
 
 
@@ -226,6 +240,33 @@ class TestPhase5StateMachine(unittest.TestCase):
         self.assertEqual(main._extract_interrupt_followup("omega, stop current playback"), "current playback")
         self.assertEqual(main._extract_interrupt_followup("phoenix: hold on refresh this"), "refresh this")
         self.assertEqual(main._extract_interrupt_followup("iris wait open notes"), "")
+
+    def test_stream_reasoning_response_falls_back_when_model_streams_only_boilerplate(self):
+        voice = _make_voice()
+        brain = _make_brain()
+        brain.stream_think.return_value = iter(
+            [
+                "Hello! How can I assist you today?",
+                " Please let me know your task so I can help you effectively.<think>hidden",
+            ]
+        )
+        self_model = _DummySelfModel(admin_unlocked=False)
+        decision = types.SimpleNamespace(mode="chat")
+        logger = MagicMock()
+
+        result = main._stream_reasoning_response(
+            "audible",
+            voice,
+            brain,
+            self_model,
+            decision,
+            None,
+            logger,
+        )
+
+        self.assertEqual(result, "What do you need?")
+        voice.speak.assert_called_with("What do you need?", interrupt=True)
+        voice.record_spoken.assert_called_with("What do you need?")
 
 
 if __name__ == "__main__":

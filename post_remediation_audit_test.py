@@ -4,6 +4,7 @@ import sys
 import tempfile
 import types
 import unittest
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -139,6 +140,41 @@ class TestPostRemediationAudit(unittest.TestCase):
             self.assertEqual(memory._sanitize_content("phoenix, open file"), "open file")
             self.assertEqual(memory._sanitize_content("hey omega! run scan"), "run scan")
             self.assertEqual(memory._sanitize_content("phoenix."), "")
+
+    def test_memory_drops_generic_assistant_boilerplate_on_load(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target = Path(temp_dir) / "memory.json"
+            target.write_text(
+                json.dumps(
+                    {
+                        "conversation": [
+                            {"role": "user", "content": "audible"},
+                            {
+                                "role": "assistant",
+                                "content": "Hello! How can I assist you today? Please let me know your task so I can help you effectively.<think>secret</think>",
+                            },
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            memory = Memory(str(target))
+            self.assertEqual(memory.conversation, [{"role": "user", "content": "audible"}])
+
+    def test_postprocess_strips_generic_boilerplate_and_dangling_think_blocks(self):
+        memory = MagicMock()
+        memory.get_context.return_value = []
+        fake_get = MagicMock()
+        fake_get.status_code = 200
+        fake_get.json.return_value = {"models": []}
+        with patch("core.brain.requests.get", return_value=fake_get):
+            brain = Brain(memory)
+
+        text = (
+            "Hello! How can I assist you today? "
+            "Please let me know your task so I can help you effectively.<think>secret plan"
+        )
+        self.assertEqual(brain._postprocess(text), "")
 
     def test_approve_tool_rescans_pending_code_before_write(self):
         engine = EvolutionEngine(brain=MagicMock(), researcher=None)

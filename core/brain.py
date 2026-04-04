@@ -58,6 +58,11 @@ FS Honesty Rules (non-negotiable):
 - If a filesystem action fails, report the actual system error, not a generated one.
 """
 
+_GENERIC_ASSISTANT_BOILERPLATE = (
+    "Hello! How can I assist you today?",
+    "Please let me know your task so I can help you effectively.",
+)
+
 class Brain:
     def __init__(self, memory):
         self.memory = memory
@@ -148,6 +153,8 @@ class Brain:
 
         if response:
             clean_response = self._postprocess(response)
+            if not clean_response:
+                return self._fallback_response(admin_unlocked=admin_unlocked, voice_mode=voice_mode)
             self._save_to_memory(user_input, clean_response, "brain")
             return clean_response
 
@@ -200,6 +207,13 @@ class Brain:
         final_response = self._postprocess("".join(streamed))
         if final_response:
             self._save_to_memory(user_input, final_response, "brain")
+        else:
+            yield self._fallback_response(admin_unlocked=admin_unlocked, voice_mode=voice_mode)
+
+    def _fallback_response(self, admin_unlocked: bool = False, voice_mode: bool = False) -> str:
+        if admin_unlocked:
+            return "State the task."
+        return "What do you need?" if voice_mode else "What exactly do you need?"
 
     def _ensemble_think(self, user_input: str, query_type: str, settings: dict, admin_unlocked: bool = False) -> str:
         """Calls APIs in parallel and selects the best answer."""
@@ -497,13 +511,18 @@ class Brain:
         return settings
 
     def _postprocess(self, text: str) -> str:
-        # Strip DeepSeek-R1 chain-of-thought reasoning blocks
-        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip()
+        text = text or ""
+        # Strip complete or dangling chain-of-thought reasoning blocks.
+        text = re.sub(r"(?is)<think\b[^>]*>.*?(?:</think>|$)", " ", text)
+        text = re.sub(r"(?i)</?think\b[^>]*>?", " ", text)
         # Strip generic filler openers
         text = re.sub(
             r"^(As an AI|I'm happy to help|Certainly|Sure,|Of course,|Absolutely,|Great!|Of course!),?\s*",
             "", text, flags=re.IGNORECASE
-        ).strip()
+        )
+        for sentence in _GENERIC_ASSISTANT_BOILERPLATE:
+            text = re.sub(re.escape(sentence), " ", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s+", " ", text).strip()
         return text
 
     def _rewrite_generic_response(self, text: str) -> str:

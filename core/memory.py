@@ -14,6 +14,11 @@ from datetime import datetime
 from typing import List, Dict
 from config import Config
 
+_GENERIC_ASSISTANT_BOILERPLATE = (
+    "how can i assist you today",
+    "please let me know your task so i can help you effectively",
+)
+
 class Memory:
     def __init__(self, memory_file: str):
         if os.path.isabs(memory_file):
@@ -61,6 +66,8 @@ class Memory:
         # Work backwards to keep only the LATEST unique status updates
         for entry in reversed(self.conversation):
             content = entry.get("content", "")
+            if self._should_drop_entry(entry):
+                continue
             # Only deduplicate short system-local responses (battery, name, etc.)
             if entry.get("source") in ["system-local", "desktop-local"] and len(content) < 100:
                 if content not in seen_content:
@@ -70,6 +77,14 @@ class Memory:
                 cleaned.append(entry)
         
         self.conversation = list(reversed(cleaned))
+
+    def _should_drop_entry(self, entry: Dict) -> bool:
+        if entry.get("role") != "assistant":
+            return False
+        normalized = re.sub(r"(?is)<think\b[^>]*>.*?(?:</think>|$)", " ", entry.get("content", "") or "")
+        normalized = re.sub(r"(?i)</?think\b[^>]*>?", " ", normalized)
+        normalized = re.sub(r"\s+", " ", normalized).strip().lower()
+        return all(fragment in normalized for fragment in _GENERIC_ASSISTANT_BOILERPLATE)
 
     def _sanitize_content(self, content: str) -> str:
         """Strip wake-word-only turns, wake-word prefixes, and identity-probing fragments."""
@@ -138,6 +153,8 @@ class Memory:
             "timestamp": datetime.now().isoformat()
         }
         if source: entry["source"] = source
+        if self._should_drop_entry(entry):
+            return
 
         self.conversation.append(entry)
         

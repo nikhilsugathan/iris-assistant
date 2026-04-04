@@ -260,6 +260,9 @@ def _generate_farewell(self_model: SelfModel) -> str:
     pool = _FAREWELLS_ADMIN if admin else _FAREWELLS_PUBLIC
     return random.choice(pool)
 
+def _fallback_turn_prompt(self_model: SelfModel) -> str:
+    return "State the task." if getattr(self_model, "admin_unlocked", False) else "What do you need?"
+
 def _extract_complete_sentences(buffer: str):
     sentences = []
     remaining = buffer
@@ -289,7 +292,9 @@ def _drain_speech_chunks(pending_chunks: list[str], voice: Voice, speech_started
 def _stream_reasoning_response(user_input, voice, brain, self_model, decision, council_packet, logger):
     persona_label = "Aletheia" if self_model.admin_unlocked else "IRIS"
     label_color = "red" if self_model.admin_unlocked else "cyan"
-    response_parts = []
+    raw_response = ""
+    rendered_response = ""
+    speech_synced_response = ""
     speech_buffer = ""
     speech_started = False
     pending_speech_chunks = []
@@ -303,9 +308,17 @@ def _stream_reasoning_response(user_input, voice, brain, self_model, decision, c
     ):
         if not chunk:
             continue
-        response_parts.append(chunk)
-        console.print(chunk, end="", markup=False, highlight=False)
-        speech_buffer += chunk
+        raw_response += chunk
+        cleaned_response = brain._postprocess(raw_response)
+        if cleaned_response:
+            delta = cleaned_response[len(rendered_response):] if cleaned_response.startswith(rendered_response) else cleaned_response
+            if delta:
+                console.print(delta, end="", markup=False, highlight=False)
+                rendered_response = cleaned_response
+            speech_delta = cleaned_response[len(speech_synced_response):] if cleaned_response.startswith(speech_synced_response) else cleaned_response
+            if speech_delta:
+                speech_buffer += speech_delta
+                speech_synced_response = cleaned_response
         sentences, speech_buffer = _extract_complete_sentences(speech_buffer)
         for sentence in sentences:
             pending_speech_chunks.append(sentence)
@@ -317,7 +330,20 @@ def _stream_reasoning_response(user_input, voice, brain, self_model, decision, c
             if should_flush:
                 speech_started = _drain_speech_chunks(pending_speech_chunks, voice, speech_started)
 
-    final_response = "".join(response_parts).strip()
+    final_response = brain._postprocess(raw_response).strip()
+    if not final_response:
+        final_response = _fallback_turn_prompt(self_model)
+
+    if final_response:
+        final_delta = final_response[len(rendered_response):] if final_response.startswith(rendered_response) else final_response
+        if final_delta:
+            console.print(final_delta, end="", markup=False, highlight=False)
+            rendered_response = final_response
+        final_speech_delta = final_response[len(speech_synced_response):] if final_response.startswith(speech_synced_response) else final_response
+        if final_speech_delta:
+            speech_buffer += final_speech_delta
+            speech_synced_response = final_response
+
     if speech_buffer.strip():
         pending_speech_chunks.append(speech_buffer.strip())
         _voice_debug(
