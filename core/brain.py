@@ -62,7 +62,6 @@ class Brain:
     def __init__(self, memory):
         self.memory = memory
         self.llm = None
-        self._active_admin_unlocked: bool = False
         self._call_ctx = threading.local()
         self.available_apis = self._detect_apis()
         self._update_priority()
@@ -204,12 +203,11 @@ class Brain:
 
     def _ensemble_think(self, user_input: str, query_type: str, settings: dict, admin_unlocked: bool = False) -> str:
         """Calls APIs in parallel and selects the best answer."""
-        self._active_admin_unlocked = admin_unlocked
         apis = self._get_apis_for_query(query_type)[:3]
         responses: Dict[str, str] = {}
 
         with ThreadPoolExecutor(max_workers=len(apis)) as executor:
-            futures = {executor.submit(self._call_api_with_settings, api, user_input, settings): api for api in apis}
+            futures = {executor.submit(self._call_api_with_settings, api, user_input, settings, admin_unlocked): api for api in apis}
             for future in futures:
                 api = futures[future]
                 try:
@@ -219,17 +217,16 @@ class Brain:
 
         if not responses: return "Cognitive failure."
         judge_prompt = f"Question: {user_input}\nAnswers: {responses}\nPick the best response. WINNER: "
-        judge_res = self._call_api_with_settings("groq", judge_prompt, settings)
+        judge_res = self._call_api_with_settings("groq", judge_prompt, settings, admin_unlocked)
         if judge_res and "WINNER:" in judge_res:
             return judge_res.split("WINNER:")[-1].strip()
         return next(iter(responses.values()))
 
     def _smart_route(self, user_input, query_type, settings: dict, admin_unlocked: bool = False):
-        self._active_admin_unlocked = admin_unlocked
         order = self._get_apis_for_query(query_type)
         for api in order:
             if api not in self.available_apis: continue
-            resp = self._call_api_with_settings(api, user_input, settings)
+            resp = self._call_api_with_settings(api, user_input, settings, admin_unlocked)
             if resp: return resp
         return None
 
@@ -237,12 +234,11 @@ class Brain:
         if getattr(Config, "USE_ENSEMBLE", False):
             return None
 
-        self._active_admin_unlocked = admin_unlocked
         for api in self._get_apis_for_query(query_type):
             if api not in self.available_apis:
                 continue
             if api == "groq":
-                return self._call_groq(user_input, settings, stream=True)
+                return self._call_groq(user_input, settings, admin_unlocked=admin_unlocked, stream=True)
             break
         return None
 
@@ -266,29 +262,33 @@ class Brain:
     def _call_api(self, api, prompt) -> Optional[str]:
         call_ctx = getattr(self, "_call_ctx", None)
         settings = getattr(call_ctx, "settings", None) if call_ctx is not None else None
+        admin_unlocked = getattr(call_ctx, "admin_unlocked", False) if call_ctx is not None else False
         try:
-            if api == "groq": return self._call_groq(prompt, settings)
-            if api == "claude": return self._call_claude(prompt, settings)
-            if api == "gemini": return self._call_gemini(prompt, settings)
-            if api == "perplexity": return self._call_perplexity(prompt, settings)
-            if api == "llama_cpp": return self._call_ollama("llama_cpp", prompt, settings)
-            if "ollama" in api: return self._call_ollama(api, prompt, settings)
+            if api == "groq": return self._call_groq(prompt, settings, admin_unlocked=admin_unlocked)
+            if api == "claude": return self._call_claude(prompt, settings, admin_unlocked=admin_unlocked)
+            if api == "gemini": return self._call_gemini(prompt, settings, admin_unlocked=admin_unlocked)
+            if api == "perplexity": return self._call_perplexity(prompt, settings, admin_unlocked=admin_unlocked)
+            if api == "llama_cpp": return self._call_ollama("llama_cpp", prompt, settings, admin_unlocked=admin_unlocked)
+            if "ollama" in api: return self._call_ollama(api, prompt, settings, admin_unlocked=admin_unlocked)
         except Exception: pass
         return None
 
-    def _call_api_with_settings(self, api, prompt, settings: Optional[dict] = None) -> Optional[str]:
-        previous = getattr(self._call_ctx, "settings", None)
+    def _call_api_with_settings(self, api, prompt, settings: Optional[dict] = None, admin_unlocked: bool = False) -> Optional[str]:
+        previous_settings = getattr(self._call_ctx, "settings", None)
+        previous_unlocked = getattr(self._call_ctx, "admin_unlocked", False)
         self._call_ctx.settings = settings
+        self._call_ctx.admin_unlocked = admin_unlocked
         try:
             return self._call_api(api, prompt)
         finally:
-            self._call_ctx.settings = previous
+            self._call_ctx.settings = previous_settings
+            self._call_ctx.admin_unlocked = previous_unlocked
 
-    def _call_groq(self, prompt, settings: Optional[dict] = None, stream: bool = False):
+    def _call_groq(self, prompt, settings: Optional[dict] = None, admin_unlocked: bool = False, stream: bool = False):
         settings = settings or {}
         payload = {
             "model": Config.GROQ_MODEL,
-            "messages": self._build_msgs(prompt, self._active_admin_unlocked, settings),
+            "messages": self._build_msgs(prompt, admin_unlocked, settings),
             "temperature": settings.get("temperature", 0.9),
             "max_tokens": settings.get("max_tokens", 300),
             "stream": stream,
@@ -350,9 +350,9 @@ class Brain:
             return ""
         return data["choices"][0]["message"]["content"].strip()
 
-    def _call_claude(self, prompt, settings: Optional[dict] = None) -> str:
+    def _call_claude(self, prompt, settings: Optional[dict] = None, admin_unlocked: bool = False) -> str:
         settings = settings or {}
-        messages = self._build_msgs(prompt, self._active_admin_unlocked, settings)
+        messages = self._build_msgs(prompt, admin_unlocked, settings)
         headers = {"x-api-key": Config.CLAUDE_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"}
         payload = {
             "model": Config.CLAUDE_MODEL,
@@ -363,10 +363,10 @@ class Brain:
         resp = requests.post("https://api.anthropic.com/v1/messages", headers=headers, json=payload, timeout=12)
         return resp.json()["content"][0]["text"].strip()
 
-    def _call_gemini(self, prompt, settings: Optional[dict] = None) -> str:
+    def _call_gemini(self, prompt, settings: Optional[dict] = None, admin_unlocked: bool = False) -> str:
         settings = settings or {}
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{Config.GEMINI_MODEL}:generateContent?key={Config.GEMINI_API_KEY}"
-        system_text = self._build_msgs(prompt, self._active_admin_unlocked, settings)[0]["content"]
+        system_text = self._build_msgs(prompt, admin_unlocked, settings)[0]["content"]
         resp = requests.post(
             url,
             json={"contents": [{"parts": [{"text": f"{system_text}\n\nUser: {prompt}"}]}]},
@@ -374,21 +374,21 @@ class Brain:
         )
         return resp.json()['candidates'][0]['content']['parts'][0]['text'].strip()
 
-    def _call_perplexity(self, prompt, settings: Optional[dict] = None) -> str:
+    def _call_perplexity(self, prompt, settings: Optional[dict] = None, admin_unlocked: bool = False) -> str:
         settings = settings or {}
         payload = {
             "model": Config.PERPLEXITY_MODEL,
-            "messages": self._build_msgs(prompt, self._active_admin_unlocked, settings),
+            "messages": self._build_msgs(prompt, admin_unlocked, settings),
         }
         resp = requests.post("https://api.perplexity.ai/chat/completions", headers={"Authorization": f"Bearer {Config.PERPLEXITY_API_KEY}"}, json=payload, timeout=15)
         return resp.json()["choices"][0]["message"]["content"].strip()
 
-    def _call_ollama(self, api_key, prompt, settings: Optional[dict] = None) -> str:
+    def _call_ollama(self, api_key, prompt, settings: Optional[dict] = None, admin_unlocked: bool = False) -> str:
         settings = settings or {}
         if api_key == "llama_cpp":
             if self.llm is None:
                 raise RuntimeError("C++ engine not loaded yet")
-            messages = self._build_msgs(prompt, self._active_admin_unlocked, settings)
+            messages = self._build_msgs(prompt, admin_unlocked, settings)
             response = self.llm.create_chat_completion(
                 messages=messages,
                 max_tokens=settings.get("max_tokens", 1024),
