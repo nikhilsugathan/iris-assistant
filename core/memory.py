@@ -9,6 +9,7 @@ Features:
 
 import json
 import os
+import re
 from datetime import datetime
 from typing import List, Dict
 from config import Config
@@ -87,14 +88,16 @@ class Memory:
             if lowered in (wake, f"hey {wake}"):
                 return ""
 
-        # Strip wake-word prefix from content (e.g. "iris open the file" → "open the file")
+        # Strip wake-word prefix from content
+        # Handles plain space ("iris open file") and punctuated forms ("iris, open file")
         stripped = False
         for wake in sorted(wake_words, key=len, reverse=True):
             if stripped:
                 break
-            for prefix in (f"hey {wake} ", f"{wake} "):
-                if lowered.startswith(prefix):
-                    text = text[len(prefix):]
+            for prefix_base in (f"hey {wake}", wake):
+                m = re.match(rf"^{re.escape(prefix_base)}[,!?.:;\s]\s*", lowered)
+                if m and m.end() < len(lowered):
+                    text = text[m.end():]
                     lowered = text.lower()
                     stripped = True
                     break

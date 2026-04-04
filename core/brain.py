@@ -417,7 +417,7 @@ class Brain:
     def _get_apis_for_query(self, q_type: str) -> List[str]:
         if q_type == "web_search": return ["groq", "gemini", "perplexity"]
         if q_type == "code":       return ["groq", "llama_cpp", "claude"]
-        return ["groq", "gemini", "claude"]
+        return ["groq", "gemini", "claude", "llama_cpp", "ollama_smart"]
 
     def _build_msgs(self, prompt, admin_unlocked: bool = False, settings: Optional[dict] = None):
         settings = settings or {}

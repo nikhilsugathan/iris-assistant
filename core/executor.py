@@ -1187,5 +1187,8 @@ Be specific and practical. No preamble."""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if not getattr(self, "log_file", None):
             self.log_file = os.path.join(Config.PROJECT_ROOT, "iris_actions.log")
-        with open(self.log_file, "a", encoding="utf-8") as f:
-            f.write(f"[{timestamp}] {message}\n")
+        try:
+            with open(self.log_file, "a", encoding="utf-8") as f:
+                f.write(f"[{timestamp}] {message}\n")
+        except OSError:
+            pass
