@@ -124,6 +124,16 @@ TYPO_MAP = {
 }
 
 ALL_EXTENSIONS = list(VALID_EXTENSIONS.keys())
+SKIP_CORRECTION_WORDS = frozenset({
+    "yes", "no", "ok", "okay", "go ahead", "cancel", "stop", "proceed",
+    "confirm", "do it", "sure", "yep", "nope", "override", "abort",
+    "wait", "hold on", "thanks", "thank you", "bye",
+    "authorize protocol aletheia", "lock protocol", "revert to iris",
+})
+FAST_ACTION_PREFIXES = (
+    "open ", "create ", "make ", "delete ", "run ", "launch ", "play ",
+    "search ", "find ", "write ", "rename ", "move ", "copy ",
+)
 
 
 class AutoCorrector:
@@ -132,6 +142,15 @@ class AutoCorrector:
         self.brain = brain
 
     def correct_input(self, text: str) -> tuple:
+        normalized = (text or "").strip()
+        lowered = normalized.lower()
+        if not normalized or len(normalized) < 8:
+            return text, None
+        if lowered in SKIP_CORRECTION_WORDS:
+            return text, None
+        if any(lowered.startswith(prefix) for prefix in FAST_ACTION_PREFIXES) and len(normalized) < 40:
+            return text, None
+
         words = text.split()
         corrected = []
         changes = []

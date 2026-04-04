@@ -239,3 +239,14 @@ def tool_schema_lines() -> str:
         lines.append(f"- {name}: {spec.description} Required: {req}. Optional: {opt}. Risk: {spec.risk}.")
     return "\n".join(lines)
 
+
+def tool_schema_for(names: frozenset[str]) -> str:
+    """Schema lines restricted to a specific allowlist."""
+    lines: list[str] = []
+    for name in sorted(names):
+        spec = TOOLS[name]
+        req = ", ".join(spec.required_fields) if spec.required_fields else "(none)"
+        opt = ", ".join(spec.optional_fields) if spec.optional_fields else "(none)"
+        lines.append(f"- {name}: {spec.description} Required: {req}. Optional: {opt}. Risk: {spec.risk}.")
+    return "\n".join(lines)
+
