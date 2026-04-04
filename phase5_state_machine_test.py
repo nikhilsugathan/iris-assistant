@@ -143,6 +143,25 @@ class TestPhase5StateMachine(unittest.TestCase):
         self.assertEqual(main._strip_active_wake_word("omega open file", admin_model), "open file")
         self.assertEqual(main._strip_active_wake_word("omega open file", public_model), "omega open file")
 
+    def test_wake_aliases_cover_common_stt_mishears(self):
+        original_public = _Config.PUBLIC_WAKE_WORD
+        original_admin = _Config.ADMIN_WAKE_WORD
+        try:
+            _Config.PUBLIC_WAKE_WORD = "iris"
+            _Config.ADMIN_WAKE_WORD = "aletheia"
+            public_model = _DummySelfModel(admin_unlocked=False)
+            admin_model = _DummySelfModel(admin_unlocked=True)
+
+            self.assertTrue(main._matches_active_wake_word("I received can you hear me", public_model))
+            self.assertEqual(main._strip_active_wake_word("I received can you hear me", public_model), "can you hear me")
+            self.assertTrue(main._matches_active_wake_word("irish open file", public_model))
+            self.assertEqual(main._strip_active_wake_word("irish open file", public_model), "open file")
+            self.assertTrue(main._matches_active_wake_word("a lay thea open terminal", admin_model))
+            self.assertEqual(main._strip_active_wake_word("a lay thea open terminal", admin_model), "open terminal")
+        finally:
+            _Config.PUBLIC_WAKE_WORD = original_public
+            _Config.ADMIN_WAKE_WORD = original_admin
+
     def test_exact_exit_routing_terminates_public_and_locks_admin(self):
         voice = _make_voice()
         brain = _make_brain()

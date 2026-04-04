@@ -61,6 +61,10 @@ _WAKE_ACKS_ADMIN  = ["Proceed.", "State the task.", "What's the objective?"]
 _FAREWELLS_PUBLIC = ["Session closed.", "Goodbye.", "Standing down."]
 _FAREWELLS_ADMIN  = ["Aletheia signing off.", "Admin session terminated.", "Root session closed."]
 _SENTENCE_RE = re.compile(r"^\s*(.+?[.!?])(?=(?:\s|$))(.*)$", re.DOTALL)
+_WAKE_ALIAS_MAP = {
+    "iris": ("irish", "heiress", "i received", "i receive"),
+    "aletheia": ("alethea", "alethia", "a lay thea"),
+}
 def _voice_debug(event: str, **fields) -> None:
     if not _VOICE_DEBUG_TRANSCRIPTS:
         return
@@ -138,6 +142,12 @@ def _token_matches_wake_word(token: str, wake_word: str) -> bool:
         return True
     return bool(difflib.get_close_matches(wake_word, [lowered], n=1, cutoff=_wake_match_cutoff(wake_word)))
 
+def _wake_aliases(wake_word: str) -> list[str]:
+    normalized = _normalize_command_text(wake_word)
+    aliases = {normalized}
+    aliases.update(_normalize_command_text(alias) for alias in _WAKE_ALIAS_MAP.get(normalized, ()))
+    return sorted((alias for alias in aliases if alias), key=len, reverse=True)
+
 def _is_interrupt_phrase(text: str) -> bool:
     normalized = _normalize_command_text(text)
     return normalized in {"stop", "wait", "hold on", "hold", "quiet"}
@@ -189,6 +199,11 @@ def _matches_active_wake_word(text: str, self_model: SelfModel) -> bool:
     normalized = _normalize_command_text(text)
     tokens = normalized.split()
     active_wake_word = _admin_wake_word() if getattr(self_model, "admin_unlocked", False) else _public_wake_word()
+    aliases = _wake_aliases(active_wake_word)
+    for alias in aliases:
+        alias_tokens = alias.split()
+        if tokens[:len(alias_tokens)] == alias_tokens:
+            return True
     return any(_token_matches_wake_word(token, active_wake_word) for token in tokens if len(token) >= 3)
 
 def _strip_active_wake_word(text: str, self_model: SelfModel) -> str:
@@ -196,6 +211,11 @@ def _strip_active_wake_word(text: str, self_model: SelfModel) -> str:
         return ""
     active_wake_word = _admin_wake_word() if getattr(self_model, "admin_unlocked", False) else _public_wake_word()
     tokens = re.findall(r"[A-Za-z0-9']+", text)
+    normalized_tokens = [_normalize_command_text(token) for token in tokens]
+    for alias in _wake_aliases(active_wake_word):
+        alias_tokens = alias.split()
+        if normalized_tokens[:len(alias_tokens)] == alias_tokens:
+            return " ".join(tokens[len(alias_tokens):]).strip()
     filtered = []
     removed = False
     for token in tokens:
