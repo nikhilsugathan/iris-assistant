@@ -133,14 +133,23 @@ _PUBLIC_RESTRICTED_ACTIONS = {
 # Actions that require path-safety checks in public mode.
 _PATH_GATED_ACTIONS = {"create_file", "create_folder", "write_to_file", "delete_item"}
 
+# Normalize Windows-style absolute paths consistently even when tests run on Linux CI.
+def _normalize_guard_path(path: str) -> str:
+    expanded = os.path.expandvars((path or "").strip())
+    if not expanded:
+        return ""
+    if re.match(r"^[A-Za-z]:[\\/]", expanded) or expanded.startswith("\\\\"):
+        return expanded.replace("/", "\\").rstrip("\\").lower()
+    return os.path.normcase(os.path.abspath(expanded)).rstrip("\\/").lower()
+
 # Protected system paths blocked for public write/delete actions.
 _PROTECTED_PATH_PREFIXES: tuple = (
-    os.path.normcase(os.path.expandvars(r"C:\Windows")),
-    os.path.normcase(os.path.expandvars(r"C:\Program Files")),
-    os.path.normcase(os.path.expandvars(r"C:\Program Files (x86)")),
-    os.path.normcase(os.path.expandvars(r"C:\ProgramData")),
-    os.path.normcase(os.path.expandvars("%APPDATA%")),
-    os.path.normcase(os.path.expandvars("%LOCALAPPDATA%")),
+    _normalize_guard_path(r"C:\Windows"),
+    _normalize_guard_path(r"C:\Program Files"),
+    _normalize_guard_path(r"C:\Program Files (x86)"),
+    _normalize_guard_path(r"C:\ProgramData"),
+    _normalize_guard_path("%APPDATA%"),
+    _normalize_guard_path("%LOCALAPPDATA%"),
 )
 
 
@@ -187,7 +196,7 @@ class SecurityGuard:
         if not admin_unlocked and action in _PATH_GATED_ACTIONS:
             target = plan.get("filename", "") or plan.get("command", "")
             if target:
-                target_norm = os.path.normcase(os.path.abspath(target))
+                target_norm = _normalize_guard_path(target)
                 for prefix in _PROTECTED_PATH_PREFIXES:
                     if target_norm.startswith(prefix):
                         return BLOCKED, (
