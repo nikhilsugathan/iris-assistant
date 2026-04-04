@@ -61,11 +61,6 @@ _WAKE_ACKS_ADMIN  = ["Proceed.", "State the task.", "What's the objective?"]
 _FAREWELLS_PUBLIC = ["Session closed.", "Goodbye.", "Standing down."]
 _FAREWELLS_ADMIN  = ["Aletheia signing off.", "Admin session terminated.", "Root session closed."]
 _SENTENCE_RE = re.compile(r"^\s*(.+?[.!?])(?=(?:\s|$))(.*)$", re.DOTALL)
-_INTERRUPT_PREFIX_RE = re.compile(
-    r"^\s*(?:(?:iris|aletheia)\s+)?(?:wait|hold on|stop|quiet)\b[\s,.:;-]*(.*)$",
-    re.IGNORECASE,
-)
-
 def _voice_debug(event: str, **fields) -> None:
     if not _VOICE_DEBUG_TRANSCRIPTS:
         return
@@ -180,7 +175,20 @@ def _strip_active_wake_word(text: str, self_model: SelfModel) -> str:
     return " ".join(filtered).strip()
 
 def _extract_interrupt_followup(text: str) -> str:
-    match = _INTERRUPT_PREFIX_RE.match(text or "")
+    wake_words = sorted(
+        {wake for wake in (_public_wake_word(), _admin_wake_word()) if wake},
+        key=len,
+        reverse=True,
+    )
+    wake_prefix = ""
+    if wake_words:
+        alternates = "|".join(re.escape(wake) for wake in wake_words)
+        wake_prefix = rf"(?:(?:{alternates})[\s,.:;-]+)?"
+    interrupt_re = re.compile(
+        rf"^\s*{wake_prefix}(?:wait|hold on|stop|quiet)\b[\s,.:;-]*(.*)$",
+        re.IGNORECASE,
+    )
+    match = interrupt_re.match(text or "")
     if not match:
         return ""
     return re.sub(r"\s+", " ", match.group(1)).strip()

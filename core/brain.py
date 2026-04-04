@@ -114,7 +114,7 @@ class Brain:
         return available
 
     def _update_priority(self) -> None:
-        # Groq is always primary for speed. llama_cpp is code-only fallback.
+        # Prefer fast cloud routing when present, but keep local engines available as fallbacks.
         priority = ["groq"] + getattr(Config, "BRAIN_PRIORITY", ["gemini", "claude"])
         for api in priority:
             if api in self.available_apis:
@@ -396,7 +396,16 @@ class Brain:
             )
             return response["choices"][0]["message"]["content"].strip()
         model = getattr(Config, "OLLAMA_MODEL_FAST" if api_key == "ollama_fast" else "OLLAMA_MODEL_SMART", "phi3.5")
-        payload = {"model": model, "prompt": f"User: {prompt}\nIris:", "stream": False}
+        messages = self._build_msgs(prompt, admin_unlocked, settings)
+        payload = {
+            "model": model,
+            "prompt": self._messages_to_generate_prompt(messages),
+            "stream": False,
+            "options": {
+                "temperature": settings.get("temperature", 0.6),
+                "num_predict": settings.get("max_tokens", 1024),
+            },
+        }
         resp = requests.post(f"{Config.OLLAMA_BASE_URL}/api/generate", json=payload, timeout=10)
         return resp.json().get("response", "").strip()
 
@@ -416,8 +425,25 @@ class Brain:
 
     def _get_apis_for_query(self, q_type: str) -> List[str]:
         if q_type == "web_search": return ["groq", "gemini", "perplexity"]
-        if q_type == "code":       return ["groq", "llama_cpp", "claude"]
-        return ["groq", "gemini", "claude"]
+        if q_type == "code":       return ["groq", "llama_cpp", "claude", "ollama_smart", "ollama_fast"]
+        return ["groq", "gemini", "claude", "llama_cpp", "ollama_smart", "ollama_fast"]
+
+    @staticmethod
+    def _messages_to_generate_prompt(messages: List[Dict[str, str]]) -> str:
+        role_names = {
+            "system": "System",
+            "user": "User",
+            "assistant": "Assistant",
+        }
+        lines: List[str] = []
+        for msg in messages:
+            content = str(msg.get("content", "") or "").strip()
+            if not content:
+                continue
+            label = role_names.get(msg.get("role", "user"), "User")
+            lines.append(f"{label}: {content}")
+        lines.append("Assistant:")
+        return "\n\n".join(lines)
 
     def _build_msgs(self, prompt, admin_unlocked: bool = False, settings: Optional[dict] = None):
         settings = settings or {}

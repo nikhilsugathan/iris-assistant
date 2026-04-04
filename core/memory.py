@@ -9,6 +9,7 @@ Features:
 
 import json
 import os
+import re
 from datetime import datetime
 from typing import List, Dict
 from config import Config
@@ -72,32 +73,42 @@ class Memory:
 
     def _sanitize_content(self, content: str) -> str:
         """Strip wake-word-only turns, wake-word prefixes, and identity-probing fragments."""
-        text = content.strip()
+        text = str(content or "").strip()
+        if not text:
+            return ""
         lowered = text.lower()
 
         # Build deduplicated set of wake words to check/strip
         wake_words = set()
         for w in getattr(Config, "WAKE_WORDS", []):
-            wake_words.add(w.lower())
-        wake_words.add(getattr(Config, "PUBLIC_WAKE_WORD", "iris").lower())
-        wake_words.add(getattr(Config, "ADMIN_WAKE_WORD", "aletheia").lower())
+            normalized = str(w).strip().lower()
+            if normalized:
+                wake_words.add(normalized)
+        for wake in (
+            getattr(Config, "PUBLIC_WAKE_WORD", "iris"),
+            getattr(Config, "ADMIN_WAKE_WORD", "aletheia"),
+        ):
+            normalized = str(wake).strip().lower()
+            if normalized:
+                wake_words.add(normalized)
 
         # Drop pure wake-word-only turns (e.g. "iris", "hey iris", "aletheia", "hey aletheia")
-        for wake in wake_words:
-            if lowered in (wake, f"hey {wake}"):
+        for wake in sorted(wake_words, key=len, reverse=True):
+            if re.fullmatch(rf"(?:hey\s+)?{re.escape(wake)}[,!?.:;]*", text, flags=re.IGNORECASE):
                 return ""
 
-        # Strip wake-word prefix from content (e.g. "iris open the file" → "open the file")
-        stripped = False
+        # Strip wake-word prefix from content, including punctuated forms ("iris, open file").
         for wake in sorted(wake_words, key=len, reverse=True):
-            if stripped:
-                break
-            for prefix in (f"hey {wake} ", f"{wake} "):
-                if lowered.startswith(prefix):
-                    text = text[len(prefix):]
-                    lowered = text.lower()
-                    stripped = True
-                    break
+            match = re.match(
+                rf"^(?:hey\s+)?{re.escape(wake)}(?:[,!?.:;]+|\s+)\s*(.+)$",
+                text,
+                flags=re.IGNORECASE,
+            )
+            if not match:
+                continue
+            text = match.group(1).strip()
+            lowered = text.lower()
+            break
 
         # Drop identity-probing fragments
         identity_probes = {
