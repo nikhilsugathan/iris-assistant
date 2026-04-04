@@ -90,20 +90,34 @@ def _strip_wake_words(text: str) -> str:
         cleaned = re.sub(rf"\b{re.escape(wake_word)}\b", "", cleaned, flags=re.IGNORECASE)
     return re.sub(r"\s+", " ", cleaned).strip()
 
+def _public_wake_word() -> str:
+    configured = getattr(Config, "PUBLIC_WAKE_WORD", "").strip().lower()
+    if configured:
+        return configured
+    wake_words = getattr(Config, "WAKE_WORDS", [])
+    if wake_words:
+        return str(wake_words[0]).strip().lower()
+    return "iris"
+
+def _admin_wake_word() -> str:
+    configured = getattr(Config, "ADMIN_WAKE_WORD", "").strip().lower()
+    return configured or "aletheia"
+
+def _wake_match_cutoff(wake_word: str) -> float:
+    return 0.55 if len(wake_word) > 5 else 0.75
+
+def _token_matches_wake_word(token: str, wake_word: str) -> bool:
+    lowered = token.lower()
+    if lowered == wake_word:
+        return True
+    return bool(difflib.get_close_matches(wake_word, [lowered], n=1, cutoff=_wake_match_cutoff(wake_word)))
+
 def _is_interrupt_phrase(text: str) -> bool:
     normalized = _normalize_command_text(text)
     return normalized in {"stop", "wait", "hold on", "hold", "quiet"}
 
-def _has_aletheia_token(text: str) -> bool:
-    normalized = _normalize_command_text(text)
-    tokens = [token for token in normalized.split() if len(token) >= 5]
-    if "aletheia" in tokens:
-        return True
-    return bool(difflib.get_close_matches("aletheia", tokens, n=1, cutoff=0.55))
-
-def _matches_program_exit(text: str, voice_mode: bool = False) -> bool:
-    normalized = _normalize_command_text(text)
-    exact = {
+def _exact_exit_commands(admin_unlocked: bool = False) -> set[str]:
+    commands = {
         "terminate",
         "shutdown",
         "exit system",
@@ -111,61 +125,55 @@ def _matches_program_exit(text: str, voice_mode: bool = False) -> bool:
         "shutdown system",
         "quit program",
         "exit program",
-        "iris exit",
-        "exit iris",
-        "iris quit",
-        "quit iris",
-        "iris shutdown",
-        "shutdown iris",
-        "iris terminate",
-        "terminate iris",
     }
-    if normalized in exact:
-        return True
-    if voice_mode:
-        # Voice STT often clips "terminate" into partial forms like "termin".
-        if re.fullmatch(r"termin\w*", normalized):
-            return True
-        first_token = normalized.split()[0] if normalized else ""
-        if re.fullmatch(r"termin\w*", first_token):
-            return True
-    if voice_mode and normalized in {"dominate", "terminated", "termination", "germinate"}:
-        return True
-    return False
+    wake_word = _admin_wake_word() if admin_unlocked else _public_wake_word()
+    if wake_word:
+        commands.update({
+            f"{wake_word} exit",
+            f"exit {wake_word}",
+            f"{wake_word} quit",
+            f"quit {wake_word}",
+            f"{wake_word} shutdown",
+            f"shutdown {wake_word}",
+            f"{wake_word} terminate",
+            f"terminate {wake_word}",
+        })
+    return commands
+
+def _matches_program_exit(text: str, voice_mode: bool = False) -> bool:
+    normalized = _normalize_command_text(text)
+    return normalized in _exact_exit_commands()
+
+def _classify_exit_action(text: str, self_model: SelfModel) -> str | None:
+    normalized = _normalize_command_text(text)
+    if not normalized:
+        return None
+    if getattr(self_model, "admin_unlocked", False):
+        if normalized in {"lock protocol", "revert to iris"} or normalized in _exact_exit_commands(admin_unlocked=True):
+            return "LOCK"
+        return None
+    if normalized in _exact_exit_commands(admin_unlocked=False):
+        return "EXIT"
+    return None
 
 def _active_wake_words(self_model: SelfModel) -> list[str]:
-    return ["aletheia"] if getattr(self_model, "admin_unlocked", False) else list(Config.WAKE_WORDS)
+    return [_admin_wake_word()] if getattr(self_model, "admin_unlocked", False) else [_public_wake_word()]
 
 def _matches_active_wake_word(text: str, self_model: SelfModel) -> bool:
     normalized = _normalize_command_text(text)
     tokens = normalized.split()
-    if getattr(self_model, "admin_unlocked", False):
-        return _has_aletheia_token(text)
-    if any(w.lower() in tokens for w in Config.WAKE_WORDS):
-        return True
-    return any(difflib.get_close_matches("iris", [token], n=1, cutoff=0.75) for token in tokens if len(token) >= 3)
+    active_wake_word = _admin_wake_word() if getattr(self_model, "admin_unlocked", False) else _public_wake_word()
+    return any(_token_matches_wake_word(token, active_wake_word) for token in tokens if len(token) >= 3)
 
 def _strip_active_wake_word(text: str, self_model: SelfModel) -> str:
     if not text:
         return ""
-    if getattr(self_model, "admin_unlocked", False):
-        tokens = re.findall(r"[A-Za-z0-9']+", text)
-        filtered = []
-        removed = False
-        for token in tokens:
-            lowered = token.lower()
-            if not removed and (lowered == "aletheia" or difflib.get_close_matches("aletheia", [lowered], n=1, cutoff=0.55)):
-                removed = True
-                continue
-            filtered.append(token)
-        return " ".join(filtered).strip()
-
+    active_wake_word = _admin_wake_word() if getattr(self_model, "admin_unlocked", False) else _public_wake_word()
     tokens = re.findall(r"[A-Za-z0-9']+", text)
     filtered = []
     removed = False
     for token in tokens:
-        lowered = token.lower()
-        if not removed and (lowered in {w.lower() for w in Config.WAKE_WORDS} or difflib.get_close_matches("iris", [lowered], n=1, cutoff=0.75)):
+        if not removed and _token_matches_wake_word(token, active_wake_word):
             removed = True
             continue
         filtered.append(token)
@@ -176,6 +184,17 @@ def _extract_interrupt_followup(text: str) -> str:
     if not match:
         return ""
     return re.sub(r"\s+", " ", match.group(1)).strip()
+
+def _lock_to_public_mode(voice, brain, self_model) -> tuple[str, bool]:
+    self_model.admin_unlocked = False
+    resp = _generate_greeting(admin_unlocked=False, brain=brain)
+    console.print("\n[bold green][🔒 ROOT ACCESS REVOKED][/bold green]")
+    voice.speak(resp)
+    voice.record_spoken(resp)
+    _voice_debug("handle_admin_lock", response=resp)
+    brain.memory.conversation.clear()
+    brain.memory._save()
+    return "LOCKED", False
 
 def _generate_greeting(admin_unlocked: bool = False, brain=None) -> str:
     if brain is not None:
@@ -437,9 +456,13 @@ def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, 
     persona_label = "Aletheia" if self_model.admin_unlocked else "IRIS"
     _voice_debug("handle_input", text=user_input, normalized=normalized, voice_mode=voice_mode, admin_unlocked=self_model.admin_unlocked)
 
-    if _matches_program_exit(user_input, voice_mode=voice_mode) or normalized in {"terminate", "shutdown", "exit system"}:
+    exit_action = _classify_exit_action(user_input, self_model)
+    if exit_action == "EXIT":
         _voice_debug("handle_exit_match", text=user_input, normalized=normalized, voice_mode=voice_mode)
         return "EXIT", True
+    if exit_action == "LOCK":
+        _voice_debug("handle_exit_lock", text=user_input, normalized=normalized, voice_mode=voice_mode)
+        return _lock_to_public_mode(voice, brain, self_model)
 
     if lowered.strip() == "authorize protocol aletheia":
         if not self_model.admin_unlocked:
@@ -454,15 +477,7 @@ def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, 
             brain.memory._save()
         return "UNLOCKED", False
     elif lowered.strip() in ["lock protocol", "revert to iris"]:
-        self_model.admin_unlocked = False
-        resp = _generate_greeting(admin_unlocked=False, brain=brain)
-        console.print("\n[bold green][🔒 ROOT ACCESS REVOKED][/bold green]")
-        voice.speak(resp)
-        voice.record_spoken(resp)
-        _voice_debug("handle_admin_lock", response=resp)
-        brain.memory.conversation.clear()
-        brain.memory._save()
-        return "LOCKED", False
+        return _lock_to_public_mode(voice, brain, self_model)
 
     corrected, _ = autocorrect.correct_input(user_input)
     user_input = corrected
@@ -615,7 +630,7 @@ def main() -> None:
     # Boot greeting — spoken + printed
     greeting = _generate_greeting(self_model.admin_unlocked, brain=brain)
     if not args.text:
-        console.print(f"\n[bold green]🎤 Voice Mode — listening for: {', '.join(Config.WAKE_WORDS)}[/bold green]")
+        console.print(f"\n[bold green]🎤 Voice Mode — listening for: {_public_wake_word()}[/bold green]")
     else:
         console.print(f"\n[bold green]⌨️  Text Mode — type your command[/bold green]")
     console.print(f"[bold cyan]IRIS:[/bold cyan] {greeting}")
