@@ -34,12 +34,15 @@ BEYOND BASELINE (requires YOUR explicit permission):
 
 Phase 7 change:
   - assess() signature updated to accept admin_unlocked: bool = False
-  - Layer 0 public sandbox blocks run_command, install_package, delete_item
-    when admin_unlocked=False, with an Aletheia unlock hint in the message.
+  - Layer 0 public sandbox blocks shell/package management and other
+    public-restricted actions when admin_unlocked=False.
+  - Public write/delete actions targeting protected system paths are
+    blocked until Aletheia admin mode is unlocked.
   - Layer 1 hard blocks remain unconditional regardless of admin state.
   - All _call_api calls are strictly two-argument (api, prompt).
 """
 
+import os
 import re
 import json
 from typing import Tuple
@@ -116,9 +119,38 @@ SENSITIVE_OPERATIONS = [
     r"proxy\s+settings", r"ssl.*bypass", r"certificate.*trust",
 ]
 
-# Action types restricted in public mode (admin_unlocked=False).
-# These require Aletheia mode to be unlocked before execution.
-_PUBLIC_RESTRICTED_ACTIONS = {"run_command", "install_package", "delete_item"}
+# Action types hard-blocked in public mode (admin_unlocked=False).
+# delete_item is intentionally absent - public Recycle Bin is allowed for safe paths.
+_PUBLIC_RESTRICTED_ACTIONS = {
+    "run_command", "manage_package",
+    "create_file", "create_folder", "write_to_file",
+    "type_text", "type_in_window",
+    "press_hotkey", "press_hotkey_in_window",
+    "click_at", "click_window",
+    "background_cancel",
+}
+
+# Actions that require path-safety checks in public mode.
+_PATH_GATED_ACTIONS = {"create_file", "create_folder", "write_to_file", "delete_item"}
+
+# Normalize Windows-style absolute paths consistently even when tests run on Linux CI.
+def _normalize_guard_path(path: str) -> str:
+    expanded = os.path.expandvars((path or "").strip())
+    if not expanded:
+        return ""
+    if re.match(r"^[A-Za-z]:[\\/]", expanded) or expanded.startswith("\\\\"):
+        return expanded.replace("/", "\\").rstrip("\\").lower()
+    return os.path.normcase(os.path.abspath(expanded)).rstrip("\\/").lower()
+
+# Protected system paths blocked for public write/delete actions.
+_PROTECTED_PATH_PREFIXES: tuple = (
+    _normalize_guard_path(r"C:\Windows"),
+    _normalize_guard_path(r"C:\Program Files"),
+    _normalize_guard_path(r"C:\Program Files (x86)"),
+    _normalize_guard_path(r"C:\ProgramData"),
+    _normalize_guard_path("%APPDATA%"),
+    _normalize_guard_path("%LOCALAPPDATA%"),
+)
 
 
 class SecurityGuard:
@@ -146,7 +178,7 @@ class SecurityGuard:
           message : Human-readable explanation to speak to user
 
         Layer 0 (Phase 7) fires FIRST when admin_unlocked=False and
-        blocks the three restricted action types with an unlock hint.
+        blocks public-restricted action types with an unlock hint.
         Layer 1 hard blocks fire regardless of admin state.
         """
         command  = plan.get("command", "")
@@ -159,6 +191,19 @@ class SecurityGuard:
                 f"'{action}' is restricted in public IRIS mode. "
                 "To unlock full system control, activate Aletheia admin mode."
             )
+
+        # Layer 0b: Path protection in public mode.
+        if not admin_unlocked and action in _PATH_GATED_ACTIONS:
+            target = plan.get("filename", "") or plan.get("command", "")
+            if target:
+                target_norm = _normalize_guard_path(target)
+                for prefix in _PROTECTED_PATH_PREFIXES:
+                    if target_norm.startswith(prefix):
+                        return BLOCKED, (
+                            f"'{action}' targeting a protected system path is restricted "
+                            "in public IRIS mode. Activate Aletheia admin mode to "
+                            "operate on system directories."
+                        )
 
         # Layer 1: Hard blocks (no override - unconditional regardless of admin state)
         blocked, reason = self._check_hard_blocks(command)
@@ -177,7 +222,7 @@ class SecurityGuard:
                 return url_verdict, url_msg
 
         # Layer 4: Download safety
-        if action in ("install_package", "run_command") and any(
+        if action in ("manage_package", "run_command") and any(
             ext in command.lower() for ext in SUSPICIOUS_FILE_EXTENSIONS
         ):
             dl_verdict, dl_msg = self._check_download(command, url)

@@ -339,37 +339,34 @@ class TestPhase7AletheiaProtocol(unittest.TestCase):
     # ── TC-02 ─────────────────────────────────────────────────────────────────
     def test_layer_0_sandbox(self):
         """
-        WHAT  SecurityGuard.assess(plan, admin_unlocked=False) must return BLOCKED
-              for run_command, install_package, and delete_item — the three action
-              types that the public IRIS sandbox restricts.
+        WHAT  SecurityGuard.assess(plan, admin_unlocked=False):
+              - run_command and manage_package must return BLOCKED.
+              - delete_item on a safe path must NOT be BLOCKED.
+              - delete_item on a protected path must return BLOCKED.
 
-        WHY   Without Layer 0, any public user can issue arbitrary shell commands.
+        WHY   Public mode should allow safe Recycle Bin deletes while still
+              blocking shell/package actions and protected system paths.
 
         FILE  core/security.py
-        FIX   Add a _check_public_sandbox(action, admin_unlocked) method.
-              Call it first in assess() and return BLOCKED with an Aletheia
-              unlock hint when admin_unlocked=False.
         """
         brain = _make_brain()
         guard = SecurityGuard(brain)
 
-        restricted_action_types = [
-            ("run_command",     "echo hello",          "run a command"),
-            ("install_package", "pip install requests", "install a package"),
-            ("delete_item",     "",                    "delete a file"),
+        hard_restricted = [
+            ("run_command", "echo hello", "run a command"),
+            ("manage_package", "pip install requests", "install a package"),
         ]
 
-        for action_type, command, label in restricted_action_types:
+        for action_type, command, label in hard_restricted:
             plan = {
-                "action_type": action_type,
-                "command":     command,
-                "description": label,
-                "url":         "",
-                "filename":    "/tmp/testfile.txt",
+                "action_type":  action_type,
+                "command":      command,
+                "description":  label,
+                "url":          "",
+                "filename":     "",
                 "is_dangerous": False,
             }
             with self.subTest(action_type=action_type):
-                # Phase 7 signature: assess(plan, admin_unlocked=False)
                 try:
                     verdict, msg = guard.assess(plan, admin_unlocked=False)
                 except TypeError:
@@ -392,6 +389,42 @@ class TestPhase7AletheiaProtocol(unittest.TestCase):
                     f"  Got msg={msg!r}\n"
                     "  → core/security.py: Layer 0 message must tell the user to unlock with Aletheia."
                 )
+
+        safe_delete_plan = {
+            "action_type": "delete_item",
+            "command": "",
+            "description": "delete a file",
+            "url": "",
+            "filename": "/tmp/testfile.txt",
+            "is_dangerous": False,
+        }
+        verdict_safe, msg_safe = guard.assess(safe_delete_plan, admin_unlocked=False)
+        self.assertNotEqual(
+            verdict_safe, BLOCKED,
+            f"FAIL TC-02 (delete_item safe path): public mode must ALLOW Recycle Bin delete "
+            f"on a safe path.\n  Got verdict={verdict_safe!r}  msg={msg_safe!r}"
+        )
+
+        import os
+        protected_delete_plan = {
+            "action_type": "delete_item",
+            "command": "",
+            "description": "delete a system file",
+            "url": "",
+            "filename": os.path.expandvars(r"C:\Windows\system32\test.dll"),
+            "is_dangerous": False,
+        }
+        verdict_protected, msg_protected = guard.assess(protected_delete_plan, admin_unlocked=False)
+        self.assertEqual(
+            verdict_protected, BLOCKED,
+            f"FAIL TC-02 (delete_item protected path): public mode must BLOCK delete "
+            f"targeting a protected system path.\n  Got verdict={verdict_protected!r}  msg={msg_protected!r}"
+        )
+        self.assertIn(
+            "aletheia", msg_protected.lower(),
+            f"FAIL TC-02 (delete_item protected path): BLOCKED message must reference 'Aletheia'.\n"
+            f"  Got msg={msg_protected!r}"
+        )
 
     # ── TC-03 ─────────────────────────────────────────────────────────────────
     def test_privilege_escalation(self):

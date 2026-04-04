@@ -14,7 +14,7 @@ PERMISSION GATE FLOW:
   IRIS: "Done. Python installed. Want me to verify it worked?"
 
 SUPPORTED ACTION TYPES:
-  - install_package  : winget / pip / npm install
+  - manage_package   : winget / pip / npm install
   - run_command      : any shell command
   - create_file      : create a file with content
   - create_folder    : make a directory
@@ -44,6 +44,7 @@ from core.security import SecurityGuard, SAFE, WARNING, BLOCKED, NEED_ADMIN
 from core.autocorrect import AutoCorrector
 from core.browser import BrowserAutomation
 from core.improv import ImprovEngine
+from core.tools_registry import tool_union_for, ACTIVE_TOOL_NAMES, ADMIN_TOOL_NAMES
 
 
 # -- Phrases that mean YES --
@@ -243,7 +244,7 @@ class ActionExecutor:
 
     def _is_simple_task(self, plan: dict, verdict: str) -> bool:
         """Only actions in SIMPLE_ACTIONS auto-execute when verdict is SAFE.
-        run_command and install_package always ask for permission first,
+        run_command and manage_package always ask for permission first,
         even when the security check passes - because those actions run
         shell commands that could come from AI-generated plans.
         """
@@ -287,7 +288,7 @@ class ActionExecutor:
 
         # -- Fall back to AI JSON planning if no pattern matched --
         if not plan:
-            plan = self._ai_plan(user_input)
+            plan = self._ai_plan(user_input, admin_unlocked=admin_unlocked)
 
         if not plan:
             return "I couldn't figure out how to do that. Could you rephrase it?"
@@ -568,9 +569,10 @@ class ActionExecutor:
 
         return os.path.join(folder, filename)
 
-    def _ai_plan(self, user_input: str) -> Optional[dict]:
+    def _ai_plan(self, user_input: str, admin_unlocked: bool = False) -> Optional[dict]:
         """AI JSON planner - fallback when pattern matching fails."""
         system = platform.system()
+        tool_set = ADMIN_TOOL_NAMES if admin_unlocked else ACTIVE_TOOL_NAMES
 
         context = ""
         if self.last_action_path:
@@ -583,7 +585,7 @@ User request: "{user_input}"
 
 Respond ONLY with valid JSON in this exact format:
 {{
-  "action_type": "install_package | run_command | create_file | create_folder | open_app | search_web | write_to_file | unsupported",
+  "action_type": "{tool_union_for(tool_set)}",
   "description": "what will happen in plain English",
   "command": "exact shell command if needed",
   "filename": "full file path if creating a file",
@@ -724,7 +726,7 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
         action_type = plan.get("action_type")
 
         try:
-            if action_type in ("install_package", "run_command"):
+            if action_type in ("manage_package", "run_command"):
                 result = self._run_command(plan)
                 success = "didn't work" not in result.lower() and "error" not in result.lower()
 
@@ -778,7 +780,7 @@ if start command failed, try webbrowser; if one path failed, try a different pat
 
 Respond ONLY with valid JSON in this exact format:
 {{
-  "action_type": "install_package | run_command | create_file | create_folder | open_app | search_web | write_to_file",
+  "action_type": "{tool_union_for(ADMIN_TOOL_NAMES)}",
   "description": "alternative approach in plain English",
   "command": "alternative shell command if needed",
   "filename": "full file path if needed",
