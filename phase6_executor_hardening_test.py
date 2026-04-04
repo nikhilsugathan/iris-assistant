@@ -149,6 +149,17 @@ class TestPhase6ExecutorHardening(unittest.TestCase):
             self.assertTrue(target.exists())
             self.assertIn("hello", target.read_text(encoding="utf-8"))
 
+    def test_log_failures_do_not_raise(self):
+        executor = ActionExecutor(voice=MagicMock(), brain=_make_brain())
+
+        with patch("core.executor.open", side_effect=OSError("disk full")):
+            executor._log("created file")
+
+    def test_prepare_target_path_rejects_blank_input(self):
+        executor = ActionExecutor(voice=MagicMock(), brain=_make_brain())
+        with self.assertRaises(OSError):
+            executor._prepare_target_path("   ")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

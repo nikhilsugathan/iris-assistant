@@ -213,6 +213,12 @@ class TestPhase5StateMachine(unittest.TestCase):
             )
         self.assertTrue(should_exit)
 
+    def test_interrupt_followup_uses_configured_wake_words(self):
+        self.assertEqual(main._extract_interrupt_followup("phoenix wait open notes"), "open notes")
+        self.assertEqual(main._extract_interrupt_followup("omega, stop current playback"), "current playback")
+        self.assertEqual(main._extract_interrupt_followup("phoenix: hold on refresh this"), "refresh this")
+        self.assertEqual(main._extract_interrupt_followup("iris wait open notes"), "")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
