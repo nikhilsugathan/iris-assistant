@@ -30,6 +30,8 @@ class Voice:
         self.mic_ready = False
         self.recognizer = None
         self.mic = None
+        self.mic_device_index = None
+        self.mic_name = None
         self._piper_engine = None
         self._piper_disabled = False
         self._piper_lock = threading.Lock()
@@ -96,7 +98,20 @@ class Voice:
             self.recognizer.non_speaking_duration = 0.25
             self.recognizer.dynamic_energy_threshold = False
             self.recognizer.energy_threshold = Config.WAKE_RMS_THRESHOLD
-            self.mic = sr.Microphone()
+            default_index, default_name = self._get_default_input_device()
+            configured_index = getattr(Config, "MIC_DEVICE_INDEX", None)
+            preferred_name = getattr(Config, "PREFERRED_MIC_NAME", "").strip()
+            preferred_index = self._find_mic_index_by_name_hint(preferred_name) if preferred_name else None
+            device_index = (
+                configured_index
+                if configured_index is not None
+                else preferred_index
+                if preferred_index is not None
+                else default_index
+            )
+            self.mic = sr.Microphone(device_index=device_index)
+            self.mic_device_index = device_index
+            self.mic_name = self._lookup_mic_name(device_index) or default_name or "Default input"
             with self.mic as source:
                 self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
             self.recognizer.energy_threshold = max(
@@ -107,10 +122,56 @@ class Voice:
                 "mic_init",
                 configured_gate=Config.WAKE_RMS_THRESHOLD,
                 actual_threshold=round(float(self.recognizer.energy_threshold), 2),
+                mic_device_index=self.mic_device_index,
+                mic_name=self.mic_name or "",
+                preferred_mic_name=preferred_name,
             )
         except Exception as e:
             logger.error(f"Microphone init failed: {e}")
             self.mic_ready = False
+            self.mic_device_index = None
+            self.mic_name = None
+
+    def _get_default_input_device(self):
+        try:
+            pyaudio_module = sr.Microphone.get_pyaudio()
+            audio = pyaudio_module.PyAudio()
+            try:
+                info = audio.get_default_input_device_info() or {}
+            finally:
+                audio.terminate()
+        except Exception:
+            return None, None
+        index = info.get("index")
+        name = info.get("name")
+        try:
+            index = int(index) if index is not None else None
+        except Exception:
+            index = None
+        return index, str(name).strip() if name else None
+
+    def _lookup_mic_name(self, device_index):
+        if device_index is None:
+            return None
+        try:
+            names = sr.Microphone.list_microphone_names()
+            if 0 <= int(device_index) < len(names):
+                return str(names[int(device_index)]).strip()
+        except Exception:
+            return None
+        return None
+
+    def _find_mic_index_by_name_hint(self, name_hint: str):
+        hint = str(name_hint or "").strip().lower()
+        if not hint:
+            return None
+        try:
+            for idx, name in enumerate(sr.Microphone.list_microphone_names()):
+                if hint in str(name).lower():
+                    return idx
+        except Exception:
+            return None
+        return None
 
     def is_speaking(self):
         with self._speech_state_lock:
@@ -634,7 +695,13 @@ class Voice:
             raise RuntimeError("Local Whisper transcription failed") from e
 
     def _warm_local_stt(self):
-        self._get_whisper_model()
+        try:
+            self._get_whisper_model()
+        except BaseException as exc:
+            if isinstance(exc, KeyboardInterrupt):
+                logger.info("Local STT warmup interrupted during shutdown.")
+            else:
+                logger.warning(f"Local STT warmup aborted: {exc}")
 
     def _local_whisper_cached(self):
         cache_root = getattr(

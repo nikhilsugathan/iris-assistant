@@ -76,6 +76,9 @@ class _Config:
     WAKE_RMS_THRESHOLD    = int(os.getenv("WAKE_RMS_THRESHOLD", "400"))
     COMMAND_RMS_THRESHOLD = int(os.getenv("COMMAND_RMS_THRESHOLD", "550"))
     MIC_SAMPLE_RATE       = int(os.getenv("MIC_SAMPLE_RATE", "16000"))
+    PREFERRED_MIC_NAME    = os.getenv("PREFERRED_MIC_NAME", "").strip()
+    _MIC_DEVICE_INDEX_RAW = os.getenv("MIC_DEVICE_INDEX", "").strip()
+    MIC_DEVICE_INDEX      = int(_MIC_DEVICE_INDEX_RAW) if _MIC_DEVICE_INDEX_RAW else None
     TTS_OUTPUT_SAMPLE_RATE = int(os.getenv("TTS_OUTPUT_SAMPLE_RATE", "48000"))
     PUBLIC_WAKE_WORD       = os.getenv("PUBLIC_WAKE_WORD", "iris").strip().lower()
     ADMIN_WAKE_WORD        = os.getenv("ADMIN_WAKE_WORD", "aletheia").strip().lower()

@@ -102,6 +102,14 @@ def _make_brain() -> MagicMock:
 
 
 class TestPhase5StateMachine(unittest.TestCase):
+    def test_generate_greeting_rejects_think_tags_and_generic_rambling(self):
+        brain = _make_brain()
+        brain._call_groq_simple.return_value = (
+            "Hello! How can I assist you today? Please let me know your task so I can help you effectively.\n</think>"
+        )
+        with patch.object(main.random, "choice", return_value="Ready."):
+            self.assertEqual(main._generate_greeting(admin_unlocked=False, brain=brain), "Ready.")
+
     def test_active_wake_word_switches_with_persona(self):
         public_model = _DummySelfModel(admin_unlocked=False)
         admin_model = _DummySelfModel(admin_unlocked=True)

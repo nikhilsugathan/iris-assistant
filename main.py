@@ -75,6 +75,37 @@ def _voice_debug(event: str, **fields) -> None:
             payload.append(f"{key}={value!r}")
     voice_trace_logger.debug("[VOICE_FLOW] %s %s", event, " ".join(payload))
 
+def _sanitize_boot_line(text: str) -> str:
+    cleaned = re.sub(r"(?is)<think>.*?</think>", " ", text or "")
+    cleaned = re.sub(r"(?i)</?think>", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip().strip('"').strip("'")
+    if not cleaned:
+        return ""
+
+    match = re.match(r"(.+?[.!?])(?:\s|$)", cleaned)
+    candidate = match.group(1).strip() if match else cleaned
+    candidate = re.sub(r"\s+", " ", candidate).strip().strip('"').strip("'")
+    if not candidate:
+        return ""
+
+    lowered = candidate.lower()
+    if lowered in {"hello", "hello.", "hello!", "hi", "hi.", "hi!"}:
+        return ""
+    if any(
+        fragment in lowered
+        for fragment in (
+            "how can i assist",
+            "how can i help",
+            "assist you today",
+            "please let me know your task",
+            "let me know your task",
+        )
+    ):
+        return ""
+    if len(candidate.split()) > 10 or len(candidate) > 80:
+        return ""
+    return candidate
+
 def _normalize_command_text(text: str) -> str:
     normalized = re.sub(r"[^a-z0-9\s]", " ", (text or "").lower())
     return re.sub(r"\s+", " ", normalized).strip()
@@ -216,9 +247,9 @@ def _generate_greeting(admin_unlocked: bool = False, brain=None) -> str:
                 f"Max 10 words. No quotes. No explanation. Just say it. "
                 f"Never say 'Standing by', 'Online', 'Ready', or 'I'm here'."
             )
-            result = brain._call_groq_simple(prompt)
-            if result and 3 < len(result) < 120:
-                return result.strip().strip('"').strip("'")
+            result = _sanitize_boot_line(brain._call_groq_simple(prompt))
+            if result:
+                return result
         except Exception:
             pass
     pool = _GREETINGS_ADMIN if admin_unlocked else _GREETINGS_PUBLIC
@@ -437,7 +468,10 @@ def show_status(voice: Voice, self_model: SelfModel) -> None:
         v_p, v_f = 0.0, 0.0
 
     cpu_p = psutil.cpu_percent()
+    mic_name = getattr(voice, "mic_name", "") or ""
     mic_status = "Ready" if getattr(voice, "mic_ready", False) else "Unavailable"
+    if mic_status == "Ready" and mic_name:
+        mic_status = f"Ready: {mic_name}"
 
     color = "red" if self_model.admin_unlocked else "cyan"
     mode_label = "ROOT / ALETHEIA" if self_model.admin_unlocked else "PUBLIC / IRIS"

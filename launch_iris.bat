@@ -1,7 +1,7 @@
 @echo off
 TITLE IRIS v4.8.3 [Aletheia] - Boot Sequence
 COLOR 0B
-cd /d D:\IRIS
+cd /d "%~dp0"
 
 echo ======================================================
 echo   IRIS v4.8.3 : Aletheia Production Environment
