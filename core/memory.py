@@ -70,11 +70,57 @@ class Memory:
         
         self.conversation = list(reversed(cleaned))
 
+    def _sanitize_content(self, content: str) -> str:
+        """Strip wake-word-only turns, wake-word prefixes, and identity-probing fragments."""
+        text = content.strip()
+        lowered = text.lower()
+
+        # Build deduplicated set of wake words to check/strip
+        wake_words = set()
+        for w in getattr(Config, "WAKE_WORDS", []):
+            wake_words.add(w.lower())
+        wake_words.add(getattr(Config, "PUBLIC_WAKE_WORD", "iris").lower())
+        wake_words.add(getattr(Config, "ADMIN_WAKE_WORD", "aletheia").lower())
+
+        # Drop pure wake-word-only turns (e.g. "iris", "hey iris", "aletheia", "hey aletheia")
+        for wake in wake_words:
+            if lowered in (wake, f"hey {wake}"):
+                return ""
+
+        # Strip wake-word prefix from content (e.g. "iris open the file" → "open the file")
+        stripped = False
+        for wake in sorted(wake_words, key=len, reverse=True):
+            if stripped:
+                break
+            for prefix in (f"hey {wake} ", f"{wake} "):
+                if lowered.startswith(prefix):
+                    text = text[len(prefix):]
+                    lowered = text.lower()
+                    stripped = True
+                    break
+
+        # Drop identity-probing fragments
+        identity_probes = {
+            "what is your name",
+            "who are you",
+            "are you iris",
+            "are you aletheia",
+            "what are you",
+        }
+        if lowered in identity_probes:
+            return ""
+
+        return text
+
     def add(self, role: str, content: str, source: str = None):
         """Adds a turn, cleans duplicates, and triggers a save."""
         # Ensure role is always 'user' or 'assistant' for API compatibility
         normalized_role = "assistant" if role in ["assistant", "iris"] else "user"
-        
+
+        content = self._sanitize_content(content)
+        if not content:
+            return
+
         entry = {
             "role": normalized_role,
             "content": content,

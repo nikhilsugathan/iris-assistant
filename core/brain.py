@@ -457,7 +457,7 @@ class Brain:
 
         if voice_mode:
             settings["temperature"] = min(settings["temperature"], 0.4)
-            settings["context_turns"] = 0 if query_type == "general" else min(settings["context_turns"], 2)
+            settings["context_turns"] = max(2, min(settings["context_turns"], 4))
             settings["max_tokens"] = min(settings["max_tokens"], 72 if query_type == "general" else 120)
             voice_rules = (
                 "Voice mode rules:\n"
