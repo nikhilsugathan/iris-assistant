@@ -44,7 +44,12 @@ from core.security import SecurityGuard, SAFE, WARNING, BLOCKED, NEED_ADMIN
 from core.autocorrect import AutoCorrector
 from core.browser import BrowserAutomation
 from core.improv import ImprovEngine
-from core.tools_registry import tool_union_for, ACTIVE_TOOL_NAMES, ADMIN_TOOL_NAMES
+from core.tools_registry import (
+    tool_union_for,
+    tool_schema_for,
+    ACTIVE_TOOL_NAMES,
+    ADMIN_TOOL_NAMES,
+)
 
 
 # -- Phrases that mean YES --
@@ -378,8 +383,8 @@ class ActionExecutor:
 
         # -- Create file --
         file_match = re.search(
-            r"(?:create|make|new)\s+(?:a\s+)?file\s+(?:called|named|as|named as)?\s*['\"]?([^'\"]\w*?)['\"]?"
-            r"(?:\s+(?:in|on|at|inside)\s+(?:my\s+)?(.+))?",
+            r"(?:create|make|new)\s+(?:a\s+)?file\s+(?:called|named|as|named as)\s*['\"]?([^'\"]+?)['\"]?"
+            r"(?:\s+(?:in|on|at|inside)\s+(?:my\s+)?(.+))?$",
             user_input,
             re.IGNORECASE
         )
@@ -390,6 +395,27 @@ class ActionExecutor:
             return {
                 "action_type": "create_file",
                 "description": f"create '{filename}' in {location}",
+                "filename": filepath,
+                "content": "",
+                "is_dangerous": False
+            }
+
+        # -- Create file (bare name, no "called/named" keyword required) --
+        bare_file_match = re.search(
+            r"(?:create|make|new)\s+(?:a\s+)?file\s+"
+            r"(?!(?:on|in|at|inside|called|named|as)\b)"
+            r"['\"]?([A-Za-z0-9 _\-\.]+?)['\"]?"
+            r"(?:\s+(?:in|on|at|inside)\s+(?:my\s+)?(.+))?$",
+            user_input,
+            re.IGNORECASE
+        )
+        if bare_file_match:
+            filename = bare_file_match.group(1).strip()
+            location = bare_file_match.group(2).strip() if bare_file_match.group(2) else "desktop"
+            filepath = self._resolve_location(location, filename)
+            return {
+                "action_type": "create_file",
+                "description": f"create file '{filename}'",
                 "filename": filepath,
                 "content": "",
                 "is_dangerous": False
@@ -421,6 +447,26 @@ class ActionExecutor:
             return {
                 "action_type": "create_folder",
                 "description": f"create subfolder '{subfoldername}' inside '{os.path.basename(parent_path)}'",
+                "filename": folderpath,
+                "is_dangerous": False
+            }
+
+        # -- Create folder (bare name, no "called/named" keyword required) --
+        bare_folder_match = re.search(
+            r"(?:create|make|new)\s+(?:a\s+)?(?:new\s+)?folder\s+"
+            r"(?!(?:on|in|at|inside|called|named|as)\b)"
+            r"['\"]?([A-Za-z0-9 _\-]+?)['\"]?"
+            r"(?:\s+(?:in|on|at|inside)\s+(?:my\s+)?(.+))?$",
+            user_input,
+            re.IGNORECASE
+        )
+        if bare_folder_match:
+            foldername = bare_folder_match.group(1).strip()
+            location   = bare_folder_match.group(2).strip() if bare_folder_match.group(2) else "desktop"
+            folderpath = self._resolve_location(location, foldername)
+            return {
+                "action_type": "create_folder",
+                "description": f"create folder '{foldername}'",
                 "filename": folderpath,
                 "is_dangerous": False
             }
@@ -573,6 +619,8 @@ class ActionExecutor:
         """AI JSON planner - fallback when pattern matching fails."""
         system = platform.system()
         tool_set = ADMIN_TOOL_NAMES if admin_unlocked else ACTIVE_TOOL_NAMES
+        persona = "admin" if admin_unlocked else "public"
+        tool_schema = tool_schema_for(tool_set)
 
         context = ""
         if self.last_action_path:
@@ -580,6 +628,10 @@ class ActionExecutor:
 
         plan_prompt = f"""The user wants IRIS to take a real action on their computer.
 System: {system}
+Persona mode: {persona}
+Allowed tools for this persona:
+{tool_schema}
+
 {context}
 User request: "{user_input}"
 
@@ -598,6 +650,7 @@ Respond ONLY with valid JSON in this exact format:
 
 Rules:
 - Windows paths use backslashes
+- Only choose action_type values from the allowed tools above
 - For installs use winget (apps) or pip (python packages)
 - is_dangerous only true for delete/format/uninstall
 - For rename: use command like: ren "full\\path\\oldname" "newname"
@@ -918,6 +971,21 @@ Be specific and practical. No preamble."""
 
         return home
 
+    def _prepare_target_path(self, raw_path: str) -> tuple[str, Optional[str]]:
+        """Normalize a target path and ensure its parent directory exists when needed."""
+        if "desktop" in raw_path.lower():
+            bare_name = os.path.basename(raw_path)
+            target_path = os.path.join(self._get_desktop_path(), bare_name)
+        elif not os.path.dirname(raw_path):
+            target_path = os.path.join(self._get_desktop_path(), raw_path)
+        else:
+            target_path = raw_path
+
+        target_dir = os.path.dirname(target_path)
+        if target_dir:
+            os.makedirs(target_dir, exist_ok=True)
+        return target_path, target_dir or None
+
     def _create_file(self, plan: dict) -> str:
         """Create a file - cognitively corrects extension, auto-renames if exists."""
         filename = plan.get("filename", "iris_output.txt")
@@ -940,23 +1008,17 @@ Be specific and practical. No preamble."""
                 f"Say the extension you want and I'll create it."
             )
 
-        if "desktop" in filename.lower():
-            bare_name = os.path.basename(filename)
-            filepath  = os.path.join(self._get_desktop_path(), bare_name)
-        elif not os.path.dirname(filename):
-            filepath  = os.path.join(self._get_desktop_path(), filename)
-        else:
-            filepath  = filename
-
-        filepath, rename_msg = self._resolve_filename(filepath)
-
-        # Ensure directory string isn't empty before trying to create it
-        target_dir = os.path.dirname(filepath)
-        if target_dir:
-            os.makedirs(target_dir, exist_ok=True)
-
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(content)
+        try:
+            filepath, _ = self._prepare_target_path(filename)
+            filepath, rename_msg = self._resolve_filename(filepath)
+            target_dir = os.path.dirname(filepath)
+            if target_dir:
+                os.makedirs(target_dir, exist_ok=True)
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(content)
+        except OSError as e:
+            self._log(f"ERROR creating file: {filename} - {e}")
+            return f"Couldn't create the file safely: {str(e)[:120]}"
 
         if not os.path.isfile(filepath):
             self._log(f"FILE CREATION FAILED: {filepath}")
@@ -1001,7 +1063,7 @@ Be specific and practical. No preamble."""
                 return "Done."
             else:
                 return f"Failed: folder '{os.path.basename(folder)}' was not created. Check permissions."
-        except Exception as e:
+        except OSError as e:
             self._log(f"ERROR creating folder: {e}")
             return f"Couldn't create the folder: {str(e)[:100]}"
 
@@ -1087,9 +1149,17 @@ Be specific and practical. No preamble."""
         content  = plan.get("content", "")
         if not filename:
             return "No filename specified."
-        with open(filename, "a", encoding="utf-8") as f:
-            f.write(content + "\n")
-        self._log(f"WROTE TO: {filename}")
+
+        try:
+            filepath, _ = self._prepare_target_path(filename)
+            with open(filepath, "a", encoding="utf-8") as f:
+                f.write(content + "\n")
+        except OSError as e:
+            self._log(f"ERROR writing file: {filename} - {e}")
+            return f"Couldn't write to the file safely: {str(e)[:120]}"
+
+        self.last_action_path = filepath
+        self._log(f"WROTE TO: {filepath}")
         return "Done."
 
     def _delete_item(self, plan: dict) -> str:
