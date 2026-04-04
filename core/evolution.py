@@ -16,9 +16,9 @@ class EvolutionEngine:
         self.researcher = researcher
         self._pending_tool_code = None
 
-    def triage_unknown_intent(self, user_input: str) -> str:
+    def triage_unknown_intent(self, user_input: str, admin_unlocked: bool = False) -> str:
         # CRIT-03: Security Gate
-        if not getattr(self.brain, "_active_admin_unlocked", False):
+        if not admin_unlocked:
             return "The Evolution Engine requires Aletheia-level administrative authorization."
 
         console.print("[dim cyan]Unknown intent — triggering Evolution Engine...[/dim cyan]")

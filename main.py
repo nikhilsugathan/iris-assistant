@@ -189,7 +189,6 @@ def _generate_greeting(admin_unlocked: bool = False, brain=None) -> str:
                 f"Max 10 words. No quotes. No explanation. Just say it. "
                 f"Never say 'Standing by', 'Online', 'Ready', or 'I'm here'."
             )
-            brain._active_admin_unlocked = admin_unlocked
             result = brain._call_groq_simple(prompt)
             if result and 3 < len(result) < 120:
                 return result.strip().strip('"').strip("'")
@@ -446,19 +445,23 @@ def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, 
         if not self_model.admin_unlocked:
             self_model.admin_unlocked = True
             console.bell()
-            resp = _generate_greeting(admin_unlocked=True)
+            resp = _generate_greeting(admin_unlocked=True, brain=brain)
             console.print("\n[bold red][🔒 ROOT ACCESS GRANTED][/bold red]")
             voice.speak(resp)
             voice.record_spoken(resp)
             _voice_debug("handle_admin_unlock", response=resp)
+            brain.memory.conversation.clear()
+            brain.memory._save()
         return "UNLOCKED", False
     elif lowered.strip() in ["lock protocol", "revert to iris"]:
         self_model.admin_unlocked = False
-        resp = _generate_greeting(admin_unlocked=False)
+        resp = _generate_greeting(admin_unlocked=False, brain=brain)
         console.print("\n[bold green][🔒 ROOT ACCESS REVOKED][/bold green]")
         voice.speak(resp)
         voice.record_spoken(resp)
         _voice_debug("handle_admin_lock", response=resp)
+        brain.memory.conversation.clear()
+        brain.memory._save()
         return "LOCKED", False
 
     corrected, _ = autocorrect.correct_input(user_input)
@@ -474,7 +477,7 @@ def handle_user_input(user_input, voice, autocorrect, executor, copilot, brain, 
         with console.status("[bold yellow]Formulating action plan...[/bold yellow]", spinner="dots"):
             response = executor.plan_action(user_input, admin_unlocked=self_model.admin_unlocked)
         if evolution and "couldn't figure out how to do that" in response.lower():
-            response = evolution.triage_unknown_intent(user_input)
+            response = evolution.triage_unknown_intent(user_input, admin_unlocked=self_model.admin_unlocked)
     elif decision.mode == "search" and researcher:
         with console.status("[bold green]Searching web...[/bold green]", spinner="dots"):
             response = researcher.search(user_input)
