@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -n \"admin_unlocked = True\" /d/IRIS-live/main.py /d/IRIS-live/core/*.py)",
+      "Bash(sed -n '560,575p' /d/IRIS-live/main.py)",
+      "Bash(sed -n '1105,1120p' /d/IRIS-live/main.py)",
+      "Bash(sed -n '1345,1365p' /d/IRIS-live/main.py)",
+      "Bash(grep -n \"^[[:space:]]*#[[:space:]]*try\\\\|^[[:space:]]*#[[:space:]]*if\\\\|^[[:space:]]*#[[:space:]]*for\\\\|^[[:space:]]*#[[:space:]]*while\" /d/IRIS-live/core/*.py /d/IRIS-live/*.py)",
+      "Bash(grep -n \"except.*as e:\" /d/IRIS-live/core/*.py /d/IRIS-live/*.py)",
+      "Bash(grep -rn \"C:\\\\\\\\|/home/\\\\|/root/\\\\|localhost:5050\\\\|127.0.0.1\\\\|0.0.0.0\" /d/IRIS-live --include=\"*.py\")",
+      "Bash(ls -la /d/IRIS-live/core/autonomist*)",
+      "Read(//tmp/**)",
+      "Bash(grep -n \"^#\\\\s*import\\\\|^#\\\\s*from\\\\|^#\\\\s*def\\\\|^#\\\\s*class\" /d/IRIS-live/core/*.py /d/IRIS-live/*.py)",
+      "Bash(python -m pytest tests/test_concurrency_smoke.py --collect-only -q)",
+      "Bash(python -m pytest tests/test_concurrency_smoke.py -v --tb=short)"
+    ]
+  }
+}

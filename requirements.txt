@@ -1,0 +1,34 @@
+# ── IRIS Core & Brain ──
+google-generativeai==0.8.3
+groq==0.12.0
+anthropic==0.40.0
+python-dotenv==1.0.1
+requests==2.32.3
+pytest>=9.0.0
+
+# ── IRIS Terminal UI ──
+rich==13.9.4
+
+# ── IRIS Voice & Audio Engine ──
+edge-tts==6.1.12
+pygame==2.6.1
+SpeechRecognition==3.11.0
+PyAudio==0.2.14; platform_system == "Windows"
+faster-whisper>=1.0.3
+ctranslate2>=4.4.0
+
+# ── IRIS Hardware & VRAM Monitor ──
+numpy==1.26.4
+nvidia-ml-py==12.535.133
+
+# ── IRIS v5.0 Ironclad Additions ──
+duckduckgo-search>=5.0.0    # Required for tools/researcher.py (The Eyes)
+psutil>=5.9.8               # Required for system/disk pre-flight checks
+playwright>=1.42.0          # Required for core/browser.py automation
+
+# Phase 1: C++ LLM Engine (replaces Ollama HTTP middleman)
+# Install with GPU support: pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121
+# Phase 1.5: C++ TTS Engine (replaces edge-tts + pygame disk I/O pipeline)
+llama-cpp-python>=0.2.0
+sounddevice>=0.4.6
+send2trash

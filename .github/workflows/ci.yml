@@ -1,0 +1,43 @@
+name: IRIS CI Smoke
+
+on:
+  pull_request:
+  push:
+    branches:
+      - "**"
+
+jobs:
+  smoke:
+    runs-on: windows-latest
+    env:
+      IRIS_DISABLE_VOICE_IO: "true"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: powershell
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Compile + import smoke
+        shell: powershell
+        run: |
+          python -m compileall -q .
+          python -c "import config; import core.brain; import core.executor; import main; print('IMPORTS_OK')"
+          python -c "from core.voice import Voice; v=Voice(text_mode=True); assert v.io_disabled, 'Voice IO must be disabled in CI'; print('VOICE_IO_DISABLED_OK')"
+
+      - name: Run lightweight smoke scripts
+        shell: powershell
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python tools/smoke_terminal_entry.py
+          python tools/smoke_single_session.py
