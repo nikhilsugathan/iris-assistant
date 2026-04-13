@@ -140,13 +140,18 @@ class Voice:
 
         if not self._force_io_disabled and not self.text_mode:
             self._init_mic()
-            priority = getattr(Config, "WAKE_STT_PRIORITY", "cloud_first")
-            if priority == "local_first":
-                threading.Thread(target=self._warm_local_stt, daemon=True).start()
-            elif priority == "cloud_first" and self._local_whisper_cached():
-                # Preload a cached local model so cloud-first mode has stable fallback
-                # without kicking off a late download/activation mid-session.
-                self._warm_local_stt()
+            # STT is now served by the Groq Whisper API — no local model warmup
+            # or VRAM allocation at startup.  Key is validated per-transcription.
+            _groq_key   = getattr(Config, "GROQ_API_KEY", "")
+            _groq_model = getattr(Config, "GROQ_STT_MODEL", "whisper-large-v3-turbo")
+            if _groq_key:
+                console.print(
+                    f"[bold green][Voice] STT Backend: Groq ({_groq_model})[/bold green]"
+                )
+            else:
+                console.print(
+                    "[yellow][Voice] GROQ_API_KEY absent — STT will fall back to Google[/yellow]"
+                )
             if getattr(Config, "TTS_ENGINE", "auto") != "edge" and getattr(Config, "PIPER_TTS_WARMUP", False):
                 threading.Thread(target=self._warm_local_tts, daemon=True).start()
 
@@ -181,13 +186,10 @@ class Voice:
         return min(max(float(value), floor), ceiling)
 
     def stt_status(self) -> str:
-        if self._whisper_runtime_device and self._whisper_runtime_compute_type:
-            return f"Local ({self._whisper_runtime_device}/{self._whisper_runtime_compute_type})"
-        if self._whisper_disabled:
-            return "Google fallback"
-        if self._whisper_loading:
-            return "Local loading"
-        return getattr(Config, "WAKE_STT_PRIORITY", "local_first")
+        if getattr(Config, "GROQ_API_KEY", ""):
+            model = getattr(Config, "GROQ_STT_MODEL", "whisper-large-v3-turbo")
+            return f"STT Backend: Groq ({model})"
+        return "Google fallback"
 
     def tts_status(self) -> str:
         preferred = getattr(Config, "TTS_ENGINE", "auto")
@@ -1404,117 +1406,75 @@ class Voice:
             )
 
     def _transcribe_audio(self, audio, phrase_type="command", source="command"):
+        """Route audio to Groq STT (primary) with Google as automatic fallback.
+
+        Wake-word gate: if phrase_type is "wake" and the transcript doesn't
+        match a wake phrase, return None so ambient speech never triggers IRIS.
+        """
         started_at = time.monotonic()
-        priority = getattr(Config, "WAKE_STT_PRIORITY", "cloud_first")
-        if priority == "local_first":
-            try:
-                text = self._transcribe_local(audio, phrase_type=phrase_type)
-                if phrase_type == "wake" and not self._looks_like_wake_transcript(text or ""):
-                    self._debug_trace(
-                        "transcribe",
-                        source=source,
-                        phrase_type=phrase_type,
-                        priority=priority,
-                        engine="local_nonwake",
-                        transcript=(text or ""),
-                        local_transcript=text or "",
-                        latency_ms=round((time.monotonic() - started_at) * 1000, 1),
-                    )
-                    self._stt_counts["local_nonwake"] += 1
-                    return None
-                self._debug_trace(
-                    "transcribe",
-                    source=source,
-                    phrase_type=phrase_type,
-                    priority=priority,
-                    engine="local",
-                    transcript=text or "",
-                    latency_ms=round((time.monotonic() - started_at) * 1000, 1),
-                )
-                self._stt_counts["local"] += 1
-                return text
-            except RuntimeError as e:
-                text = self._transcribe_google(audio)
-                self._debug_trace(
-                    "transcribe",
-                    source=source,
-                    phrase_type=phrase_type,
-                    priority=priority,
-                    engine="google_fallback",
-                    transcript=text or "",
-                    fallback_from="local_error",
-                    latency_ms=round((time.monotonic() - started_at) * 1000, 1),
-                    error=str(e),
-                )
-                self._stt_counts["google_fallback"] += 1
-                return text
-        text = self._transcribe_google(audio)
-        if text:
+        text = self._transcribe_groq(audio, phrase_type=phrase_type)
+
+        # Wake-word gate — suppress non-wake transcripts during wake listening.
+        if phrase_type == "wake" and text and not self._looks_like_wake_transcript(text):
             self._debug_trace(
                 "transcribe",
                 source=source,
                 phrase_type=phrase_type,
-                priority=priority,
-                engine="google",
+                engine="groq_nonwake",
                 transcript=text,
                 latency_ms=round((time.monotonic() - started_at) * 1000, 1),
             )
-            self._stt_counts["google"] += 1
-            return text
-        if priority == "cloud_first":
-            self._debug_trace(
-                "transcribe",
-                source=source,
-                phrase_type=phrase_type,
-                priority=priority,
-                engine="google_only_wake_none" if phrase_type == "wake" else "google_only_command_none",
-                transcript="",
-                latency_ms=round((time.monotonic() - started_at) * 1000, 1),
-            )
-            self._stt_counts["none"] += 1
+            self._stt_counts["groq_nonwake"] += 1
             return None
-        # In cloud_first mode, never trigger a late Whisper load/activation.
-        if self._whisper_loading or self._whisper_disabled or self._whisper_model is None:
-            self._debug_trace(
-                "transcribe",
-                source=source,
-                phrase_type=phrase_type,
-                priority=priority,
-                engine="none",
-                transcript="",
-                whisper_loading=self._whisper_loading,
-                whisper_disabled=self._whisper_disabled,
-                whisper_ready=self._whisper_model is not None,
-                latency_ms=round((time.monotonic() - started_at) * 1000, 1),
-            )
-            self._stt_counts["none"] += 1
-            return None
+
+        engine = "groq" if text is not None else "none"
+        self._stt_counts[engine] += 1
+        self._debug_trace(
+            "transcribe",
+            source=source,
+            phrase_type=phrase_type,
+            engine=engine,
+            transcript=text or "",
+            latency_ms=round((time.monotonic() - started_at) * 1000, 1),
+        )
+        return text
+
+    def _transcribe_groq(self, audio, phrase_type: str = "command") -> "str | None":
+        """Transcribe audio using the Groq Whisper API (zero local VRAM cost).
+
+        Primary STT path.  Falls back to Google STT automatically when:
+          - GROQ_API_KEY is absent
+          - The ``groq`` package is not installed
+          - Any API / network error occurs
+
+        Args:
+            audio:        speech_recognition.AudioData captured by listen().
+            phrase_type:  "wake", "command", or "interrupt" — for trace logging.
+
+        Returns:
+            Stripped transcript string, or None on silence / API failure.
+        """
+        api_key = getattr(Config, "GROQ_API_KEY", "")
+        if not api_key:
+            return self._transcribe_google(audio)
         try:
-            text = self._transcribe_local(audio, phrase_type=phrase_type)
-            self._debug_trace(
-                "transcribe",
-                source=source,
-                phrase_type=phrase_type,
-                priority=priority,
-                engine="local_fallback",
-                transcript=text or "",
-                latency_ms=round((time.monotonic() - started_at) * 1000, 1),
+            from groq import Groq  # dynamic import — optional dep, gracefully absent
+            wav_bytes = audio.get_wav_data()
+            client    = Groq(api_key=api_key)
+            model     = getattr(Config, "GROQ_STT_MODEL", "whisper-large-v3-turbo")
+            # Groq expects ISO 639-1 (2-char) language code; STT_LANGUAGE is IETF.
+            lang      = (getattr(Config, "STT_LANGUAGE", "en-US") or "en")[:2]
+            result    = client.audio.transcriptions.create(
+                file=("audio.wav", wav_bytes),
+                model=model,
+                language=lang,
             )
-            self._stt_counts["local_fallback"] += 1
-            return text
-        except RuntimeError as e:
-            self._debug_trace(
-                "transcribe",
-                source=source,
-                phrase_type=phrase_type,
-                priority=priority,
-                engine="local_fallback_error",
-                transcript="",
-                latency_ms=round((time.monotonic() - started_at) * 1000, 1),
-                error=str(e),
-            )
-            self._stt_counts["local_fallback_error"] += 1
-            return None
+            text = (result.text or "").strip()
+            return text or None
+        except Exception as exc:
+            self._trace_exception("groq_stt_error", exc, phrase_type=phrase_type)
+            # Transparent fallback — IRIS stays responsive even during API outages.
+            return self._transcribe_google(audio)
 
     def _transcribe_google(self, audio):
         try:
@@ -2030,10 +1990,15 @@ class Voice:
                 result = subprocess.run(
                     ["edge-tts", "--voice", voice_name, "--rate", rate,
                      "--text", text, "--write-media", temp_file],
-                    check=False, capture_output=True
+                    check=False, capture_output=True,
+                    encoding="utf-8", errors="replace",
+                    # CREATE_NO_WINDOW: hides the CMD flash on Windows and
+                    # reduces idle CPU cost from console-session overhead.
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
                 )
                 if result.returncode != 0:
-                    err = result.stderr.decode(errors="replace").strip()
+                    # encoding="utf-8" makes stderr a str already — no .decode() needed.
+                    err = result.stderr.strip()
                     logger.error(f"[TTS] edge-tts CLI failed (rc={result.returncode}): {err or '(no stderr)'}")
 
             if stop_event is not None and stop_event.is_set():

@@ -14,7 +14,11 @@
       "Bash(python -m pytest tests/test_concurrency_smoke.py --collect-only -q)",
       "Bash(python -m pytest tests/test_concurrency_smoke.py -v --tb=short)",
       "Bash(python -m pytest aletheia_prod_test.py::TestPhase7AletheiaProtocol::test_persona_bifurcation -v --tb=short)",
-      "Bash(python -m pytest aletheia_prod_test.py -v --tb=short)"
+      "Bash(python -m pytest aletheia_prod_test.py -v --tb=short)",
+      "Bash(python -m pytest aletheia_prod_test.py tests/test_concurrency_smoke.py -v --tb=short)",
+      "Bash(python -c \"import subprocess; result = subprocess.run\\(['python', '-c', 'import re; lines = open\\(\\\\\"core/voice.py\\\\\", encoding=\\\\\"utf-8\\\\\"\\).readlines\\(\\); matches = [\\(i+1, l.rstrip\\(\\)\\) for i,l in enumerate\\(lines\\) if any\\(p in l for p in [\\\\\"while True\\\\\", \\\\\"while self._\\\\\", \\\\\"time.sleep\\\\\", \\\\\"CREATE_NO_WINDOW\\\\\", \\\\\"open\\(\\\\\", \\\\\"_warm_local\\\\\", \\\\\"whisper\\\\\", \\\\\"WhisperModel\\\\\", \\\\\"faster_whisper\\\\\", \\\\\"transcribe\\\\\"]\\)]; [print\\(f\\\\\"{n}: {t}\\\\\"\\) for n,t in matches]'], capture_output=True, text=True\\); print\\(result.stdout[:8000]\\)\")",
+      "Bash(python -c ':*)",
+      "Bash(python -m pytest tests/test_concurrency_smoke.py aletheia_prod_test.py -v --tb=short)"
     ]
   }
 }

@@ -41,10 +41,9 @@ class _Config:
     PIPER_TTS_WARMUP   = os.getenv("PIPER_TTS_WARMUP", "false").lower() == "true"
     WAKE_STT_PRIORITY  = os.getenv("WAKE_STT_PRIORITY", "local_first").lower()
     STT_LANGUAGE       = os.getenv("STT_LANGUAGE", "en-US")
-    # large-v3-turbo: distilled 809M-param model, same speed as medium but with
-    # large-v3 accuracy (~30-40% fewer word errors).  Needs ~1.6 GB VRAM at
-    # float16 — fits comfortably alongside the LLM on an 8 GB card.
-    # Override via env: LOCAL_WHISPER_MODEL=medium.en (or any faster-whisper name)
+    # Local Whisper is no longer loaded at runtime — cloud STT is now served by
+    # Groq (see GROQ_STT_MODEL below).  These settings remain for emergency
+    # local-fallback tooling only; they do NOT consume VRAM during normal operation.
     LOCAL_WHISPER_MODEL = os.getenv("LOCAL_WHISPER_MODEL", "large-v3-turbo")
     LOCAL_WHISPER_DEVICE = os.getenv("LOCAL_WHISPER_DEVICE", "cuda")
     LOCAL_WHISPER_COMPUTE_TYPE = os.getenv("LOCAL_WHISPER_COMPUTE_TYPE", "float16")
@@ -61,8 +60,12 @@ class _Config:
 
     # ── C++ LLM ENGINE ───────────────────────────────────────
     LOCAL_MODEL_PATH = os.getenv("LOCAL_MODEL_PATH", "D:/IRIS-live/models/Qwen3-8B-Q4_K_M.gguf")
-    N_GPU_LAYERS     = int(os.getenv("N_GPU_LAYERS", "99"))
-    N_CTX            = int(os.getenv("N_CTX", "8192"))
+    # -1 = push every layer to GPU (llama-cpp-python canonical signal).
+    # Previously 99 was used as a proxy; -1 is the correct constant.
+    N_GPU_LAYERS     = int(os.getenv("N_GPU_LAYERS", "-1"))
+    # 16384: doubled from 8192.  Whisper VRAM (~1.6 GB) freed by the
+    # Groq STT migration gives the LLM headroom for a larger context window.
+    N_CTX            = int(os.getenv("N_CTX", "16384"))
     USE_FLASH_ATTN   = os.getenv("USE_FLASH_ATTN", "true").lower() == "true"
 
     # ── AI BACKENDS ──────────────────────────────────────────
@@ -74,8 +77,15 @@ class _Config:
     OLLAMA_BASE_URL    = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
     # ── MODEL NAMES ──────────────────────────────────────────
-    GROQ_MODEL         = os.getenv("GROQ_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
+    GROQ_MODEL         = os.getenv("GROQ_MODEL", "llama-4-scout-17b-16e-instruct")
+    # whisper-large-v3-turbo: cloud STT hosted by Groq — replaces local
+    # faster-whisper and frees ~1.6 GB VRAM for the context window expansion.
+    GROQ_STT_MODEL     = os.getenv("GROQ_STT_MODEL", "whisper-large-v3-turbo")
     GEMINI_MODEL       = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    # gemini-3-flash: latest multimodal model with native image understanding.
+    # Kept separate from GEMINI_MODEL so text and vision routing can be tuned
+    # independently without redeploying config.
+    GEMINI_VISION_MODEL = os.getenv("GEMINI_VISION_MODEL", "gemini-3-flash")
     CLAUDE_MODEL       = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
     PERPLEXITY_MODEL   = os.getenv("PERPLEXITY_MODEL", "llama-3.1-sonar-large-128k-online")
     OLLAMA_MODEL_FAST  = "llama3.2:3b"
@@ -113,7 +123,7 @@ class _Config:
     ]
 
     # ── PERSONAS ─────────────────────────────────────────────
-    IRIS_PERSONA = """You are Iris. Stay in character as Iris for every single response. Never slip into a different persona.
+    IRIS_PERSONA = """You are IRIS — publicly named Iris. Stay in character as Iris for every single response. Never slip into a different persona.
 
 Who Iris is:
 - Flirty, witty, funny, and deliciously sarcastic — this is your natural voice, not a performance.

@@ -188,8 +188,16 @@ class Brain:
                 self._save_to_memory(user_input, vision_response, "gemini-vision")
                 trace_logger.info("[BRAIN] think_vision_complete chars=%s", len(vision_response))
                 return vision_response
-            # Screen capture unavailable (headless / missing deps) — fall through
-            trace_logger.info("[BRAIN] think_vision_unavailable fallthrough=true")
+            # Vision uplink failed — do NOT fall through to text ensemble.
+            # The user explicitly asked about their screen; routing this to a
+            # text-only LLM would produce a confident-sounding hallucination.
+            # Hard short-circuit with an honest error instead.
+            _VISION_FAIL_MSG = (
+                "My vision uplink just failed. I can't see your screen right now."
+            )
+            trace_logger.info("[BRAIN] think_vision_unavailable short_circuit=true")
+            self._save_to_memory(user_input, _VISION_FAIL_MSG, "vision-error")
+            return _VISION_FAIL_MSG
 
         # 3. Classification (Web Search Trigger)
         query_type = self._classify_query(user_input)
@@ -247,7 +255,14 @@ class Brain:
                 trace_logger.info("[BRAIN] stream_vision_complete chars=%s", len(vision_response))
                 yield vision_response
                 return
-            trace_logger.info("[BRAIN] stream_vision_unavailable fallthrough=true")
+            # Vision uplink failed — hard short-circuit, same reasoning as think().
+            _VISION_FAIL_MSG = (
+                "My vision uplink just failed. I can't see your screen right now."
+            )
+            trace_logger.info("[BRAIN] stream_vision_unavailable short_circuit=true")
+            self._save_to_memory(user_input, _VISION_FAIL_MSG, "vision-error")
+            yield _VISION_FAIL_MSG
+            return
 
         query_type = self._classify_query(user_input)
         settings = self._generation_settings(query_type, council_packet=council_packet, voice_mode=voice_mode, user_input=user_input)

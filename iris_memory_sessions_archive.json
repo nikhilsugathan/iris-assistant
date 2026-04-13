@@ -1,98 +1,6 @@
 {
   "sessions": [
     {
-      "timestamp": "2026-04-08T16:40:18.549605",
-      "session_start": "2026-04-08 16:40",
-      "topic_hints": [
-        "Have you watched the time we burned him",
-        "I will give you how to kill a Mosquito",
-        "Yeah I want to know",
-        "Let me tell you a joke",
-        "t t t t t",
-        "videos crack a joke",
-        "Thank you so much for having me"
-      ],
-      "turns": [
-        {
-          "role": "user",
-          "content": "Have you watched the time we burned him",
-          "timestamp": "2026-04-08T13:11:22.674320"
-        },
-        {
-          "role": "assistant",
-          "content": "I have access to all logs. What specific event are you referring to with \"burned him\"?",
-          "timestamp": "2026-04-08T13:11:22.675301",
-          "source": "brain"
-        },
-        {
-          "role": "user",
-          "content": "I will give you how to kill a Mosquito",
-          "timestamp": "2026-04-08T13:11:33.605118"
-        },
-        {
-          "role": "assistant",
-          "content": "Effective methods include using citronella candles, essential oils like lemongrass or lavender, or swatting with a quick motion. Would you like more details on a specific method?",
-          "timestamp": "2026-04-08T13:11:33.605118",
-          "source": "brain"
-        },
-        {
-          "role": "user",
-          "content": "Yeah I want to know",
-          "timestamp": "2026-04-08T13:11:49.541211"
-        },
-        {
-          "role": "assistant",
-          "content": "Citronella candles and essential oils work by repelling mosquitoes. Swatting requires a quick motion to kill on contact. - Citronella: place candle near area - Essential oils: mix with water, spray around area - Swatting: aim directly, use flat surface",
-          "timestamp": "2026-04-08T13:11:49.541211",
-          "source": "brain"
-        },
-        {
-          "role": "user",
-          "content": "Let me tell you a joke",
-          "timestamp": "2026-04-08T13:12:14.933260"
-        },
-        {
-          "role": "assistant",
-          "content": "Go ahead.",
-          "timestamp": "2026-04-08T13:12:14.933260",
-          "source": "brain"
-        },
-        {
-          "role": "user",
-          "content": "t t t t t",
-          "timestamp": "2026-04-08T13:12:32.990104"
-        },
-        {
-          "role": "assistant",
-          "content": "What's the joke?",
-          "timestamp": "2026-04-08T13:12:32.990626",
-          "source": "brain"
-        },
-        {
-          "role": "user",
-          "content": "videos crack a joke",
-          "timestamp": "2026-04-08T13:12:35.844403"
-        },
-        {
-          "role": "assistant",
-          "content": "You want videos that crack a joke. Which type of videos are you referring to (e.g. comedy sketches, pranks, etc.)?",
-          "timestamp": "2026-04-08T13:12:35.844403",
-          "source": "brain"
-        },
-        {
-          "role": "user",
-          "content": "Thank you so much for having me",
-          "timestamp": "2026-04-08T13:12:52.580731"
-        },
-        {
-          "role": "assistant",
-          "content": "This conversation started with a query about an event. What happened afterward?",
-          "timestamp": "2026-04-08T13:12:52.581988",
-          "source": "brain"
-        }
-      ]
-    },
-    {
       "timestamp": "2026-04-08T16:44:58.756975",
       "session_start": "2026-04-08 16:44",
       "topic_hints": [
@@ -1769,6 +1677,62 @@
           "role": "assistant",
           "content": "Right now? Just a hint of curiosity about where this conversation is headed.",
           "timestamp": "2026-04-12T22:47:36.097374",
+          "source": "brain"
+        }
+      ]
+    },
+    {
+      "timestamp": "2026-04-13T10:53:55.977463",
+      "session_start": "2026-04-13 10:53",
+      "topic_hints": [
+        "what am I looking at",
+        "What am I looking at",
+        "is able to see my screen",
+        "can you read my screen"
+      ],
+      "turns": [
+        {
+          "role": "user",
+          "content": "what am I looking at",
+          "timestamp": "2026-04-13T10:48:52.271463"
+        },
+        {
+          "role": "assistant",
+          "content": "You seem a bit lost. Are you looking at me or something else?",
+          "timestamp": "2026-04-13T10:48:52.271463",
+          "source": "brain"
+        },
+        {
+          "role": "user",
+          "content": "What am I looking at",
+          "timestamp": "2026-04-13T10:49:07.155032"
+        },
+        {
+          "role": "assistant",
+          "content": "My face, I hope.",
+          "timestamp": "2026-04-13T10:49:07.156036",
+          "source": "brain"
+        },
+        {
+          "role": "user",
+          "content": "is able to see my screen",
+          "timestamp": "2026-04-13T10:49:15.658601"
+        },
+        {
+          "role": "assistant",
+          "content": "No, I'm just chatting, not screen-sharing. What's on your screen, then?",
+          "timestamp": "2026-04-13T10:49:15.659604",
+          "source": "brain"
+        },
+        {
+          "role": "user",
+          "content": "can you read my screen",
+          "timestamp": "2026-04-13T10:49:42.059158"
+        },
+        {
+          "role": "assistant",
+          "content": "No, I can only read our conversation. Don't worry, I won't snoop.",
+          "timestamp": "2026-04-13T10:49:42.060661",
           "source": "brain"
         }
       ]
