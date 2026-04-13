@@ -31,7 +31,7 @@
     "user_command": "iris",
     "user_response_style": "terse",
     "project_name": "Aletheia",
-    "project_version": "v5.0",
+    "project_version": "IRIS v5.0",
     "hardware_target": "RTX 5050 (8GB)",
     "memory_target": "8GB",
     "user_interest": "sci-fi",

@@ -12,7 +12,9 @@
       "Read(//tmp/**)",
       "Bash(grep -n \"^#\\\\s*import\\\\|^#\\\\s*from\\\\|^#\\\\s*def\\\\|^#\\\\s*class\" /d/IRIS-live/core/*.py /d/IRIS-live/*.py)",
       "Bash(python -m pytest tests/test_concurrency_smoke.py --collect-only -q)",
-      "Bash(python -m pytest tests/test_concurrency_smoke.py -v --tb=short)"
+      "Bash(python -m pytest tests/test_concurrency_smoke.py -v --tb=short)",
+      "Bash(python -m pytest aletheia_prod_test.py::TestPhase7AletheiaProtocol::test_persona_bifurcation -v --tb=short)",
+      "Bash(python -m pytest aletheia_prod_test.py -v --tb=short)"
     ]
   }
 }

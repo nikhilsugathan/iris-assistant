@@ -77,6 +77,20 @@ _GENERIC_ASSISTANT_BOILERPLATE = (
     "Please let me know your task so I can help you effectively.",
 )
 
+# ── Phase 7: Vision triggers ──────────────────────────────────────────────────
+# Phrases that signal the user wants IRIS to analyse the current screen.
+# Matched case-insensitively via _is_vision_query().  Keep triggers
+# unambiguous: they must never collide with normal chat phrasing.
+VISION_TRIGGERS: tuple[str, ...] = (
+    "what am i looking at",
+    "what do you see",
+    "look at my screen",
+    "read my screen",
+    "what is on my screen",
+    "describe my screen",
+    "what's on my screen",
+)
+
 class Brain:
     def __init__(self, memory):
         self.memory = memory
@@ -165,7 +179,19 @@ class Brain:
             self._save_to_memory(user_input, direct, "local")
             return direct
 
-        # 2. Classification (Web Search Trigger)
+        # 2. Vision intercept — Phase 7
+        # Must run before classification so a vision query never falls into
+        # web-search or local-LLM routing (both of which have no screen access).
+        if self._is_vision_query(user_input):
+            vision_response = self._try_vision(user_input, admin_unlocked=admin_unlocked)
+            if vision_response:
+                self._save_to_memory(user_input, vision_response, "gemini-vision")
+                trace_logger.info("[BRAIN] think_vision_complete chars=%s", len(vision_response))
+                return vision_response
+            # Screen capture unavailable (headless / missing deps) — fall through
+            trace_logger.info("[BRAIN] think_vision_unavailable fallthrough=true")
+
+        # 3. Classification (Web Search Trigger)
         query_type = self._classify_query(user_input)
         settings = self._generation_settings(query_type, council_packet=council_packet, voice_mode=voice_mode, user_input=user_input)
         trace_logger.info(
@@ -175,8 +201,8 @@ class Brain:
             settings.get("max_tokens"),
             settings.get("context_turns"),
         )
-        
-        # 3. Ensemble Reasoning
+
+        # 4. Ensemble Reasoning
         if getattr(Config, "USE_ENSEMBLE", False):
             response = self._ensemble_think(user_input, query_type, settings, admin_unlocked=admin_unlocked)
         else:
@@ -212,6 +238,16 @@ class Brain:
             self._save_to_memory(user_input, direct, "local")
             yield direct
             return
+
+        # Vision intercept — Phase 7 (mirrors think(); yields single chunk then returns)
+        if self._is_vision_query(user_input):
+            vision_response = self._try_vision(user_input, admin_unlocked=admin_unlocked)
+            if vision_response:
+                self._save_to_memory(user_input, vision_response, "gemini-vision")
+                trace_logger.info("[BRAIN] stream_vision_complete chars=%s", len(vision_response))
+                yield vision_response
+                return
+            trace_logger.info("[BRAIN] stream_vision_unavailable fallthrough=true")
 
         query_type = self._classify_query(user_input)
         settings = self._generation_settings(query_type, council_packet=council_packet, voice_mode=voice_mode, user_input=user_input)
@@ -318,11 +354,55 @@ class Brain:
     # ─────────────────────────────────────────────────────────────
 
     def _get_persona(self, admin_unlocked: bool = False) -> str:
+        """Return the active system-prompt persona string for the current RBAC tier.
+
+        Validation guards protect against placeholder or accidentally overwritten
+        persona strings in Config.  A non-empty persona is only used when it
+        contains the required marker words that prove it is a genuine, hardened
+        definition — not a stub like "You are IRIS, a helpful assistant."
+
+        Public  (admin_unlocked=False):
+            Config.IRIS_PERSONA  must contain "deflect" (deflection instruction).
+            Falls back to _DEFAULT_IRIS_PERSONA if absent or placeholder.
+
+        Admin   (admin_unlocked=True):
+            Config.ALETHEIA_PERSONA  must contain both "aletheia" (identity) and
+            "root access" (capability grant).
+            Falls back to _DEFAULT_ALETHEIA_PERSONA if absent or placeholder.
+        """
         if admin_unlocked:
-            persona = getattr(Config, "ALETHEIA_PERSONA", "")
-            return persona.strip() if persona.strip() else _DEFAULT_ALETHEIA_PERSONA
-        persona = getattr(Config, "IRIS_PERSONA", "")
-        return persona.strip() if persona.strip() else _DEFAULT_IRIS_PERSONA
+            persona = getattr(Config, "ALETHEIA_PERSONA", "").strip()
+            # Guard: must explicitly name Aletheia and grant root access.
+            # Placeholder or misconfigured strings fall back to the hardened
+            # default so admin RBAC never silently degrades to the public tier.
+            if (
+                persona
+                and "aletheia" in persona.lower()
+                and "root access" in persona.lower()
+            ):
+                return persona
+            trace_logger.warning(
+                "[BRAIN] aletheia_persona_invalid fallback=default "
+                "has_aletheia=%s has_root_access=%s",
+                "aletheia" in persona.lower(),
+                "root access" in persona.lower(),
+            )
+            return _DEFAULT_ALETHEIA_PERSONA
+
+        persona = getattr(Config, "IRIS_PERSONA", "").strip()
+        # Guard: must contain a deflection instruction ("deflect").
+        # A placeholder string that lacks this word indicates a misconfigured
+        # or accidentally overwritten persona — fall back to the hardened
+        # default so the public sandbox never loses its identity constraints.
+        if persona and "deflect" in persona.lower():
+            return persona
+        trace_logger.warning(
+            "[BRAIN] iris_persona_invalid fallback=default "
+            "non_empty=%s has_deflect=%s",
+            bool(persona),
+            "deflect" in persona.lower(),
+        )
+        return _DEFAULT_IRIS_PERSONA
 
     # ─────────────────────────────────────────────────────────────
     # API HANDLERS
@@ -439,6 +519,111 @@ class Brain:
         }
         resp = requests.post("https://api.anthropic.com/v1/messages", headers=headers, json=payload, timeout=12)
         return resp.json()["content"][0]["text"].strip()
+
+    # ── Phase 7: Vision helpers ───────────────────────────────────────────────
+
+    def _is_vision_query(self, text: str) -> bool:
+        """Return True if the user's input matches any VISION_TRIGGERS phrase."""
+        lowered = (text or "").lower()
+        return any(trigger in lowered for trigger in VISION_TRIGGERS)
+
+    def _call_gemini_vision(
+        self,
+        prompt: str,
+        image_b64: str,
+        admin_unlocked: bool = False,
+    ) -> str:
+        """Submit a screen-capture to the Gemini multimodal API and return the reply.
+
+        Schema used:
+          system_instruction  — active IRIS/Aletheia persona (text only)
+          contents[0].parts   — [{text: user prompt}, {inline_data: jpeg_b64}]
+
+        Args:
+            prompt:         The user's natural-language query.
+            image_b64:      Base64-encoded JPEG string from capture_screen_base64().
+            admin_unlocked: Selects IRIS vs Aletheia persona for the system instruction.
+
+        Returns:
+            Stripped text reply from Gemini.
+
+        Raises:
+            RuntimeError: if GEMINI_API_KEY is absent or the API call fails.
+        """
+        api_key = getattr(Config, "GEMINI_API_KEY", "")
+        if not api_key:
+            raise RuntimeError("[Vision] GEMINI_API_KEY is not configured.")
+
+        # GEMINI_VISION_MODEL lets operators pin a vision-capable model
+        # (e.g. gemini-2.0-flash or gemini-1.5-pro) independently of the
+        # text model.  Falls back to Config.GEMINI_MODEL if not set.
+        model = getattr(Config, "GEMINI_VISION_MODEL", None) or Config.GEMINI_MODEL
+        url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{model}:generateContent?key={api_key}"
+        )
+
+        persona = self._get_persona(admin_unlocked)
+
+        payload: dict = {
+            # system_instruction keeps the persona separate from the user turn,
+            # matching the Gemini 1.5+ multimodal recommended schema.
+            "system_instruction": {
+                "parts": [{"text": persona}]
+            },
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {"text": prompt},
+                        {
+                            "inline_data": {
+                                "mime_type": "image/jpeg",
+                                "data": image_b64,
+                            }
+                        },
+                    ],
+                }
+            ],
+            "generationConfig": {
+                # Vision responses can be longer than typical voice replies —
+                # the model may need to enumerate UI elements or read text.
+                "maxOutputTokens": 400,
+                "temperature": 0.4,
+            },
+        }
+
+        resp = requests.post(url, json=payload, timeout=20)
+        resp.raise_for_status()
+        return resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+
+    def _try_vision(self, user_input: str, admin_unlocked: bool = False) -> Optional[str]:
+        """Capture the screen and call Gemini Vision.  Returns None on any failure.
+
+        Failure modes handled gracefully (return None → caller falls through to
+        normal text routing):
+          - mss / Pillow not installed
+          - Headless / no display environment
+          - Gemini API unavailable or key not set
+          - Network timeout
+        """
+        if "gemini" not in self.available_apis:
+            trace_logger.info("[BRAIN] vision_skip reason=no_gemini_api")
+            return None
+        try:
+            # Dynamic import: keeps mss/Pillow as optional dependencies.
+            # brain.py loads cleanly on headless servers even if they are absent.
+            from core.vision import capture_screen_base64   # noqa: PLC0415
+            image_b64 = capture_screen_base64()
+            trace_logger.info("[BRAIN] vision_capture_ok")
+            response   = self._call_gemini_vision(user_input, image_b64, admin_unlocked=admin_unlocked)
+            trace_logger.info("[BRAIN] vision_response_ok chars=%s", len(response))
+            return response
+        except Exception as exc:
+            trace_logger.info("[BRAIN] vision_failed error=%r", str(exc))
+            return None
+
+    # ── / Phase 7 ─────────────────────────────────────────────────────────────
 
     def _call_gemini(self, prompt, settings: Optional[dict] = None, admin_unlocked: bool = False) -> str:
         settings = settings or {}

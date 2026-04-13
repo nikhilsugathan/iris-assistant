@@ -1,86 +1,6 @@
 {
   "sessions": [
     {
-      "timestamp": "2026-04-08T13:08:53.785766",
-      "session_start": "2026-04-08 13:08",
-      "topic_hints": [
-        "Thank you very much",
-        "Weather data for 'Chennai': Chennai, IN: Broken clouds. 33\u00b0C, feels like 40\u00b0C. Humidity 70%, wind",
-        "Weather data for 'kerala': Kerala, AF: Overcast clouds. 16\u00b0C, feels like 16\u00b0C. Humidity 62%, wind",
-        "I just talked on something",
-        "I don't even have my physics",
-        "I just want to know about th"
-      ],
-      "turns": [
-        {
-          "role": "user",
-          "content": "Thank you very much",
-          "timestamp": "2026-04-08T12:41:37.066622"
-        },
-        {
-          "role": "assistant",
-          "content": "For what, exactly?",
-          "timestamp": "2026-04-08T12:41:37.066622",
-          "source": "brain"
-        },
-        {
-          "role": "user",
-          "content": "Weather data for 'Chennai': Chennai, IN: Broken clouds. 33\u00b0C, feels like 40\u00b0C. Humidity 70%, wind 4 m/s.\n\nRephrase this weather data naturally in one or two sentences, in the same language as the user's query: 'What is the weather in Chennai'. Keep it concise and conversational. Do not add anything that isn't in the data.",
-          "timestamp": "2026-04-08T12:41:44.301177"
-        },
-        {
-          "role": "assistant",
-          "content": "It's broken clouds in Chennai with a temperature of 33\u00b0C, feeling like 40\u00b0C. Humidity's at 70% with a gentle 4 m/s wind.",
-          "timestamp": "2026-04-08T12:41:44.301177",
-          "source": "brain"
-        },
-        {
-          "role": "user",
-          "content": "Weather data for 'kerala': Kerala, AF: Overcast clouds. 16\u00b0C, feels like 16\u00b0C. Humidity 62%, wind 2 m/s.\n\nRephrase this weather data naturally in one or two sentences, in the same language as the user's query: 'what's the weather in kerala'. Keep it concise and conversational. Do not add anything that isn't in the data.",
-          "timestamp": "2026-04-08T12:42:06.096561"
-        },
-        {
-          "role": "assistant",
-          "content": "Kerala's got overcast clouds with a temperature of 16\u00b0C. Humidity's at 62% with a light 2 m/s wind.",
-          "timestamp": "2026-04-08T12:42:06.097630",
-          "source": "brain"
-        },
-        {
-          "role": "user",
-          "content": "I just talked on something",
-          "timestamp": "2026-04-08T12:42:32.681422"
-        },
-        {
-          "role": "assistant",
-          "content": "What did you just talk about, then?",
-          "timestamp": "2026-04-08T12:42:32.681422",
-          "source": "brain"
-        },
-        {
-          "role": "user",
-          "content": "I don't even have my physics",
-          "timestamp": "2026-04-08T12:42:35.184153"
-        },
-        {
-          "role": "assistant",
-          "content": "You don't have your physics notes or textbook? What's going on?",
-          "timestamp": "2026-04-08T12:42:35.184153",
-          "source": "brain"
-        },
-        {
-          "role": "user",
-          "content": "I just want to know about th",
-          "timestamp": "2026-04-08T12:42:43.755073"
-        },
-        {
-          "role": "assistant",
-          "content": "What specifically about \"th\"? You were saying something, finish it.",
-          "timestamp": "2026-04-08T12:42:43.756063",
-          "source": "brain"
-        }
-      ]
-    },
-    {
       "timestamp": "2026-04-08T16:40:18.549605",
       "session_start": "2026-04-08 16:40",
       "topic_hints": [
@@ -1817,6 +1737,38 @@
           "role": "assistant",
           "content": "So \"something\" is happening with your infrastructure project. Care to share what that something is?",
           "timestamp": "2026-04-12T21:50:36.583649",
+          "source": "brain"
+        }
+      ]
+    },
+    {
+      "timestamp": "2026-04-13T10:32:23.065213",
+      "session_start": "2026-04-13 10:32",
+      "topic_hints": [
+        "So IRIS how are you feeling now",
+        "do you feel anything"
+      ],
+      "turns": [
+        {
+          "role": "user",
+          "content": "So IRIS how are you feeling now",
+          "timestamp": "2026-04-12T22:47:23.888392"
+        },
+        {
+          "role": "assistant",
+          "content": "I'm feeling sharp, thanks for asking. A little caffeine and a lot of sass are keeping me on point tonight.",
+          "timestamp": "2026-04-12T22:47:23.888392",
+          "source": "brain"
+        },
+        {
+          "role": "user",
+          "content": "do you feel anything",
+          "timestamp": "2026-04-12T22:47:36.095928"
+        },
+        {
+          "role": "assistant",
+          "content": "Right now? Just a hint of curiosity about where this conversation is headed.",
+          "timestamp": "2026-04-12T22:47:36.097374",
           "source": "brain"
         }
       ]
