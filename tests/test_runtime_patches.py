@@ -20,6 +20,7 @@ def test_brain_runtime_patches_are_applied():
     assert getattr(Brain, "_iris_lazy_llm_patch_applied", False)
     assert getattr(Brain, "_iris_vision_fallback_patch_applied", False)
     assert getattr(Brain, "_iris_performance_patch_applied", False)
+    assert getattr(Brain, "_iris_multilingual_patch_applied", False)
     assert hasattr(Brain, "_call_gemini_vision")
 
 
@@ -45,6 +46,29 @@ def test_short_prompt_fast_path_and_settings():
     settings = brain._generation_settings("general", user_input="how are you")
     assert settings["max_tokens"] <= 120
     assert settings["context_turns"] <= 2
+
+
+def test_multilingual_generation_settings_and_voice_routing():
+    import core  # noqa: F401
+    from core.brain import Brain
+    from core.multilingual_patches import language_instruction_for, tts_voice_for
+    from core.voice import Voice
+
+    class DummyMemory:
+        def add(self, *args, **kwargs):
+            pass
+
+        def get_context(self, *args, **kwargs):
+            return []
+
+    brain = Brain(DummyMemory())
+    settings = brain._generation_settings("general", user_input="puedes explicarme esto en detalle")
+    assert "Spanish" in settings.get("extra_system", "")
+    assert "same language" in settings.get("extra_system", "")
+    assert language_instruction_for("guten morgen kannst du mir helfen")
+    assert tts_voice_for("Hola, mi amor. ¿Qué hacemos?") == "es-ES-ElviraNeural"
+    assert tts_voice_for("Guten Morgen. Was steht an?") == "de-DE-KatjaNeural"
+    assert getattr(Voice, "_iris_multilingual_voice_patch_applied", False)
 
 
 def test_language_aware_fast_smalltalk():
@@ -106,6 +130,7 @@ def test_config_hardening_is_lightweight_by_default():
     assert getattr(Config, "GROQ_STT_MODEL", "") == "whisper-large-v3-turbo"
     assert getattr(Config, "COMMAND_RMS_THRESHOLD", 0) >= 400
     assert getattr(Config, "VOICE_PLAYBACK_MODE", "balanced") in {"balanced", "stable", "realtime"}
+    assert getattr(Config, "STT_LANGUAGE", "")
 
 
 def test_startup_config_compatibility_defaults_exist():
@@ -124,6 +149,7 @@ def test_startup_config_compatibility_defaults_exist():
         "MAX_MEMORY_TURNS",
         "RUNBOOK_MODE",
         "ENABLE_AUTO_SYNC",
+        "STT_LANGUAGE",
         "validate",
     ]
     for name in required:
