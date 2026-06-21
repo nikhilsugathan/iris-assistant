@@ -41,6 +41,10 @@ try:
 
     _apply_lp(_multilingual_module, _performance_module)
 
+    from .language_voice_bridge import apply_language_voice_bridge
+
+    apply_language_voice_bridge(_brain_module, _voice_module, _multilingual_module)
+
     from .tts_sanitizer import apply_tts_sanitizer
 
     apply_tts_sanitizer(_voice_module)
