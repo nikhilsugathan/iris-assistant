@@ -19,31 +19,38 @@ _MALAYALAM_SCRIPT_RE = re.compile(r"[\u0D00-\u0D7F]")
 _LANGUAGE_RULES = [
     (
         "spanish",
-        re.compile(r"\b(hola|amor|mi amor|gracias|buenos|buenas|dime|necesito|quiero|puedes|como|cómo|que|qué|por favor|vale|sí|si)\b", re.IGNORECASE),
+        re.compile(
+            r"\b("
+            r"hola|amor|mi amor|gracias|buenos|buenas|dime|necesito|quiero|puedes|"
+            r"como|cómo|que|qué|por favor|vale|sí|si|español|espanol|spanish|"
+            r"el|la|los|las|un|una|banco|banko|bebé|bebe|bebes|bebis|estas|estás"
+            r")\b",
+            re.IGNORECASE,
+        ),
         "Spanish",
         "es-ES-ElviraNeural",
     ),
     (
         "german",
-        re.compile(r"\b(hallo|guten|morgen|abend|danke|bitte|kannst|können|was|wie|warum|ich|du|aufgabe|weiter|ja|nein)\b", re.IGNORECASE),
+        re.compile(r"\b(hallo|guten|morgen|abend|danke|bitte|kannst|können|was|wie|warum|ich|du|aufgabe|weiter|ja|nein|deutsch|german)\b", re.IGNORECASE),
         "German",
         "de-DE-KatjaNeural",
     ),
     (
         "french",
-        re.compile(r"\b(bonjour|salut|merci|s'il|sil|vous|plaît|plait|peux|pouvez|quoi|comment|pourquoi|oui|non|bonsoir)\b", re.IGNORECASE),
+        re.compile(r"\b(bonjour|salut|merci|s'il|sil|vous|plaît|plait|peux|pouvez|quoi|comment|pourquoi|oui|non|bonsoir|français|francais|french)\b", re.IGNORECASE),
         "French",
         "fr-FR-DeniseNeural",
     ),
     (
         "italian",
-        re.compile(r"\b(ciao|buongiorno|grazie|prego|puoi|cosa|come|perché|perche|sì|si|no)\b", re.IGNORECASE),
+        re.compile(r"\b(ciao|buongiorno|grazie|prego|puoi|cosa|come|perché|perche|sì|si|italiano|italian)\b", re.IGNORECASE),
         "Italian",
         "it-IT-ElsaNeural",
     ),
     (
         "hindi",
-        re.compile(r"\b(namaste|namaskar|pranam|shukriya|dhanyavad|kya|kaise|karna|batao|bolo|aaj|haan|nahi|theek|accha)\b", re.IGNORECASE),
+        re.compile(r"\b(namaste|namaskar|pranam|shukriya|dhanyavad|kya|kaise|karna|batao|bolo|aaj|haan|nahi|theek|accha|hindi|hinglish)\b", re.IGNORECASE),
         "Hindi/Hinglish",
         "hi-IN-SwaraNeural",
     ),
@@ -98,6 +105,9 @@ _STYLE_LINES = {
     },
 }
 
+_STYLE_LABELS = {key: label for key, _pattern, label, _voice in _LANGUAGE_RULES}
+_STYLE_VOICES = {key: voice for key, _pattern, _label, voice in _LANGUAGE_RULES}
+
 
 def _env_bool(name: str, default: bool = True) -> bool:
     raw = os.getenv(name)
@@ -112,7 +122,7 @@ def _normalize_line(text: str) -> str:
 
 
 def malayalam_native_tts_enabled() -> bool:
-    return _env_bool("IRIS_MALAYALAM_NATIVE_TTS", True)
+    return _env_bool("IRIS_MALAYALAM_NATIVE_TTS", False)
 
 
 def sticky_language_tts_enabled() -> bool:
@@ -129,11 +139,17 @@ def detect_language_style(text: str) -> Optional[tuple[str, str, str]]:
     return None
 
 
-def language_instruction_for(text: str) -> str:
-    detected = detect_language_style(text)
-    if not detected:
-        return ""
+def _style_tuple_for_key(key: str) -> Optional[tuple[str, str, str]]:
+    label = _STYLE_LABELS.get(key)
+    voice = _STYLE_VOICES.get(key)
+    if label and voice:
+        return key, label, voice
+    return None
+
+
+def _instruction_for_detected(detected: tuple[str, str, str], *, persistent: bool = False) -> str:
     key, label, _voice = detected
+    prefix = "Continue using" if persistent else "The user is speaking in"
     if key == "malayalam":
         if malayalam_native_tts_enabled():
             return (
@@ -147,11 +163,24 @@ def language_instruction_for(text: str) -> str:
             "For spoken clarity, reply mostly in English and use only very short Malayalam romanized phrases. "
             "Do not write long Malayalam sentences in romanized form. Do not explain which language it is."
         )
+    if key == "spanish":
+        return (
+            f"{prefix} Spanish, including imperfect or broken Spanish. Reply naturally and fluently in Spanish or Spanish-English mixed style. "
+            "If the user's Spanish is broken, lightly understand the intent and correct/help playfully, but do not switch into a full English explanation unless asked. "
+            "Do not explain which language it is. Do not translate unless asked."
+        )
     return (
-        f"The user is speaking in {label}. Reply naturally and fluently in that same language/style. "
+        f"{prefix} {label}. Reply naturally and fluently in that same language/style. "
         "Do not explain which language it is. Do not translate unless asked. "
         "If the user mixes English with that language, mirror the same mixed style naturally."
     )
+
+
+def language_instruction_for(text: str) -> str:
+    detected = detect_language_style(text)
+    if not detected:
+        return ""
+    return _instruction_for_detected(detected)
 
 
 def tts_voice_for(text: str) -> Optional[str]:
@@ -164,16 +193,13 @@ def tts_voice_for(text: str) -> Optional[str]:
 def multilingual_tts_voice_switch_enabled() -> bool:
     if sticky_language_tts_enabled():
         return True
-    if _env_bool("IRIS_LOCK_TTS_VOICE", True):
+    if _env_bool("IRIS_LOCK_TTS_VOICE", False):
         return False
-    return _env_bool("IRIS_MULTILINGUAL_TTS", False)
+    return _env_bool("IRIS_MULTILINGUAL_TTS", True)
 
 
 def _voice_for_style(key: str) -> Optional[str]:
-    for item_key, _pattern, _label, voice in _LANGUAGE_RULES:
-        if item_key == key:
-            return voice
-    return None
+    return _STYLE_VOICES.get(key)
 
 
 def _detect_system_line_kind(text: str) -> Optional[str]:
@@ -205,7 +231,14 @@ def apply_multilingual_patches(brain_module, voice_module) -> None:
                 voice_mode=voice_mode,
                 user_input=user_input,
             )
-            instruction = language_instruction_for(user_input)
+            detected = detect_language_style(user_input)
+            if detected:
+                self._iris_active_language_key = detected[0]
+                instruction = _instruction_for_detected(detected)
+            else:
+                active_key = getattr(self, "_iris_active_language_key", None)
+                active_detected = _style_tuple_for_key(active_key) if active_key else None
+                instruction = _instruction_for_detected(active_detected, persistent=True) if active_detected else ""
             if instruction:
                 existing = str(settings.get("extra_system", "") or "").strip()
                 settings["extra_system"] = f"{existing}\n\n{instruction}".strip() if existing else instruction
@@ -243,12 +276,12 @@ def apply_multilingual_patches(brain_module, voice_module) -> None:
                 self._iris_language_voice_key = key
                 self._iris_language_voice_name = voice_name
                 return
-            if interrupt:
-                # New English/default utterance resets back to Iris unless the text is
-                # a short system line, in which case we keep the current style.
-                if _detect_system_line_kind(text) is None:
-                    self._iris_language_voice_key = None
-                    self._iris_language_voice_name = None
+            # Do not reset active language just because a mixed-language response
+            # starts with English. Sticky mode intentionally keeps the conversation
+            # voice until a new language is detected or a clean English turn happens.
+            if interrupt and _detect_system_line_kind(text) is None and not getattr(self, "_iris_language_voice_name", None):
+                self._iris_language_voice_key = None
+                self._iris_language_voice_name = None
 
         def _stylize_system_line(self, text: str) -> str:
             if not _env_bool("IRIS_UNIQUE_SYSTEM_LINES", True):
