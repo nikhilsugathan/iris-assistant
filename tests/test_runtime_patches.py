@@ -56,3 +56,16 @@ def test_logger_has_file_and_trace_handlers():
     assert any(hasattr(handler, "baseFilename") and handler.baseFilename.endswith("iris.log") for handler in logger.handlers)
     assert trace_logger.propagate is True
     assert any(hasattr(handler, "baseFilename") and handler.baseFilename.endswith("iris_trace.log") for handler in trace_parent.handlers)
+
+
+def test_observability_hooks_are_available():
+    from core.observability import install_observability, trace_callable
+
+    install_observability()
+
+    def sample(value):
+        return value + 1
+
+    wrapped = trace_callable(sample, "tests.sample")
+    assert wrapped(2) == 3
+    assert getattr(wrapped, "_iris_observed", False)
