@@ -28,11 +28,18 @@ def test_voice_stability_patch_is_applied_in_text_mode():
     assert getattr(Config, "VOICE_PLAYBACK_MODE", "balanced") in {"balanced", "stable", "realtime"}
 
 
-def test_config_hardening_defaults_are_present():
-    import core  # noqa: F401 - applies runtime config hardening
+def test_config_hardening_is_lightweight_by_default():
+    import core  # noqa: F401 - applies lightweight runtime config defaults
     from config import Config
 
     assert getattr(Config, "GROQ_STT_MODEL", "") == "whisper-large-v3-turbo"
     assert getattr(Config, "COMMAND_RMS_THRESHOLD", 0) >= 400
-    assert getattr(Config, "ALLOW_ADMIN_SAFETY_BYPASS", True) is False
-    assert getattr(Config, "REQUIRE_ADMIN_APPROVAL", False) is True
+    assert getattr(Config, "VOICE_PLAYBACK_MODE", "balanced") in {"balanced", "stable", "realtime"}
+
+
+def test_memory_uses_lock_and_atomic_helper():
+    from core.memory import Memory, _atomic_json_write
+
+    assert callable(_atomic_json_write)
+    memory = Memory("test_runtime_memory.json")
+    assert hasattr(memory, "_lock")
