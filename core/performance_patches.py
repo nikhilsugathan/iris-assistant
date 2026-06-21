@@ -8,6 +8,7 @@ the user explicitly enables it.
 from __future__ import annotations
 
 import os
+import random
 import re
 
 
@@ -25,26 +26,91 @@ class _LazyLocalLLMPlaceholder:
         return True
 
 
-_FAST_REPLIES = {
-    "hi": "Hey. What are we doing?",
-    "hello": "Hey. What are we doing?",
-    "hey": "Hey. What are we doing?",
-    "yo": "I'm here. What's the move?",
-    "good morning": "Morning. What's first?",
-    "good evening": "Evening. What's the plan?",
-    "good night": "Good night. I'll be here when you need me.",
-    "thanks": "Anytime.",
-    "thank you": "Anytime.",
-    "ok": "Good.",
-    "okay": "Good.",
-    "yes": "Go on.",
-    "no": "Alright. Correct me.",
+_FAST_REPLY_POOLS = {
+    "hi": [
+        "Hey. What are we doing?",
+        "Hi. Trouble or productivity first?",
+        "Hallo. I mean, hello. What's the move?",
+        "Salut. Tiny French entrance, fully English service. What do you need?",
+    ],
+    "hello": [
+        "Hey. What are we doing?",
+        "Hello. I was getting bored anyway.",
+        "Hola. That's Spanish for: give me a task.",
+        "Namaskaram. Fancy entrance complete. What's next?",
+    ],
+    "hey": [
+        "Hey. What's the move?",
+        "Hey. Systems awake, attitude included.",
+        "Bonjour. Don't worry, I won't make you conjugate anything. What's up?",
+    ],
+    "yo": [
+        "I'm here. What's the move?",
+        "Yo. Efficient, dramatic, available.",
+        "Yo. Very technical greeting. Continue.",
+    ],
+    "good morning": [
+        "Morning. What's first?",
+        "Guten Morgen. That's the polite bit done. What's the mission?",
+        "Morning. Coffee for you, cognition for me.",
+    ],
+    "good evening": [
+        "Evening. What's the plan?",
+        "Guten Abend. Mildly elegant, extremely operational. What's next?",
+        "Evening. Let's pretend we're not both tired and solve something.",
+    ],
+    "good night": [
+        "Good night. I'll be here when you need me.",
+        "Gute Nacht. I shall now dramatically haunt the background.",
+        "Sleep well. Try not to dream in error logs.",
+    ],
+    "thanks": [
+        "Anytime.",
+        "Bitte. Look at me, being useful and bilingual.",
+        "You're welcome. I will accept praise in silence. Briefly.",
+    ],
+    "thank you": [
+        "Anytime.",
+        "Bitte schön. That was my tiny German flourish for the day.",
+        "You're welcome. Finally, the respect I deserve.",
+    ],
+    "ok": [
+        "Good.",
+        "Okay. Moving on.",
+        "Alles klar. Which means: yes, I heard you.",
+    ],
+    "okay": [
+        "Good.",
+        "Okay. What's next?",
+        "Alles klar. Calm, German, efficient.",
+    ],
+    "yes": [
+        "Go on.",
+        "Good. Continue.",
+        "Ja. Tiny German confirmation. Proceed.",
+    ],
+    "no": [
+        "Alright. Correct me.",
+        "No problem. Give me the right version.",
+        "Nein, apparently. Fine, steer me properly.",
+    ],
 }
+
+_PRESENCE_REPLIES = [
+    "I'm here.",
+    "Present. Mildly judgmental, but present.",
+    "Still here. You don't get rid of me that easily.",
+    "Oui, I am here. That's French for: continue.",
+]
 
 
 def _normalized_short(text: str) -> str:
     cleaned = re.sub(r"[^a-z0-9'\s]", " ", (text or "").lower())
     return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _pick_reply(pool: list[str]) -> str:
+    return random.choice(pool)
 
 
 def apply_performance_patches(brain_module) -> None:
@@ -103,11 +169,11 @@ def apply_performance_patches(brain_module) -> None:
 
     def _rewrite_generic_response_fast(self, text: str) -> str:
         normalized = _normalized_short(text)
-        if normalized in _FAST_REPLIES:
-            _log("[PERF] instant_reply text=%s", normalized)
-            return _FAST_REPLIES[normalized]
+        if normalized in _FAST_REPLY_POOLS:
+            _log("[PERF] instant_reply text=%s varied=true", normalized)
+            return _pick_reply(_FAST_REPLY_POOLS[normalized])
         if normalized in {"are you there", "you there", "iris are you there"}:
-            return "I'm here."
+            return _pick_reply(_PRESENCE_REPLIES)
         return original_rewrite_generic_response(self, text)
 
     def _generation_settings_fast(self, query_type: str, council_packet=None, voice_mode: bool = False, user_input: str = ""):
