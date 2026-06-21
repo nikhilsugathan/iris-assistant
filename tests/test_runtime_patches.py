@@ -46,6 +46,15 @@ def test_config_hardening_is_lightweight_by_default():
     assert getattr(Config, "VOICE_PLAYBACK_MODE", "balanced") in {"balanced", "stable", "realtime"}
 
 
+def test_startup_config_compatibility_defaults_exist():
+    import core  # noqa: F401 - applies compatibility defaults
+    from config import Config
+
+    assert getattr(Config, "PUBLIC_NAME", "")
+    assert getattr(Config, "SYSTEM_NAME", "")
+    assert getattr(Config, "SYSTEM_MOTTO", "")
+
+
 def test_memory_uses_lock_and_atomic_helper():
     from core.memory import Memory, _atomic_json_write
 
