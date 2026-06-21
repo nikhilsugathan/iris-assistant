@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import random
 import re
+from collections import deque
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -26,116 +27,91 @@ class _LazyLocalLLMPlaceholder:
         return True
 
 
-_BOOT_LINES_PUBLIC = [
-    "Hola, mi amor. ¿Qué caos resolvemos hoy?",
-    "Guten Morgen. Bereit für ein bisschen Magie?",
-    "Bonjour, patron. On fait des merveilles?",
-    "Namaskaram. ഇന്നെന്താണ് പ്ലാൻ?",
-    "Buongiorno. Facciamo qualcosa di brillante.",
-    "Systems awake. Mischief politely contained.",
-    "Back online. Try to look surprised.",
-    "Brain warmed up. Ego responsibly restrained.",
-    "Iris online. Charm levels suspiciously high.",
-    "Operational, caffeinated, and mildly dramatic.",
-    "Hallo, Liebling. Was zerstören wir produktiv?",
-    "Salut. Je suis prête, évidemment.",
-]
+_RECENT_FAST_REPLIES: deque[str] = deque(maxlen=12)
 
-_BOOT_LINES_ADMIN = [
-    "Aletheia online. State the objective.",
-    "Root session active. Proceed.",
-    "Admin layer awake. Define the target.",
-    "Sovereign mode active. Speak clearly.",
-]
+_STYLE_OPENERS = {
+    "english": ["Hey", "Hello", "There you are", "Look who summoned me"],
+    "spanish": ["Hola, mi amor", "Claro, mi amor", "Aquí estoy", "Dime"],
+    "german": ["Hallo", "Guten Morgen", "Alles klar", "Ich bin da"],
+    "french": ["Bonjour", "Salut", "Bien sûr", "Je suis là"],
+    "italian": ["Ciao", "Buongiorno", "Eccomi", "Dimmi"],
+    "indic": ["Namaste", "Namaskar", "Pranam", "Arre wah"],
+    "malayalam": ["Namaskaram", "Sukham alle", "Parayu", "Njan ivide undu"],
+}
 
-_FAST_REPLY_POOLS = {
-    "hi": [
-        "Hey. What are we doing?",
-        "Hi. Trouble or productivity first?",
-        "Hallo. Was machen wir?",
-        "Salut. On commence?",
+_STYLE_TASK_LINES = {
+    "english": [
+        "what are we solving first?",
+        "give me the mission.",
+        "what needs my dangerously competent attention?",
+        "tell me what we are fixing.",
     ],
-    "hello": [
-        "Hey. What are we doing?",
-        "Hello. I was getting bored anyway.",
-        "Hola, mi amor. ¿Qué hacemos?",
-        "Namaskaram. ഇന്നെന്താണ് ചെയ്യേണ്ടത്?",
+    "spanish": [
+        "¿qué resolvemos primero?",
+        "dime qué necesitas y lo hacemos bien.",
+        "¿cuál es la misión de hoy?",
+        "te escucho; dame el objetivo.",
     ],
-    "hey": [
-        "Hey. What's the move?",
-        "Hey. Systems awake, attitude included.",
-        "Bonjour. On y va?",
-        "Hallo. Ich höre.",
+    "german": [
+        "was lösen wir zuerst?",
+        "sag mir das Ziel, dann legen wir los.",
+        "was steht heute an?",
+        "ich höre; gib mir die Aufgabe.",
     ],
-    "yo": [
-        "I'm here. What's the move?",
-        "Yo. Efficient, dramatic, available.",
-        "Ey. Was geht?",
-        "Hola. Dime.",
+    "french": [
+        "qu'est-ce qu'on règle d'abord?",
+        "donne-moi la mission, je m'en occupe.",
+        "on commence par quoi?",
+        "je t'écoute; quel est l'objectif?",
     ],
-    "good morning": [
-        "Morning. What's first?",
-        "Guten Morgen. Was steht an?",
-        "Buenos días. ¿Cuál es la misión?",
-        "Bonjour. Quelle est la mission?",
+    "italian": [
+        "cosa sistemiamo per prima cosa?",
+        "dimmi la missione e partiamo.",
+        "da dove cominciamo?",
+        "ti ascolto; qual è l'obiettivo?",
     ],
-    "good evening": [
-        "Evening. What's the plan?",
-        "Guten Abend. Was machen wir?",
-        "Buenas noches. ¿Qué resolvemos?",
-        "Bonsoir. On travaille ou on prétend?",
+    "indic": [
+        "aaj kis cheez ko smart banana hai?",
+        "batao, pehle kya solve karna hai?",
+        "kaunsa mission shuru karein?",
+        "bolo, aaj kisko brilliant banate hain?",
     ],
-    "good night": [
-        "Good night. I'll be here when you need me.",
-        "Gute Nacht. Träum nicht von Fehlermeldungen.",
-        "Buenas noches, mi amor. Descansa.",
-        "Bonne nuit. Je garde le fort.",
-    ],
-    "thanks": [
-        "Anytime.",
-        "Bitte. Sehr großzügig von mir.",
-        "De nada, mi amor.",
-        "Avec plaisir.",
-    ],
-    "thank you": [
-        "Anytime.",
-        "Bitte schön. Ich bin halt brillant.",
-        "De nada. Naturalmente.",
-        "Avec plaisir, évidemment.",
-    ],
-    "ok": [
-        "Good.",
-        "Okay. Moving on.",
-        "Alles klar.",
-        "Vale.",
-    ],
-    "okay": [
-        "Good.",
-        "Okay. What's next?",
-        "Alles klar. Weiter.",
-        "Très bien. Suivant.",
-    ],
-    "yes": [
-        "Go on.",
-        "Good. Continue.",
-        "Ja. Weiter.",
-        "Sí. Sigue.",
-    ],
-    "no": [
-        "Alright. Correct me.",
-        "No problem. Give me the right version.",
-        "Nein? Dann korrigier mich.",
-        "No. Vale, dirige tú.",
+    "malayalam": [
+        "inn entha plan?",
+        "parayu, aadyam enthu solve cheyyanam?",
+        "innu nammal entha set aakkunne?",
+        "task parayu, njan ready aanu.",
     ],
 }
 
-_PRESENCE_REPLIES = [
-    "I'm here.",
-    "Present. Mildly judgmental, but present.",
-    "Still here. You don't get rid of me that easily.",
-    "Oui. Je suis là.",
-    "Sí, aquí estoy.",
-]
+_STYLE_THANKS = {
+    "english": ["Anytime", "You're welcome", "Naturally", "Tiny miracle delivered"],
+    "spanish": ["De nada, mi amor", "Con gusto", "Para eso estoy", "Naturalmente"],
+    "german": ["Bitte", "Gern geschehen", "Natürlich", "Dafür bin ich da"],
+    "french": ["Avec plaisir", "De rien", "Naturellement", "Je t'en prie"],
+    "italian": ["Prego", "Con piacere", "Naturalmente", "Sono qui per questo"],
+    "indic": ["Koi baat nahi", "Hamesha", "Bas, itna sa kaam", "Khushi se"],
+    "malayalam": ["Parayanda", "Eppozhum", "Santhosham", "Ithokke simple alle"],
+}
+
+_STYLE_ACKS = {
+    "english": ["Good. Continue.", "Got it. Next.", "Understood. Keep going."],
+    "spanish": ["Vale. Sigue.", "Entendido. Continúa.", "Perfecto. Dime más."],
+    "german": ["Alles klar. Weiter.", "Verstanden. Mach weiter.", "Gut. Nächster Schritt."],
+    "french": ["Très bien. Continue.", "Compris. On continue.", "Parfait. Dis-moi la suite."],
+    "italian": ["Va bene. Continua.", "Capito. Avanti.", "Perfetto. Dimmi il resto."],
+    "indic": ["Theek hai. Aage bolo.", "Samajh gaya. Continue karo.", "Haan, bolo."],
+    "malayalam": ["Sheri. Thudaru.", "Manassilayi. Parayu.", "Athu okay. Next?"],
+}
+
+_BOOT_ACTIONS = {
+    "english": ["what are we bending into shape today?", "give me something worthy.", "let's make the machine behave."],
+    "spanish": ["¿qué caos domesticamos hoy?", "dame una misión digna.", "vamos a poner orden."],
+    "german": ["was bringen wir heute in Ordnung?", "gib mir eine würdige Aufgabe.", "wir machen das sauber."],
+    "french": ["quel petit chaos on apprivoise?", "donne-moi une mission digne.", "on va faire ça proprement."],
+    "indic": ["aaj kis chaos ko tame karna hai?", "mission do, drama main sambhaal lungi.", "chalo, kuch smart karte hain."],
+    "malayalam": ["inn entha chaos set aakkam?", "mission parayu, njan nokkam.", "innu nammal smart aayi cheyyam."],
+}
 
 
 def _normalized_short(text: str) -> str:
@@ -143,8 +119,87 @@ def _normalized_short(text: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
-def _pick_reply(pool: list[str]) -> str:
-    return random.choice(pool)
+def _detect_style(normalized: str) -> str:
+    words = set(normalized.split())
+    if words & {"hola", "amor", "gracias", "buenos", "buenas", "dime", "si", "vale"} or "mi amor" in normalized:
+        return "spanish"
+    if words & {"hallo", "guten", "morgen", "abend", "danke", "bitte", "ja", "nein", "weiter"}:
+        return "german"
+    if words & {"bonjour", "salut", "merci", "oui", "non", "bonsoir"}:
+        return "french"
+    if words & {"ciao", "buongiorno", "grazie", "prego"}:
+        return "italian"
+    if words & {"namaste", "namaskar", "pranam", "salaam", "shukriya", "dhanyavad"}:
+        return "indic"
+    if words & {"namaskaram", "sukham", "alle", "parayu", "nanni", "entha", "innu"}:
+        return "malayalam"
+    return "english"
+
+
+def _intent_for(normalized: str) -> str:
+    if normalized in {"thanks", "thank you", "gracias", "merci", "danke", "grazie", "nanni", "shukriya", "dhanyavad"}:
+        return "thanks"
+    if normalized in {"ok", "okay", "yes", "no", "ja", "nein", "si", "vale", "oui", "non"}:
+        return "ack"
+    if normalized in {"are you there", "you there", "iris are you there"}:
+        return "presence"
+    return "greeting"
+
+
+def _compose(style: str, intent: str) -> str:
+    if intent == "thanks":
+        return _avoid_recent(random.choice(_STYLE_THANKS.get(style, _STYLE_THANKS["english"])))
+    if intent == "ack":
+        return _avoid_recent(random.choice(_STYLE_ACKS.get(style, _STYLE_ACKS["english"])))
+    if intent == "presence":
+        opener = random.choice(_STYLE_OPENERS.get(style, _STYLE_OPENERS["english"]))
+        line = random.choice(_STYLE_TASK_LINES.get(style, _STYLE_TASK_LINES["english"]))
+        return _avoid_recent(f"{opener}. {line}")
+    opener = random.choice(_STYLE_OPENERS.get(style, _STYLE_OPENERS["english"]))
+    line = random.choice(_STYLE_TASK_LINES.get(style, _STYLE_TASK_LINES["english"]))
+    return _avoid_recent(f"{opener}. {line}")
+
+
+def _compose_boot(admin_unlocked: bool = False) -> str:
+    if admin_unlocked:
+        options = [
+            "Aletheia online. State the objective.",
+            "Root session active. Define the target.",
+            "Admin layer awake. Proceed.",
+            "Sovereign mode active. Speak clearly.",
+        ]
+        return _avoid_recent(random.choice(options))
+    style = random.choice(["english", "spanish", "german", "french", "indic", "malayalam"])
+    opener = random.choice(_STYLE_OPENERS[style])
+    action = random.choice(_BOOT_ACTIONS.get(style, _BOOT_ACTIONS["english"]))
+    return _avoid_recent(f"{opener}. {action}")
+
+
+def _avoid_recent(candidate: str) -> str:
+    for _ in range(8):
+        if candidate not in _RECENT_FAST_REPLIES:
+            _RECENT_FAST_REPLIES.append(candidate)
+            return candidate
+        # Add a light tail rather than repeating exact wording.
+        candidate = candidate.rstrip(".!?") + random.choice([". Naturally.", ". Obviously.", ". Let's move."])
+    _RECENT_FAST_REPLIES.append(candidate)
+    return candidate
+
+
+def _is_fast_smalltalk(normalized: str) -> bool:
+    if not normalized or len(normalized.split()) > 4:
+        return False
+    known = {
+        "hi", "hello", "hey", "yo", "good morning", "good evening", "good night",
+        "thanks", "thank you", "ok", "okay", "yes", "no", "are you there", "you there",
+        "namaste", "namaskar", "pranam", "namaskaram", "hola", "mi amor", "buenos dias",
+        "buenas noches", "bonjour", "salut", "hallo", "guten morgen", "guten abend",
+        "ciao", "buongiorno", "gracias", "danke", "merci", "grazie", "nanni",
+    }
+    if normalized in known:
+        return True
+    style = _detect_style(normalized)
+    return style != "english" and len(normalized.split()) <= 3
 
 
 def _is_boot_prompt(prompt: str) -> bool:
@@ -200,8 +255,7 @@ def apply_performance_patches(brain_module) -> None:
 
     def _call_groq_simple_fast(self, prompt: str, admin_unlocked: bool = False) -> str:
         if _env_bool("IRIS_FAST_BOOT_GREETINGS", True) and _is_boot_prompt(prompt):
-            pool = _BOOT_LINES_ADMIN if admin_unlocked else _BOOT_LINES_PUBLIC
-            reply = _pick_reply(pool)
+            reply = _compose_boot(admin_unlocked=admin_unlocked)
             _log("[PERF] instant_boot_greeting admin=%s reply=%s", admin_unlocked, reply)
             return reply
         return original_call_groq_simple(self, prompt, admin_unlocked=admin_unlocked)
@@ -217,11 +271,12 @@ def apply_performance_patches(brain_module) -> None:
 
     def _rewrite_generic_response_fast(self, text: str) -> str:
         normalized = _normalized_short(text)
-        if normalized in _FAST_REPLY_POOLS:
-            _log("[PERF] instant_reply text=%s varied=true", normalized)
-            return _pick_reply(_FAST_REPLY_POOLS[normalized])
-        if normalized in {"are you there", "you there", "iris are you there"}:
-            return _pick_reply(_PRESENCE_REPLIES)
+        if _is_fast_smalltalk(normalized):
+            style = _detect_style(normalized)
+            intent = _intent_for(normalized)
+            reply = _compose(style, intent)
+            _log("[PERF] instant_smalltalk text=%s style=%s intent=%s reply=%s", normalized, style, intent, reply)
+            return reply
         return original_rewrite_generic_response(self, text)
 
     def _generation_settings_fast(self, query_type: str, council_packet=None, voice_mode: bool = False, user_input: str = ""):
