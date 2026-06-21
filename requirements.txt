@@ -4,7 +4,7 @@ groq==0.12.0
 anthropic==0.40.0
 python-dotenv==1.0.1
 requests==2.32.3
-pytest>=9.0.0
+pytest>=8.3,<10
 
 # ── IRIS Terminal UI ──
 rich==13.9.4
@@ -19,6 +19,7 @@ PyAudio==0.2.14; platform_system == "Windows"
 
 # ── IRIS Hardware & VRAM Monitor ──
 numpy==1.26.4
+scipy>=1.11.4,<1.14
 nvidia-ml-py==12.535.133
 
 # ── IRIS v5.0 Ironclad Additions ──
