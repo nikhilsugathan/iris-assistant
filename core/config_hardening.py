@@ -41,6 +41,7 @@ def _apply_startup_defaults(Config) -> None:
     _ensure_attr(Config, "STT_LANGUAGE", os.getenv("STT_LANGUAGE", "auto"))
     _ensure_attr(Config, "IRIS_LOCK_TTS_VOICE", True)
     _ensure_attr(Config, "IRIS_MULTILINGUAL_TTS", False)
+    _ensure_attr(Config, "IRIS_MALAYALAM_NATIVE_TTS", True)
     _ensure_attr(Config, "validate", _compat_validate)
 
 
@@ -53,6 +54,7 @@ def apply_config_hardening() -> None:
     Config.STT_LANGUAGE = os.getenv("STT_LANGUAGE", getattr(Config, "STT_LANGUAGE", "auto") or "auto")
     Config.IRIS_LOCK_TTS_VOICE = _env_bool("IRIS_LOCK_TTS_VOICE", True)
     Config.IRIS_MULTILINGUAL_TTS = _env_bool("IRIS_MULTILINGUAL_TTS", False)
+    Config.IRIS_MALAYALAM_NATIVE_TTS = _env_bool("IRIS_MALAYALAM_NATIVE_TTS", True)
     Config.VOICE_PLAYBACK_MODE = os.getenv("VOICE_PLAYBACK_MODE", "balanced").strip().lower() or "balanced"
     Config.TTS_FAST_CUT_ENABLED = _env_bool("TTS_FAST_CUT_ENABLED", False)
 
