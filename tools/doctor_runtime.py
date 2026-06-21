@@ -63,12 +63,16 @@ def main() -> int:
     _print("COMMAND_RMS_THRESHOLD", getattr(Config, "COMMAND_RMS_THRESHOLD", ""))
     _print("BARGE_IN_RMS_THRESHOLD", getattr(Config, "BARGE_IN_RMS_THRESHOLD", ""))
     _print("PREFERRED_MIC_NAME", getattr(Config, "PREFERRED_MIC_NAME", ""))
+    _print("MIC_DEVICE_INDEX", getattr(Config, "MIC_DEVICE_INDEX", None))
     print()
 
     print("Model routing")
     print("-" * 60)
+    local_model_path = Path(getattr(Config, "LOCAL_MODEL_PATH", ""))
     _print("LOCAL_MODEL_PATH", getattr(Config, "LOCAL_MODEL_PATH", ""))
-    _print("Local model exists", Path(getattr(Config, "LOCAL_MODEL_PATH", "")).exists())
+    _print("Local model exists", local_model_path.exists())
+    _print("Local LLM package", "ok" if _has_module("llama_cpp") else "optional/missing")
+    _print("IRIS_PRELOAD_LOCAL_LLM", _env("IRIS_PRELOAD_LOCAL_LLM", "false"))
     _print("GROQ_MODEL", getattr(Config, "GROQ_MODEL", ""))
     _print("GROQ_STT_MODEL", getattr(Config, "GROQ_STT_MODEL", ""))
     _print("GEMINI_MODEL", getattr(Config, "GEMINI_MODEL", ""))
@@ -81,19 +85,25 @@ def main() -> int:
         _print(key, _secret_state(key))
     print()
 
-    print("Dependency imports")
+    print("Required dependency imports")
     print("-" * 60)
-    deps = [
+    required_deps = [
         "dotenv", "requests", "rich", "edge_tts", "pygame", "speech_recognition",
         "pyaudio", "numpy", "scipy", "groq", "anthropic", "google.generativeai",
-        "llama_cpp", "sounddevice", "psutil", "mss", "PIL",
+        "sounddevice", "psutil", "mss", "PIL",
     ]
     missing = []
-    for dep in deps:
+    for dep in required_deps:
         ok = _has_module(dep)
         _print(dep, "ok" if ok else "missing")
         if not ok:
             missing.append(dep)
+    print()
+
+    print("Optional dependency imports")
+    print("-" * 60)
+    for dep in ["llama_cpp"]:
+        _print(dep, "ok" if _has_module(dep) else "optional/missing")
     print()
 
     print("Microphones")
@@ -104,12 +114,18 @@ def main() -> int:
             names = sr.Microphone.list_microphone_names()
             if not names:
                 print("No microphones reported by PyAudio.")
+            preferred = str(getattr(Config, "PREFERRED_MIC_NAME", "") or "").lower()
+            configured_index = getattr(Config, "MIC_DEVICE_INDEX", None)
             for idx, name in enumerate(names):
-                marker = ""
-                preferred = str(getattr(Config, "PREFERRED_MIC_NAME", "") or "").lower()
+                markers = []
                 if preferred and preferred in str(name).lower():
-                    marker = "  <-- preferred match"
-                print(f"[{idx}] {name}{marker}")
+                    markers.append("preferred match")
+                if configured_index is not None and idx == configured_index:
+                    markers.append("configured index")
+                suffix = f"  <-- {', '.join(markers)}" if markers else ""
+                print(f"[{idx}] {name}{suffix}")
+            if not preferred and configured_index is None:
+                print("Default-device mode: no mic is pinned; Windows default input will be used.")
         except Exception as exc:
             print(f"Microphone listing failed: {exc}")
     else:
@@ -117,7 +133,7 @@ def main() -> int:
     print()
 
     if missing:
-        print("Missing dependencies detected. Run:")
+        print("Missing required dependencies detected. Run:")
         print("python -m pip install -r requirements.txt")
         return 1
 
