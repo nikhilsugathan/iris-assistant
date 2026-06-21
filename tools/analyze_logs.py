@@ -181,7 +181,7 @@ def analyze(max_lines: int = 1000, since_hours: int | None = 48) -> tuple[list[F
             "HIGH",
             "Microphone/listening errors or device mismatch evidence found",
             _latest(mic_errors, 8),
-            "Set PREFERRED_MIC_NAME/MIC_DEVICE_INDEX to a listed headset input, e.g. Nadya or BT LE Microphone, then retest.",
+            "Set Windows default input to the desired mic, or set PREFERRED_MIC_NAME/MIC_DEVICE_INDEX only for debugging.",
         ))
     if listen_start and not listen_end[-3:]:
         findings.append(Finding(
@@ -200,7 +200,7 @@ def analyze(max_lines: int = 1000, since_hours: int | None = 48) -> tuple[list[F
 
     stt_fail = _grep(all_lines, r"groq_stt_error", r"google_transcribe_error", r"transcribe.*engine=none", r"429", r"rate_limit")
     if stt_fail:
-        recommendation = "Run python -m pip install --upgrade --force-reinstall -r requirements.txt to apply the httpx compatibility pin; then retest STT."
+        recommendation = "Upgrade Groq while keeping httpx>=0.28.1: python -m pip install --upgrade 'groq>=0.20.0' 'httpx>=0.28.1,<1.0.0'."
         findings.append(Finding("HIGH", "STT/API transcription failures detected", _latest(stt_fail, 8), recommendation))
 
     tts_fail = _grep(all_lines, r"Edge-TTS", r"edge_tts", r"TTS.*failed", r"pygame", r"mixer", r"Prefetch.*failed")
@@ -220,7 +220,7 @@ def analyze(max_lines: int = 1000, since_hours: int | None = 48) -> tuple[list[F
             "HIGH",
             "Screen reading / vision failures detected",
             _latest(vision_fail, 8),
-            "Apply requirements update, then run python tools\\doctor_vision.py. Prefer VISION_PROVIDER=gemini.",
+            "Upgrade Groq/httpx compatibility, then run python tools\\doctor_vision.py. Prefer VISION_PROVIDER=gemini.",
         ))
     elif vision_ok:
         findings.append(Finding("INFO", "Vision capture/provider success evidence found", _latest(vision_ok, 5), "Vision path appears available in recent logs."))
