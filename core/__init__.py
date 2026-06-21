@@ -16,6 +16,14 @@ try:
 except Exception:
     pass
 
+# Apply safe runtime defaults before importing the heavier core modules.
+try:
+    from .config_hardening import apply_config_hardening
+
+    apply_config_hardening()
+except Exception:
+    pass
+
 # Apply targeted runtime patches at package startup. The imports are module-only:
 # they do not instantiate the microphone, LLM, browser, or action executor.
 try:
