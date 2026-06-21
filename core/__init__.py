@@ -31,6 +31,10 @@ try:
 
     apply_performance_patches(_brain_module)
 
+    from .multilingual_patches import apply_multilingual_patches
+
+    apply_multilingual_patches(_brain_module, _voice_module)
+
     from .tts_sanitizer import apply_tts_sanitizer
 
     apply_tts_sanitizer(_voice_module)
