@@ -53,6 +53,8 @@ def test_startup_config_compatibility_defaults_exist():
     assert getattr(Config, "PUBLIC_NAME", "")
     assert getattr(Config, "SYSTEM_NAME", "")
     assert getattr(Config, "SYSTEM_MOTTO", "")
+    assert callable(getattr(Config, "validate", None))
+    assert Config.validate() is True
 
 
 def test_memory_uses_lock_and_atomic_helper():
