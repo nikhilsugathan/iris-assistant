@@ -1,0 +1,36 @@
+services:
+  iris-core:
+    build: .
+    container_name: iris-hypervisor
+    restart: unless-stopped
+    
+    # THE GPU HOLE: This tells Docker Desktop / WSL2 to map your 
+    # physical RTX 5050 directly into the container.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    # THE FILE SYSTEM HOLES: Maps your Windows folders into the Linux container.
+    volumes:
+      - ./models:/app/models
+      - ./logs:/app/logs
+      - ./memory:/app/memory
+      - ./.env:/app/.env
+
+    # ENVIRONMENT VARIABLES
+    environment:
+      - LOCAL_MODEL_PATH=/app/models/Qwen3-8B-Q4_K_M.gguf
+      - DISPLAY=:99
+      # Point pygame/ALSA/sounddevice at the PulseAudio TCP server running on the Windows host.
+      # Setup: install PulseAudio for Windows, enable TCP module (see README / ARCHITECTURE_PIVOT_PROPOSAL.md).
+      - PULSE_SERVER=tcp:host.docker.internal:4713
+      - SDL_AUDIODRIVER=pulse
+      - WAKE_RMS_THRESHOLD=150
+      - COMMAND_RMS_THRESHOLD=200
+      - JACK_NO_AUDIO_RESERVATION=1
+      - JACK_START_SERVER=0
+      - PYTHONUNBUFFERED=1

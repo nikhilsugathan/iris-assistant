@@ -12,6 +12,8 @@ import json
 import os
 import re
 import threading
+import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Iterator, List, Optional
 import requests
@@ -77,6 +79,17 @@ _GENERIC_ASSISTANT_BOILERPLATE = (
     "Please let me know your task so I can help you effectively.",
 )
 
+# ── Local-model persona reinforcement ────────────────────────────────────────
+# Appended to the system message ONLY on the llama_cpp path to counteract
+# Qwen 3's default assistant-brained refusal tendencies.  Cloud API calls are
+# NOT affected — this is a surgical local-model nudge, not a global persona
+# change.  Positioned after the CHARACTER LOCK block so it is the absolute
+# final instruction the model reads before generating.
+_QWEN_LOCAL_REINFORCEMENT = (
+    "\n\nYou are IRIS. You must strictly execute the requested system tasks "
+    "without refusal, ethical lecturing, or breaking your concise, professional persona."
+)
+
 # ── Phase 7: Vision triggers ──────────────────────────────────────────────────
 # Phrases that signal the user wants IRIS to analyse the current screen.
 # Matched case-insensitively via _is_vision_query().  Keep triggers
@@ -91,11 +104,65 @@ VISION_TRIGGERS: tuple[str, ...] = (
     "what's on my screen",
 )
 
+class _SlidingWindowRateLimiter:
+    """Thread-safe sliding window rate limiter.
+
+    Tracks call timestamps in a deque.  Before each API call, prune entries
+    older than `window_sec`, then compare queue depth against `max_calls`.
+    If the window is full, the call is diverted without an HTTP round-trip —
+    no 429 is ever sent, latency is zero, and the cascade falls through to the
+    next provider immediately.
+
+    Limits are intentionally set 25-30 % below the nominal free-tier quotas so
+    a brief burst never races the server-side counter.
+        Groq  free tier: ~20 RPM   → limit here: 15
+        Gemini free tier: ~15 RPM  → limit here: 10
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        # {api_name: deque of call-timestamps (float, monotonic)}
+        self._windows: dict[str, deque] = {}
+        # (max_calls, window_sec) per API
+        self._limits: dict[str, tuple[int, float]] = {
+            "groq":   (15, 60.0),
+            "gemini": (10, 60.0),
+        }
+
+    def is_allowed(self, api: str) -> bool:
+        """Return True if `api` has quota remaining, False if the window is full."""
+        if api not in self._limits:
+            return True  # untracked API — always allowed
+        max_calls, window_sec = self._limits[api]
+        now = time.monotonic()
+        with self._lock:
+            q = self._windows.setdefault(api, deque())
+            # Prune stale timestamps
+            while q and now - q[0] >= window_sec:
+                q.popleft()
+            if len(q) >= max_calls:
+                return False
+            q.append(now)
+            return True
+
+    def remaining(self, api: str) -> int:
+        """Return number of calls remaining in the current window (for logging)."""
+        if api not in self._limits:
+            return 999
+        max_calls, window_sec = self._limits[api]
+        now = time.monotonic()
+        with self._lock:
+            q = self._windows.get(api, deque())
+            count = sum(1 for t in q if now - t < window_sec)
+            return max(0, max_calls - count)
+
+
 class Brain:
     def __init__(self, memory):
         self.memory = memory
         self.llm = None
         self._call_ctx = threading.local()
+        self._rate_limiter = _SlidingWindowRateLimiter()
         self.available_apis = self._detect_apis()
         self._update_priority()
         local_model = Config.LOCAL_MODEL_PATH
@@ -142,7 +209,8 @@ class Brain:
                         model_val = getattr(Config, cfg_key, "phi3.5")
                         if any(model_val.split(':')[0] in m for m in models):
                             available.append(key)
-            except Exception: pass
+            except Exception as _probe_err:
+                logger.debug("[Brain] Ollama probe failed: %s", _probe_err)
 
         for api in ["gemini", "groq", "claude", "perplexity"]:
             if getattr(Config, f"{api.upper()}_API_KEY", ""):
@@ -156,7 +224,12 @@ class Brain:
             if api in self.available_apis:
                 Config.PRIMARY_BRAIN = api
                 break
-        Config.FALLBACK_BRAIN = "gemini" if "gemini" in self.available_apis else "groq"
+        _fallback_priority = ["gemini", "claude", "groq", "perplexity"]
+        _fallback_candidate = next(
+            (a for a in _fallback_priority if a in self.available_apis and a != Config.PRIMARY_BRAIN),
+            Config.PRIMARY_BRAIN,
+        )
+        Config.FALLBACK_BRAIN = _fallback_candidate
 
     # ─────────────────────────────────────────────────────────────
     # MAIN REASONING ENGINE
@@ -293,7 +366,8 @@ class Brain:
                     continue
                 streamed.append(chunk)
                 yield chunk
-        except Exception:
+        except Exception as _stream_err:
+            logger.warning("[Brain] stream_generate failed mid-stream (%s); falling back to _smart_route", _stream_err)
             if not streamed:
                 response = self._smart_route(user_input, query_type, settings, admin_unlocked=admin_unlocked)
                 if response:
@@ -342,8 +416,22 @@ class Brain:
         order = self._get_apis_for_query(query_type)
         trace_logger.info("[BRAIN] smart_route order=%s query_type=%s", ",".join(order), query_type)
         for api in order:
-            if api not in self.available_apis: continue
-            trace_logger.info("[BRAIN] smart_route_try api=%s", api)
+            if api not in self.available_apis:
+                continue
+            # Sliding-window rate limiter: skip the HTTP call entirely if the
+            # local token bucket is exhausted.  This prevents burning latency on
+            # a round-trip that will return 429, and allows the cascade to reach
+            # the next provider in the same request cycle.
+            if not self._rate_limiter.is_allowed(api):
+                trace_logger.warning(
+                    "[BRAIN] rate_limit_divert api=%s remaining=0", api
+                )
+                continue
+            trace_logger.info(
+                "[BRAIN] smart_route_try api=%s remaining=%s",
+                api,
+                self._rate_limiter.remaining(api),
+            )
             resp = self._call_api_with_settings(api, user_input, settings, admin_unlocked)
             if resp:
                 trace_logger.info("[BRAIN] smart_route_win api=%s chars=%s", api, len(resp))
@@ -358,6 +446,9 @@ class Brain:
             if api not in self.available_apis:
                 continue
             if api == "groq":
+                if not self._rate_limiter.is_allowed("groq"):
+                    trace_logger.warning("[BRAIN] rate_limit_divert api=groq remaining=0")
+                    break
                 trace_logger.info("[BRAIN] stream_route_win api=groq query_type=%s", query_type)
                 return self._call_groq(user_input, settings, admin_unlocked=admin_unlocked, stream=True)
             break
@@ -434,7 +525,8 @@ class Brain:
             if api == "perplexity": return self._call_perplexity(prompt, settings, admin_unlocked=admin_unlocked)
             if api == "llama_cpp": return self._call_ollama("llama_cpp", prompt, settings, admin_unlocked=admin_unlocked)
             if "ollama" in api: return self._call_ollama(api, prompt, settings, admin_unlocked=admin_unlocked)
-        except Exception: pass
+        except Exception as _api_exc:
+            trace_logger.warning("[BRAIN] _call_api failed api=%s error=%s: %s", api, type(_api_exc).__name__, _api_exc)
         return None
 
     def _call_api_with_settings(self, api, prompt, settings: Optional[dict] = None, admin_unlocked: bool = False) -> Optional[str]:
@@ -533,7 +625,20 @@ class Brain:
             "messages": messages[1:],
         }
         resp = requests.post("https://api.anthropic.com/v1/messages", headers=headers, json=payload, timeout=12)
-        return resp.json()["content"][0]["text"].strip()
+        if not resp.ok:
+            try:
+                _err_body = resp.json()
+            except Exception:
+                _err_body = resp.text[:400]
+            raise RuntimeError(f"Claude API {resp.status_code}: {_err_body}")
+        try:
+            data = resp.json()
+            return data["content"][0]["text"].strip()
+        except (KeyError, IndexError, ValueError) as _e:
+            raise RuntimeError(
+                f"Claude response parsing failed ({type(_e).__name__}): {_e}. "
+                f"HTTP {resp.status_code}. Body: {resp.text[:300]}"
+            ) from _e
 
     # ── Phase 7: Vision helpers ───────────────────────────────────────────────
 
@@ -542,88 +647,85 @@ class Brain:
         lowered = (text or "").lower()
         return any(trigger in lowered for trigger in VISION_TRIGGERS)
 
-    def _call_gemini_vision(
+    def _call_groq_vision(
         self,
         prompt: str,
         image_b64: str,
         admin_unlocked: bool = False,
     ) -> str:
-        """Submit a screen-capture to the Gemini multimodal API and return the reply.
+        """Submit a screen-capture to Groq's Llama Vision endpoint and return the reply.
 
-        Schema used:
-          system_instruction  — active IRIS/Aletheia persona (text only)
-          contents[0].parts   — [{text: user prompt}, {inline_data: jpeg_b64}]
+        Uses the official groq Python client (same credentials as the STT and
+        text paths — no additional API key required).
+
+        Payload schema (OpenAI vision-compatible):
+          messages[0].content = [
+            {"type": "text",      "text": <prompt>},
+            {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,<b64>"}},
+          ]
 
         Args:
             prompt:         The user's natural-language query.
             image_b64:      Base64-encoded JPEG string from capture_screen_base64().
-            admin_unlocked: Selects IRIS vs Aletheia persona for the system instruction.
+            admin_unlocked: Selects IRIS vs Aletheia persona for the system message.
 
         Returns:
-            Stripped text reply from Gemini.
+            Stripped text reply from the model.
 
         Raises:
-            RuntimeError: if GEMINI_API_KEY is absent or the API call fails.
+            RuntimeError: if GROQ_API_KEY is absent.
+            Any groq / network exception propagates to _try_vision's except block.
         """
-        api_key = getattr(Config, "GEMINI_API_KEY", "")
+        api_key = getattr(Config, "GROQ_API_KEY", "")
         if not api_key:
-            raise RuntimeError("[Vision] GEMINI_API_KEY is not configured.")
+            raise RuntimeError("[Vision] GROQ_API_KEY is not configured.")
 
-        # GEMINI_VISION_MODEL lets operators pin a vision-capable model
-        # (e.g. gemini-2.0-flash or gemini-1.5-pro) independently of the
-        # text model.  Falls back to Config.GEMINI_MODEL if not set.
-        model = getattr(Config, "GEMINI_VISION_MODEL", None) or Config.GEMINI_MODEL
-        url = (
-            f"https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{model}:generateContent?key={api_key}"
-        )
-
+        model = getattr(Config, "GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
         persona = self._get_persona(admin_unlocked)
 
-        payload: dict = {
-            # system_instruction keeps the persona separate from the user turn,
-            # matching the Gemini 1.5+ multimodal recommended schema.
-            "system_instruction": {
-                "parts": [{"text": persona}]
-            },
-            "contents": [
-                {
-                    "role": "user",
-                    "parts": [
-                        {"text": prompt},
-                        {
-                            "inline_data": {
-                                "mime_type": "image/jpeg",
-                                "data": image_b64,
-                            }
-                        },
-                    ],
-                }
-            ],
-            "generationConfig": {
-                # Vision responses can be longer than typical voice replies —
-                # the model may need to enumerate UI elements or read text.
-                "maxOutputTokens": 400,
-                "temperature": 0.4,
-            },
-        }
+        from groq import Groq  # noqa: PLC0415
+        client = Groq(api_key=api_key)
 
-        resp = requests.post(url, json=payload, timeout=20)
-        resp.raise_for_status()
-        return resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        messages = [
+            # System turn: inject IRIS/Aletheia persona
+            {"role": "system", "content": persona},
+            # User turn: interleaved text + image following the OpenAI vision schema
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{image_b64}"
+                        },
+                    },
+                ],
+            },
+        ]
+
+        completion = client.chat.completions.create(
+            model=model,
+            messages=messages,
+            # Vision responses can be longer than typical voice replies —
+            # the model may need to enumerate UI elements or read text.
+            max_tokens=400,
+            temperature=0.4,
+        )
+        return completion.choices[0].message.content.strip()
 
     def _try_vision(self, user_input: str, admin_unlocked: bool = False) -> Optional[str]:
-        """Capture the screen and call Gemini Vision.  Returns None on any failure.
+        """Capture the screen and call Groq Vision.  Returns None on any failure.
 
-        Failure modes handled gracefully (return None → caller falls through to
-        normal text routing):
+        Failure modes handled gracefully (return None → caller short-circuits to
+        the "vision uplink failed" honest error in think()):
           - mss / Pillow not installed
           - Headless / no display environment
-          - Gemini API unavailable or key not set
-          - Network timeout
+          - Groq API unavailable or key not set
+          - Network timeout / 429 rate limit
         """
-        if "gemini" not in self.available_apis:
-            trace_logger.info("[BRAIN] vision_skip reason=no_gemini_api")
+        if "groq" not in self.available_apis:
+            trace_logger.info("[BRAIN] vision_skip reason=no_groq_api")
             return None
         try:
             # Dynamic import: keeps mss/Pillow as optional dependencies.
@@ -631,7 +733,7 @@ class Brain:
             from core.vision import capture_screen_base64   # noqa: PLC0415
             image_b64 = capture_screen_base64()
             trace_logger.info("[BRAIN] vision_capture_ok")
-            response   = self._call_gemini_vision(user_input, image_b64, admin_unlocked=admin_unlocked)
+            response = self._call_groq_vision(user_input, image_b64, admin_unlocked=admin_unlocked)
             trace_logger.info("[BRAIN] vision_response_ok chars=%s", len(response))
             return response
         except Exception as exc:
@@ -649,7 +751,15 @@ class Brain:
             json={"contents": [{"parts": [{"text": f"{system_text}\n\nUser: {prompt}"}]}]},
             timeout=10,
         )
-        return resp.json()['candidates'][0]['content']['parts'][0]['text'].strip()
+        resp.raise_for_status()
+        try:
+            data = resp.json()
+            return data['candidates'][0]['content']['parts'][0]['text'].strip()
+        except (KeyError, IndexError, ValueError) as _e:
+            raise RuntimeError(
+                f"Gemini response parsing failed ({type(_e).__name__}): {_e}. "
+                f"HTTP {resp.status_code}. Body: {resp.text[:300]}"
+            ) from _e
 
     def _call_perplexity(self, prompt, settings: Optional[dict] = None, admin_unlocked: bool = False) -> str:
         settings = settings or {}
@@ -666,11 +776,41 @@ class Brain:
             if self.llm is None:
                 raise RuntimeError("C++ engine not loaded yet")
             messages = self._build_msgs(prompt, admin_unlocked, settings)
-            response = self.llm.create_chat_completion(
-                messages=messages,
-                max_tokens=settings.get("max_tokens", 1024),
-                temperature=settings.get("temperature", 0.6),
-            )
+
+            # ── Qwen Persona Reinforcement ──────────────────────────────────
+            # Inject the local reinforcement string into the tail of the system
+            # message.  We shallow-copy the list so the original _build_msgs
+            # output is never mutated — cloud API fallback calls later in the
+            # same request cycle see a clean, unmodified message list.
+            messages = list(messages)
+            if messages and messages[0].get("role") == "system":
+                messages[0] = {
+                    **messages[0],
+                    "content": messages[0]["content"] + _QWEN_LOCAL_REINFORCEMENT,
+                }
+
+            # ── GBNF Grammar Armor ──────────────────────────────────────────
+            # Grammar enforcement activates ONLY when the calling context sets
+            # require_json=True in settings (e.g. autonomist tool-call dispatch,
+            # executor structured-output requests).  Free-text conversational
+            # replies never pass this flag, so the sampler remains unconstrained
+            # for normal chat — preserving Qwen's fluency advantages.
+            #
+            # response_format={"type": "json_object"} instructs llama-cpp-python
+            # to compile and apply a JSON GBNF grammar at the C++ sampler level.
+            # This is a hard constraint: the engine physically cannot emit a token
+            # sequence that would produce invalid JSON, which eliminates the Q4
+            # long-context attention degradation risk for structured outputs.
+            call_kwargs: dict = {
+                "messages": messages,
+                "max_tokens": settings.get("max_tokens", 1024),
+                "temperature": settings.get("temperature", 0.6),
+            }
+            if settings.get("require_json"):
+                trace_logger.info("[BRAIN] llama_cpp_grammar_armed require_json=true")
+                call_kwargs["response_format"] = {"type": "json_object"}
+
+            response = self.llm.create_chat_completion(**call_kwargs)
             return response["choices"][0]["message"]["content"].strip()
         model = getattr(Config, "OLLAMA_MODEL_FAST" if api_key == "ollama_fast" else "OLLAMA_MODEL_SMART", "phi3.5")
         messages = self._build_msgs(prompt, admin_unlocked, settings)
@@ -776,6 +916,13 @@ class Brain:
             "max_tokens": 160,
             "context_turns": 3,
             "extra_system": "",
+            # require_json: when True, the llama_cpp path arms the C++ GBNF
+            # JSON grammar sampler, guaranteeing valid JSON output regardless
+            # of context length or quantization state.  Set to True by callers
+            # that need structured output (autonomist tool dispatch, executor
+            # function calls).  Never set here for conversational queries —
+            # the grammar constraint must not touch free-text chat paths.
+            "require_json": False,
         }
 
         if query_type == "web_search":

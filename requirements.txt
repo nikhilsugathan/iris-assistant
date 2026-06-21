@@ -10,12 +10,12 @@ pytest>=9.0.0
 rich==13.9.4
 
 # ── IRIS Voice & Audio Engine ──
-edge-tts==6.1.12
+edge-tts>=6.1.18
 pygame==2.6.1
 SpeechRecognition==3.11.0
 PyAudio==0.2.14; platform_system == "Windows"
-faster-whisper>=1.0.3
-ctranslate2>=4.4.0
+# faster-whisper and ctranslate2 removed: replaced by Groq cloud STT (whisper-large-v3-turbo).
+# Keeping them adds ~300 MB to the image and introduces CUDA dep conflicts with llama-cpp-python.
 
 # ── IRIS Hardware & VRAM Monitor ──
 numpy==1.26.4
@@ -32,3 +32,9 @@ playwright>=1.42.0          # Required for core/browser.py automation
 llama-cpp-python>=0.2.0
 sounddevice>=0.4.6
 send2trash
+
+# ── Vision (screen capture) ──
+# Required by core/vision.py (_try_vision). Previously missing — would crash
+# silently on "look at my screen" commands after a clean pip install.
+mss>=9.0.1
+Pillow>=10.0.0

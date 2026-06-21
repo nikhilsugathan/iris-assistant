@@ -36,6 +36,14 @@ import json
 import difflib
 from datetime import datetime
 from typing import Optional, Tuple
+from core.logger import get_logger
+
+logger = get_logger("Executor")
+
+# Safe cross-platform fallback: evaluates to 0x08000000 on Windows, 0 elsewhere.
+# Using getattr avoids AttributeError if this module is ever imported on Linux
+# before a ternary guard is in place — defensive belt-and-suspenders.
+_CREATE_NO_WINDOW: int = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
@@ -715,8 +723,13 @@ Rules:
 
 Respond with ONLY the JSON object. No markdown, no explanation."""
 
-        response = self.brain._call_api(
-            getattr(Config, "PRIMARY_BRAIN", "groq"), plan_prompt
+        # require_json=True: the prompt demands a bare JSON action-plan object.
+        # Grammar armor engages on the llama_cpp path; cloud APIs ignore the flag.
+        # Temperature 0.1 maximises schema fidelity — creativity is not wanted here.
+        response = self.brain._call_api_with_settings(
+            getattr(Config, "PRIMARY_BRAIN", "groq"),
+            plan_prompt,
+            settings={"require_json": True, "max_tokens": 512, "temperature": 0.1},
         )
 
         if not response:
@@ -726,7 +739,8 @@ Respond with ONLY the JSON object. No markdown, no explanation."""
             clean = response.strip()
             clean = re.sub(r"```(?:json)?", "", clean).strip()
             return json.loads(clean)
-        except Exception:
+        except Exception as _json_err:
+            logger.warning("[Executor] JSON parse failed: %s | snippet: %s", _json_err, (response or "")[:120])
             return None
 
     def _build_permission_request(self, plan: dict) -> str:
@@ -903,8 +917,12 @@ Respond ONLY with valid JSON in this exact format:
 
 Respond with ONLY the JSON. No explanation."""
 
-        response = self.brain._call_api(
-            getattr(Config, "PRIMARY_BRAIN", "groq"), prompt
+        # require_json=True: retry plan must be a bare JSON object — same constraint
+        # as _ai_plan.  Grammar armor on llama_cpp; cloud APIs ignore the flag.
+        response = self.brain._call_api_with_settings(
+            getattr(Config, "PRIMARY_BRAIN", "groq"),
+            prompt,
+            settings={"require_json": True, "max_tokens": 512, "temperature": 0.1},
         )
 
         if not response:
@@ -913,7 +931,8 @@ Respond with ONLY the JSON. No explanation."""
         try:
             clean = response.strip().replace("```json", "").replace("```", "").strip()
             return json.loads(clean)
-        except Exception:
+        except Exception as _json2_err:
+            logger.warning("[Executor] JSON parse (retry) failed: %s | snippet: %s", _json2_err, (response or "")[:120])
             return None
 
     def _run_with_live_progress(self, command: str) -> str:
@@ -929,7 +948,7 @@ Respond with ONLY the JSON. No explanation."""
                 process = subprocess.Popen(
                     command, shell=True, stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT, text=True, bufsize=1,
-                    creationflags=subprocess.CREATE_NO_WINDOW if self.is_windows else 0,
+                    creationflags=_CREATE_NO_WINDOW,
                 )
                 for line in process.stdout:
                     clean_line = line.strip()

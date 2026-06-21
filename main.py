@@ -1,3 +1,4 @@
+#!python3.11
 """
 IRIS Main Entry Point v5.1.2 (Ironclad Edition)
 =========================================================
@@ -101,6 +102,18 @@ _WAKE_ACKS_ADMIN  = [
     "What's the objective?",
     "I'm listening — what do you need?",
     "Full access. What are we doing?",
+]
+# Brief one-liners spoken the instant a command is dispatched to the LLM.
+# Eliminates dead-air silence (STT + LLM latency = 2–5 s) that causes
+# users to re-speak, triggering a barge-in that cancels the response.
+_THINKING_CUES = [
+    "Hmm.",
+    "Sure.",
+    "On it.",
+    "Right.",
+    "Let me think.",
+    "One sec.",
+    "Good question.",
 ]
 
 _FAREWELLS_PUBLIC = [
@@ -308,7 +321,8 @@ def _build_recall_context(user_input: str, memory) -> str:
             "(use this to answer when the user asks about past conversations):\n"
             + sessions_text
         )
-    except Exception:
+    except Exception as _ctx_err:
+        logger.warning("[Main] _build_session_context_header failed: %s", _ctx_err)
         return ""
 
 _NON_SUBSTANTIVE_SINGLE_WORDS = {
@@ -585,8 +599,8 @@ def _generate_greeting(admin_unlocked: bool = False, brain=None) -> str:
             result = _sanitize_boot_line(brain._call_groq_simple(prompt, admin_unlocked=admin_unlocked))
             if result:
                 return result
-        except Exception:
-            pass
+        except Exception as _gen_err:
+            logger.debug("[Main] Dynamic greeting generation failed (%s); using pool fallback", _gen_err)
     pool = _GREETINGS_ADMIN if admin_unlocked else _GREETINGS_PUBLIC
     return random.choice(pool)
 
@@ -821,6 +835,9 @@ def _run_voice_followup_window(
     # Tracks the previous loop's speaking state so we can detect the
     # speaking→silent transition and insert a dead zone before opening the mic.
     _was_speaking = False
+    # Set to True by any break path that already logged its own reason so
+    # the catch-all 'complete' log at the bottom doesn't fire a second time.
+    _exit_logged = False
 
     while turns_used < max_turns:
         if current_input is None:
@@ -833,7 +850,23 @@ def _run_voice_followup_window(
                 # (9s limit) to capture the complete utterance cleanly.
                 # This replaces the old "sleep 100ms / heard_text=None" which
                 # made barge-in completely impossible inside a conversation.
+                #
+                # NOTE: on_phrase_captured=voice.stop_speaking is intentionally
+                # NOT passed here.  On speaker setups the mic picks up TTS
+                # audio, listen_for_interrupt captures it as "speech" within
+                # ~50 ms, and on_phrase_captured would kill IRIS's own voice
+                # mid-sentence on every response.  Instead we cut TTS the
+                # instant Whisper returns any non-echo transcript — the echo
+                # guard inside listen_for_interrupt() already filters out
+                # speaker bleed-through before it returns, so any non-None
+                # result here is confirmed real user speech.
                 _interrupt_text = voice.listen_for_interrupt()
+                # Fast-cut: stop audio the moment Whisper confirms real speech.
+                # Don't wait for should_ignore_transcript (saves ~50-150 ms).
+                # Works for both IRIS and Aletheia — stop_speaking() is
+                # persona-agnostic (kills the pygame mixer regardless of voice).
+                if _interrupt_text and voice.is_speaking():
+                    voice.stop_speaking()
                 _interrupt_ignored = (
                     voice.should_ignore_transcript(_interrupt_text)
                     if _interrupt_text else True
@@ -855,16 +888,30 @@ def _run_voice_followup_window(
                         is_pure_stop=_is_pure_stop,
                         is_wake=_matches_active_wake_word(_interrupt_text, self_model),
                     )
+                    # stop_speaking() was already called above on Whisper return;
+                    # this guard covers the edge case where audio resumed on a
+                    # cached prefetch chunk during the Whisper round-trip.
                     if voice.is_speaking():
                         voice.stop_speaking()
                     time.sleep(0.20)  # let speaker ring off
                     _was_speaking = False
+                    speaking_now = False  # barge-in stopped speech; don't carry stale True into the rest of this iteration
+                    _is_polite_exit_barge = _normalize_command_text(_interrupt_text) in {
+                        "thanks", "thank you", "bye", "goodbye"
+                    }
                     if _is_pure_stop and not _matches_active_wake_word(
                         _interrupt_text, self_model
                     ):
                         # Pure stop ("stop", "wait" etc.) — halt TTS, no
                         # follow-up command.  Loop back to listen_for_command.
                         heard_text = None
+                    elif _is_polite_exit_barge and not _matches_active_wake_word(
+                        _interrupt_text, self_model
+                    ):
+                        # Polite close used as barge-in — no need to re-listen.
+                        # Pass phrase directly so the polite_exit check below
+                        # closes the session cleanly without wasting listen cycles.
+                        heard_text = _interrupt_text
                     else:
                         # User is saying something beyond a bare stop word.
                         # Capture the full utterance now that IRIS is silent.
@@ -973,12 +1020,14 @@ def _run_voice_followup_window(
                     missed_follow_ups += 1
                     if missed_follow_ups >= missed_limit:
                         _voice_debug("followup_end", reason="cleaned_empty", turns_used=turns_used, missed_follow_ups=missed_follow_ups)
+                        _exit_logged = True
                         break
                     continue
 
         normalized = _normalize_command_text(current_input)
         if normalized in {"thanks", "thank you", "bye", "goodbye"}:
             _voice_debug("followup_end", reason="polite_exit", normalized=normalized, turns_used=turns_used)
+            _exit_logged = True
             break
         if _is_interrupt_phrase(normalized):
             _voice_debug("followup_interrupt_phrase", normalized=normalized)
@@ -986,12 +1035,33 @@ def _run_voice_followup_window(
             continue
 
         _voice_debug("followup_dispatch", current_input=current_input, normalized=normalized, turn=turns_used + 1)
+        # Thinking cue: play a brief phrase immediately so the user hears
+        # audio feedback before the LLM responds.  STT + LLM latency can
+        # be 2–5 s of dead air; without this cue users re-speak during the
+        # silence, triggering a barge-in that cancels the response they
+        # asked for.  The cue plays from the static cache (zero TTS
+        # latency) and is interrupted cleanly by the first LLM sentence.
+        if not voice.is_speaking():
+            _cue = random.choice(_THINKING_CUES)
+            # Only play if the phrase is already in the static audio cache.
+            # If prewarm missed (e.g. network hiccup at startup), skip silently
+            # rather than blocking the speech worker on a live 8-second Edge-TTS
+            # call that would delay the real response by the full TTS timeout.
+            if voice.is_static_cached(_cue):
+                voice.speak(_cue, interrupt=False)
+                voice.record_spoken(_cue)
         # ── Pre-speech barge-in: monitor the mic while the LLM is generating.
         # If the user speaks before any audio has started we detect it via raw
         # RMS (no Whisper round-trip) and immediately cancel generation + speech.
         voice.reset_generation_cancel()
         _barge_in_stop = voice.start_barge_in_monitor(
-            on_barge_in=lambda: voice.cancel_generation()
+            on_barge_in=lambda: voice.cancel_generation(),
+            # warmup_sec=1.5: suppress barge-in for 1.5 s after the thinking cue
+            # starts.  The old default (0.45 s) expired while the cue was still
+            # playing, so the mic picked up the user re-speaking during dead air
+            # and cancelled the response they were waiting for.  1.5 s covers
+            # the longest thinking-cue ("Good question." ~1.1 s) plus ~0.4 s margin.
+            warmup_sec=1.5,
         )
         try:
             last_response, should_exit = handle_user_input(
@@ -1026,7 +1096,8 @@ def _run_voice_followup_window(
             _voice_debug("followup_end", reason="should_exit", turns_used=turns_used)
             return True
 
-    _voice_debug("followup_end", reason="complete", turns_used=turns_used, missed_follow_ups=missed_follow_ups)
+    if not _exit_logged:
+        _voice_debug("followup_end", reason="complete", turns_used=turns_used, missed_follow_ups=missed_follow_ups)
     return False
 
 # ── BANNER ──────────────────────────────────────────────────────────────────
@@ -1046,7 +1117,7 @@ BANNER = escape(_RAW_BANNER)
 def show_status(voice: Voice, self_model: SelfModel) -> None:
     try:
         v_p, v_f = get_vram_status()
-    except:
+    except Exception:
         v_p, v_f = 0.0, 0.0
 
     cpu_p = psutil.cpu_percent()
@@ -1394,6 +1465,7 @@ def main() -> None:
         _WAKE_ACKS_PUBLIC + _WAKE_ACKS_ADMIN +
         _GREETINGS_PUBLIC + _GREETINGS_ADMIN +
         _FAREWELLS_PUBLIC + _FAREWELLS_ADMIN +
+        _THINKING_CUES +
         ["I'm still here.", "State the task.", "Done."]
     )
     voice.prime_audio_cache(_all_static_phrases)
@@ -1408,7 +1480,7 @@ def main() -> None:
         try:
             _greeting_result[0] = _generate_greeting(self_model.admin_unlocked, brain=brain)
             # Pre-generate TTS for the dynamic greeting text so first sound is instant.
-            if _greeting_result[0] and getattr(Config, "TTS_ENGINE", "auto") == "edge":
+            if _greeting_result[0] and not voice._force_io_disabled and getattr(Config, "TTS_ENGINE", "auto") == "edge":
                 import tempfile as _tf
                 clean = voice._clean_for_speech(_greeting_result[0])
                 if clean:
@@ -1418,7 +1490,8 @@ def main() -> None:
                     if ok and os.path.exists(_pf) and os.path.getsize(_pf) > 0:
                         with voice._static_audio_cache_lock:
                             voice._static_audio_cache[clean] = _pf
-        except Exception:
+        except Exception as _greet_err:
+            logger.warning("[Main] Background greeting generation failed: %s", _greet_err)
             _greeting_result[0] = None
         finally:
             _greeting_done.set()
@@ -1459,7 +1532,7 @@ def main() -> None:
 
     # Also wait briefly for the greeting TTS audio to land in the static cache so
     # voice.speak() gets an instant file-load hit instead of a fresh network call.
-    if getattr(Config, "TTS_ENGINE", "auto") == "edge":
+    if not voice._force_io_disabled and getattr(Config, "TTS_ENGINE", "auto") == "edge":
         _clean_greeting = voice._clean_for_speech(greeting)
         _tts_ready_start = time.monotonic()
         while time.monotonic() - _tts_ready_start < 4.0:

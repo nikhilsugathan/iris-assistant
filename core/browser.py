@@ -40,14 +40,24 @@ class BrowserAutomation:
         if self._ready:
             return True
 
-        if self._launching:
-            # Already launching — wait for it
+        _should_launch = False
+        with self._lock:
+            # Re-check under the lock — another thread may have finished
+            # between the fast-path read above and acquiring the lock.
+            if self._ready:
+                return True
+            if not self._launching:
+                self._launching = True
+                _should_launch = True
+            # else: another thread is already launching — fall through to wait
+
+        if not _should_launch:
+            # Another thread won the launch race — wait for it to finish.
             start = time.time()
             while self._launching and time.time() - start < timeout:
                 time.sleep(0.2)
             return self._ready
 
-        self._launching = True
         try:
             from playwright.sync_api import sync_playwright
             self._pw      = sync_playwright().start()

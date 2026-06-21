@@ -1,0 +1,24 @@
+# Exclude large directories and unnecessary files
+__pycache__
+.pytest_cache
+pytest-cache-files-*
+.git
+.github
+.env
+.claude
+models/
+logs/
+memory/
+exports/
+history/
+reviews/
+tests/
+piper/
+OLD_FILES/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+*.log
+.venv
+venv/

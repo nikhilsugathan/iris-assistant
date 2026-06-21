@@ -56,7 +56,7 @@ class _Config:
     WEB_KEYWORDS = ["search"]
     CODE_KEYWORDS = ["code"]
     IRIS_PERSONA = "You are IRIS."
-    ALETHEIA_PERSONA = "You are Aletheia."
+    ALETHEIA_PERSONA = "You are Aletheia with root access."
     GROQ_MODEL = "g"
     GEMINI_MODEL = "g"
     CLAUDE_MODEL = "c"
@@ -127,7 +127,7 @@ class TestPostRemediationAudit(unittest.TestCase):
 
         self.assertEqual(response, "ok")
         payload = post.call_args.kwargs["json"]
-        self.assertIn("System: You are Aletheia.", payload["prompt"])
+        self.assertIn("System: You are Aletheia with root access.", payload["prompt"])
         self.assertIn("Assistant: Previous reply", payload["prompt"])
         self.assertIn("User: How are you?", payload["prompt"])
         self.assertEqual(payload["options"]["temperature"], 0.4)

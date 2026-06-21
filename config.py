@@ -59,7 +59,10 @@ class _Config:
     CPU_THREADS           = os.cpu_count() or 4
 
     # ── C++ LLM ENGINE ───────────────────────────────────────
-    LOCAL_MODEL_PATH = os.getenv("LOCAL_MODEL_PATH", "D:/IRIS-live/models/Qwen3-8B-Q4_K_M.gguf")
+    LOCAL_MODEL_PATH = os.getenv(
+        "LOCAL_MODEL_PATH",
+        os.path.join(PROJECT_ROOT, "models", "Qwen3-8B-Q4_K_M.gguf"),
+    )
     # -1 = push every layer to GPU (llama-cpp-python canonical signal).
     # Previously 99 was used as a proxy; -1 is the correct constant.
     N_GPU_LAYERS     = int(os.getenv("N_GPU_LAYERS", "-1"))
@@ -77,15 +80,17 @@ class _Config:
     OLLAMA_BASE_URL    = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
     # ── MODEL NAMES ──────────────────────────────────────────
-    GROQ_MODEL         = os.getenv("GROQ_MODEL", "llama-4-scout-17b-16e-instruct")
+    GROQ_MODEL         = os.getenv("GROQ_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
     # whisper-large-v3-turbo: cloud STT hosted by Groq — replaces local
     # faster-whisper and frees ~1.6 GB VRAM for the context window expansion.
     GROQ_STT_MODEL     = os.getenv("GROQ_STT_MODEL", "whisper-large-v3-turbo")
     GEMINI_MODEL       = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-    # gemini-3-flash: latest multimodal model with native image understanding.
-    # Kept separate from GEMINI_MODEL so text and vision routing can be tuned
-    # independently without redeploying config.
-    GEMINI_VISION_MODEL = os.getenv("GEMINI_VISION_MODEL", "gemini-3-flash")
+    # meta-llama/llama-4-scout-17b-16e-instruct: active Groq vision model.
+    # Replaces the deprecated llama-3.2-*-vision-preview variants (both
+    # decommissioned April 2025).  Same GROQ_API_KEY — no new credentials
+    # required.  Llama 4 Scout is multimodal (text + image), 128 k context,
+    # and is the current flagship vision model on GroqCloud as of 2026.
+    GROQ_VISION_MODEL  = os.getenv("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
     CLAUDE_MODEL       = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
     PERPLEXITY_MODEL   = os.getenv("PERPLEXITY_MODEL", "llama-3.1-sonar-large-128k-online")
     OLLAMA_MODEL_FAST  = "llama3.2:3b"
@@ -103,10 +108,20 @@ class _Config:
     WAKE_WORDS            = ["iris"]
     WAKE_RMS_THRESHOLD    = int(os.getenv("WAKE_RMS_THRESHOLD", "400"))
     COMMAND_RMS_THRESHOLD = int(os.getenv("COMMAND_RMS_THRESHOLD", "550"))
+    # BARGE_IN_RMS_THRESHOLD: minimum sustained RMS (N=3 consecutive frames)
+    # required to trigger barge-in cancellation of TTS playback.
+    # 750 clears mechanical keyboard clicks (~400-600 RMS peak) and ambient
+    # fan/AC noise (≈300-450 RMS) while still catching conversational speech
+    # (~800-2000+ RMS at a typical microphone distance).
+    BARGE_IN_RMS_THRESHOLD = int(os.getenv("BARGE_IN_RMS_THRESHOLD", "750"))
     MIC_SAMPLE_RATE       = int(os.getenv("MIC_SAMPLE_RATE", "16000"))
     PREFERRED_MIC_NAME    = os.getenv("PREFERRED_MIC_NAME", "").strip()
     _MIC_DEVICE_INDEX_RAW = os.getenv("MIC_DEVICE_INDEX", "").strip()
-    MIC_DEVICE_INDEX      = int(_MIC_DEVICE_INDEX_RAW) if _MIC_DEVICE_INDEX_RAW else None
+    try:
+        MIC_DEVICE_INDEX = int(_MIC_DEVICE_INDEX_RAW) if _MIC_DEVICE_INDEX_RAW else None
+    except ValueError:
+        print(f"[Config] WARNING: MIC_DEVICE_INDEX={_MIC_DEVICE_INDEX_RAW!r} is not a valid integer; ignoring.")
+        MIC_DEVICE_INDEX = None
     TTS_OUTPUT_SAMPLE_RATE = int(os.getenv("TTS_OUTPUT_SAMPLE_RATE", "48000"))
     PUBLIC_WAKE_WORD       = os.getenv("PUBLIC_WAKE_WORD", "iris").strip().lower()
     ADMIN_WAKE_WORD        = os.getenv("ADMIN_WAKE_WORD", "aletheia").strip().lower()

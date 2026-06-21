@@ -13,6 +13,9 @@ import re
 from datetime import datetime
 from typing import List, Dict
 from config import Config
+from core.logger import get_logger
+
+logger = get_logger("Memory")
 
 _GENERIC_ASSISTANT_BOILERPLATE = (
     "how can i assist you today",
@@ -47,7 +50,8 @@ class Memory:
                     
                     self.conversation = raw_conv
                     self._self_clean() # Remove bloat on startup
-            except Exception:
+            except Exception as _load_err:
+                logger.error("[Memory] Conversation load failed (resetting to empty): %s", _load_err)
                 self.conversation = []
 
     def _save(self):
@@ -226,7 +230,8 @@ class Memory:
         try:
             with open(self._sessions_archive_file, "r", encoding="utf-8") as f:
                 archive = json.load(f)
-        except Exception:
+        except Exception as _arc_err:
+            logger.warning("[Memory] Session archive load failed: %s", _arc_err)
             return ""
         sessions = archive.get("sessions", [])
         if not sessions:

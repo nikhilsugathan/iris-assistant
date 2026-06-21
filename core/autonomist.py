@@ -3,6 +3,9 @@ import os
 import re
 from datetime import datetime
 from config import Config
+from core.logger import get_logger
+
+logger = get_logger("Autonomist")
 
 class Autonomist:
     def __init__(self, brain):
@@ -30,10 +33,14 @@ class Autonomist:
         Example: {{"user_preference": "prefers rich panels", "project_goal": "RTX 5050 optimization"}}
         """
 
-        # FIX: Use the correct API key "ollama_smart" instead of the raw model
-        # name string Config.OLLAMA_MODEL_DEEP ("deepseek-r1:8b"), which was
-        # causing _call_api to return None and silently skip all learning.
-        response = self.brain._call_api(Config.PRIMARY_BRAIN, learning_prompt)
+        # require_json=True: the prompt demands a bare JSON object.
+        # Grammar armor engages on the llama_cpp path; cloud APIs ignore the flag.
+        # Low temperature (0.2) suppresses creative drift in key-value extraction.
+        response = self.brain._call_api_with_settings(
+            Config.PRIMARY_BRAIN,
+            learning_prompt,
+            settings={"require_json": True, "max_tokens": 512, "temperature": 0.2},
+        )
 
         if not response:
             return
@@ -42,14 +49,14 @@ class Autonomist:
             json_str = re.search(r"\{.*\}", response, re.DOTALL).group()
             new_knowledge = json.loads(json_str)
             self._update_kb(new_knowledge)
-        except Exception:
-            pass
+        except Exception as _learn_err:
+            logger.warning("[Autonomist] learn_from_session parse/update failed: %s", _learn_err)
 
     def _update_kb(self, data: dict):
         kb = {}
         if os.path.exists(self.kb_path):
-            with open(self.kb_path, 'r') as f: kb = json.load(f)
-        
+            with open(self.kb_path, 'r', encoding='utf-8') as f: kb = json.load(f)
+
         kb.update(data)
-        with open(self.kb_path, 'w') as f:
+        with open(self.kb_path, 'w', encoding='utf-8') as f:
             json.dump(kb, f, indent=4)

@@ -71,7 +71,7 @@ from core.executor import ActionExecutor
 
 def _make_brain() -> MagicMock:
     brain = MagicMock()
-    brain._call_api.return_value = json.dumps({
+    _plan_json = json.dumps({
         "action_type": "open_app",
         "description": "open calculator",
         "command": "",
@@ -82,6 +82,8 @@ def _make_brain() -> MagicMock:
         "url": "",
         "is_dangerous": False,
     })
+    brain._call_api.return_value = _plan_json
+    brain._call_api_with_settings.return_value = _plan_json
     return brain
 
 
@@ -109,7 +111,7 @@ class TestPhase6ExecutorHardening(unittest.TestCase):
         executor = ActionExecutor(voice=MagicMock(), brain=brain)
 
         executor._ai_plan("open calculator", admin_unlocked=False)
-        public_prompt = brain._call_api.call_args.args[1]
+        public_prompt = brain._call_api_with_settings.call_args.args[1]
         self.assertIn("Persona mode: public", public_prompt)
         self.assertIn("Allowed tools for this persona:", public_prompt)
         self.assertIn("- open_app:", public_prompt)
@@ -117,9 +119,9 @@ class TestPhase6ExecutorHardening(unittest.TestCase):
         self.assertIn("action_type", public_prompt)
         self.assertIn(" | ".join(sorted(ACTIVE_TOOL_NAMES)), public_prompt)
 
-        brain._call_api.reset_mock()
+        brain._call_api_with_settings.reset_mock()
         executor._ai_plan("run ipconfig", admin_unlocked=True)
-        admin_prompt = brain._call_api.call_args.args[1]
+        admin_prompt = brain._call_api_with_settings.call_args.args[1]
         self.assertIn("Persona mode: admin", admin_prompt)
         self.assertIn("- run_command:", admin_prompt)
         self.assertIn(" | ".join(sorted(ADMIN_TOOL_NAMES)), admin_prompt)

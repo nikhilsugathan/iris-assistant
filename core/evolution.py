@@ -63,7 +63,10 @@ Respond with ONLY the Python code, no explanation."""
         try:
             import core.custom_tools
             importlib.reload(core.custom_tools)
-        except: pass
+        except ImportError as _e:
+            console.print(f"[yellow][Evolution] WARNING: custom_tools hot-reload failed (ImportError): {_e}[/yellow]")
+        except Exception as _e:
+            console.print(f"[yellow][Evolution] WARNING: custom_tools hot-reload failed ({type(_e).__name__}): {_e}[/yellow]")
         
         return "Tool integrated and hot-reloaded successfully."
 

@@ -14,6 +14,26 @@ from pygame import mixer
 from rich.console import Console
 from config import Config
 from core import logger as _logger_mod
+import contextlib as _contextlib
+
+@_contextlib.contextmanager
+def _quiet_stderr():
+    """Suppress C-library stderr (ALSA/JACK probe noise) during audio init.
+
+    Redirects file-descriptor 2 to /dev/null so C-library noise from
+    PortAudio/ALSA/JACK device enumeration never reaches docker logs.
+    Python-level logging still works because the logging module writes
+    through its own file objects, not fd 2 directly.
+    """
+    devnull_fd = os.open(os.devnull, os.O_WRONLY)
+    saved_fd = os.dup(2)
+    os.dup2(devnull_fd, 2)
+    try:
+        yield
+    finally:
+        os.dup2(saved_fd, 2)
+        os.close(saved_fd)
+        os.close(devnull_fd)
 
 get_logger = _logger_mod.get_logger
 get_trace_logger = getattr(_logger_mod, "get_trace_logger", _logger_mod.get_logger)
@@ -131,10 +151,17 @@ class Voice:
         # drops the mic indicator between listen() calls.
         self._persistent_source = None
         self._mic_open = False
+        # Persistent raw-audio stream for barge-in RMS monitoring.
+        # Opened once alongside the SR mic stream so the Windows taskbar
+        # mic indicator stays lit permanently — no create/destroy cycle per
+        # generation means no icon flapping.
+        self._rms_pa = None
+        self._rms_stream = None
 
         if not self._force_io_disabled and (not self.text_mode or getattr(Config, "SPEAK_IN_TEXT_MODE", False)):
             try:
-                mixer.init()
+                with _quiet_stderr():
+                    mixer.init(44100, -16, 2, 4096)
             except Exception as e:
                 logger.error(f"Audio Warning: Could not initialize pygame mixer - {e}")
 
@@ -182,7 +209,12 @@ class Voice:
     @staticmethod
     def _clamp_threshold(value: float, configured_gate: float, floor_ratio: float = 0.6, ceiling_ratio: float = 1.35) -> float:
         floor = max(120.0, float(configured_gate) * floor_ratio)
-        ceiling = max(floor + 25.0, float(configured_gate) * ceiling_ratio)
+        # Min-gap reduced from 25 → 10: the old 25-RMS guard was overriding
+        # the command listener's intended ceiling_ratio=1.05 (315) and forcing
+        # the ceiling to 325, so commands always ran 8% above the configured
+        # gate after a wake-word listen.  A 10-RMS minimum gap is sufficient
+        # to keep floor < ceiling while letting ceiling_ratio win.
+        ceiling = max(floor + 10.0, float(configured_gate) * ceiling_ratio)
         return min(max(float(value), floor), ceiling)
 
     def stt_status(self) -> str:
@@ -215,6 +247,7 @@ class Voice:
             "piper_disabled": self._piper_disabled,
         }
 
+    @_quiet_stderr()
     def _init_mic(self):
         """Probes hardware for the Aletheia spec."""
         try:
@@ -261,6 +294,11 @@ class Voice:
             except Exception as _me:
                 logger.warning(f"[Voice] Persistent mic open failed: {_me}")
                 self._mic_open = False
+            # Open the persistent RMS monitor stream immediately after the SR
+            # stream is confirmed live.  Both streams share the same device under
+            # WASAPI shared mode.  Doing this here (not in __init__) ensures
+            # mic_device_index is resolved before the RMS stream is opened.
+            self._open_rms_stream()
             self._debug_trace(
                 "mic_init",
                 configured_gate=Config.WAKE_RMS_THRESHOLD,
@@ -274,6 +312,34 @@ class Voice:
             self.mic_ready = False
             self.mic_device_index = None
             self.mic_name = None
+
+    def _open_rms_stream(self):
+        """Open a persistent PyAudio input stream for barge-in RMS monitoring.
+
+        Kept separate from the SR Microphone stream so two consumers can read
+        the same device simultaneously under Windows WASAPI shared mode.
+        Opened once at startup — never destroyed mid-session — so the Windows
+        taskbar mic indicator stays lit permanently instead of flapping on
+        every generation cycle.
+        """
+        try:
+            pyaudio_cls = sr.Microphone.get_pyaudio().PyAudio
+            self._rms_pa = pyaudio_cls()
+            self._rms_stream = self._rms_pa.open(
+                format=self._rms_pa.get_format_from_width(2),  # int16
+                channels=1,
+                rate=16000,
+                input=True,
+                input_device_index=self.mic_device_index,
+                frames_per_buffer=512,
+            )
+            logger.debug("[Voice] Persistent RMS monitor stream opened.")
+        except Exception as _rms_e:
+            logger.warning(
+                f"[Voice] Persistent RMS stream failed — barge-in monitor disabled: {_rms_e}"
+            )
+            self._rms_pa = None
+            self._rms_stream = None
 
     def _get_default_input_device(self):
         try:
@@ -365,6 +431,20 @@ class Voice:
                 pass
             self._mic_open = False
             self._persistent_source = None
+        # Tear down the persistent RMS monitor stream.
+        if self._rms_stream is not None:
+            try:
+                self._rms_stream.stop_stream()
+                self._rms_stream.close()
+            except Exception:
+                pass
+            self._rms_stream = None
+        if self._rms_pa is not None:
+            try:
+                self._rms_pa.terminate()
+            except Exception:
+                pass
+            self._rms_pa = None
 
     def is_speaking(self):
         with self._speech_state_lock:
@@ -439,6 +519,21 @@ class Voice:
     def is_muted(self) -> bool:
         return getattr(self, "_muted", False)
 
+    def is_static_cached(self, text: str) -> bool:
+        """Return True if *text* has a pre-generated static audio file ready on
+        disk.  Used to gate thinking-cue playback so the speech worker is never
+        blocked waiting for a live Edge-TTS network call when the prewarm missed."""
+        clean_text = self._clean_for_speech(text)
+        if not clean_text:
+            return False
+        with self._static_audio_cache_lock:
+            cached_path = self._static_audio_cache.get(clean_text)
+        return (
+            cached_path is not None
+            and os.path.exists(cached_path)
+            and os.path.getsize(cached_path) > 0
+        )
+
     # ── Generation cancel (barge-in during thinking) ─────────────────────────
 
     def cancel_generation(self) -> None:
@@ -453,67 +548,63 @@ class Voice:
         self._generation_cancel.clear()
 
     def start_barge_in_monitor(self, on_barge_in: callable, warmup_sec: float = 0.45) -> threading.Event:
-        """Open a lightweight raw-audio RMS monitor thread to detect voice
-        while the LLM is generating a response.  Returns a stop_event — set
-        it to terminate the monitor.
+        """Monitor mic RMS via the persistent input stream (_rms_stream) and
+        call on_barge_in() if the user speaks while the LLM is generating.
+        Returns a stop_event — set it to terminate the monitor.
 
-        Uses a fresh PyAudio stream on the configured mic device so it does
-        not race with the speech_recognition stream (Windows WASAPI shared
-        mode duplicates audio to multiple consumers on the same device).
+        Reuses the persistent stream opened in _open_rms_stream() so no
+        PyAudio instance is created or destroyed per generation.  This
+        eliminates the Windows taskbar mic-icon flapping caused by the
+        previous create/destroy cycle on every LLM call.
 
-        `warmup_sec`: frames in this initial window are ignored.  Prevents the
-        monitor from immediately triggering on the tail of the user's own
-        previous speech (which is still decaying in the mic buffer when the
-        monitor starts).
+        `warmup_sec`: RMS checks are suppressed for this many seconds after
+        the monitor starts.  Absorbs the tail of the user's own previous
+        speech that is still decaying in the mic buffer.
         """
         stop = threading.Event()
-        device_index = getattr(self, "mic_device_index", None)
-        # Threshold for barge-in detection: must be clearly above ambient noise.
-        # Previous max(400, WAKE*0.85)=400 was borderline — laptop fan/AC at
-        # rms≈400-450 triggered spurious barge-ins (seen: rms=426 fired on nothing).
-        # Raised to max(550, WAKE*1.1) so only definite speech (human voice)
-        # triggers cancellation.  First barge-in (rms=1152) is unambiguous speech
-        # and will still fire; second (rms=426) would now be ignored.
-        threshold = max(
-            550.0,
-            float(getattr(Config, "WAKE_RMS_THRESHOLD", 400)) * 1.1,
+        rms_stream = self._rms_stream  # snapshot — None if _open_rms_stream failed
+        if rms_stream is None:
+            # RMS stream unavailable (hardware error at startup) — return an
+            # inert event so the caller's finally: _barge_in_stop.set() is safe.
+            return stop
+
+        # Barge-in threshold: BARGE_IN_RMS_THRESHOLD (default 750) comfortably
+        # clears mechanical keyboard clicks (~400-600 RMS peak) and fan noise
+        # (≈300-450 RMS).  Falls back to max(550, WAKE*1.1) when unset so
+        # existing deployments that haven't added the env key are unaffected.
+        threshold = float(
+            getattr(Config, "BARGE_IN_RMS_THRESHOLD", None)
+            or max(550.0, float(getattr(Config, "WAKE_RMS_THRESHOLD", 400)) * 1.1)
         )
 
+        # Debounce: require N consecutive frames above threshold before firing.
+        # A mechanical keyclick is a single-frame transient (~32 ms at 512
+        # samples / 16 kHz).  Sustained speech stays above threshold for many
+        # consecutive frames.  N=3 (~96 ms) blocks clicks while passing voice.
+        _CONSECUTIVE_REQUIRED = 3
+
         def _monitor():
-            try:
-                pyaudio_cls = sr.Microphone.get_pyaudio().PyAudio
-            except Exception:
-                return  # PyAudio not available — silently skip
-            p = None
-            stream = None
-            try:
-                p = pyaudio_cls()
-                stream = p.open(
-                    format=p.get_format_from_width(2),  # int16
-                    channels=1,
-                    rate=16000,
-                    input=True,
-                    input_device_index=device_index,
-                    frames_per_buffer=512,
-                )
-                # Warmup: drain frames for `warmup_sec` without checking RMS.
-                # This absorbs the tail of the user's previous speech so the
-                # monitor doesn't fire on their own lingering voice.
-                _warmup_until = time.monotonic() + warmup_sec
-                while not stop.is_set():
-                    try:
-                        data = stream.read(512, exception_on_overflow=False)
-                    except Exception:
-                        break
-                    if time.monotonic() < _warmup_until:
-                        continue  # still in warmup — ignore RMS
-                    arr = np.frombuffer(data, dtype=np.int16).astype(np.float32)
-                    rms = float(np.sqrt(np.mean(arr ** 2))) if len(arr) > 0 else 0.0
-                    if rms > threshold:
+            # Warmup: drain frames for `warmup_sec` without checking RMS.
+            _warmup_until = time.monotonic() + warmup_sec
+            _consecutive = 0  # frames consecutively above threshold
+            while not stop.is_set():
+                try:
+                    data = rms_stream.read(512, exception_on_overflow=False)
+                except Exception:
+                    break  # stream error — exit silently; monitor disabled
+                if time.monotonic() < _warmup_until:
+                    _consecutive = 0  # reset during warmup
+                    continue
+                arr = np.frombuffer(data, dtype=np.int16).astype(np.float32)
+                rms = float(np.sqrt(np.mean(arr ** 2))) if len(arr) > 0 else 0.0
+                if rms > threshold:
+                    _consecutive += 1
+                    if _consecutive >= _CONSECUTIVE_REQUIRED:
                         self._debug_trace(
                             "barge_in_rms_trigger",
                             rms=round(rms, 1),
                             gate=round(threshold, 1),
+                            consecutive=_consecutive,
                         )
                         stop.set()
                         try:
@@ -521,20 +612,9 @@ class Voice:
                         except Exception as _cb_err:
                             logger.debug(f"[Voice] barge-in callback error: {_cb_err}")
                         break
-            except Exception as _e:
-                logger.debug(f"[Voice] barge-in monitor error: {_e}")
-            finally:
-                if stream is not None:
-                    try:
-                        stream.stop_stream()
-                        stream.close()
-                    except Exception:
-                        pass
-                if p is not None:
-                    try:
-                        p.terminate()
-                    except Exception:
-                        pass
+                else:
+                    _consecutive = 0  # transient — reset counter
+            # Stream intentionally NOT closed here — it is persistent.
 
         t = threading.Thread(target=_monitor, daemon=True, name="barge-in-monitor")
         t.start()
@@ -581,6 +661,8 @@ class Voice:
                             _stop_ev = self._active_stop_event
 
                             def _early_prefetch(key=_prefetch_text, stop=_stop_ev):
+                                if self._force_io_disabled:
+                                    return
                                 try:
                                     import tempfile
                                     with tempfile.NamedTemporaryFile(
@@ -600,11 +682,10 @@ class Voice:
                                     else:
                                         with self._tts_prefetch_lock:
                                             self._tts_prefetch_cache.pop(key, None)
-                                        if ok:
-                                            try:
-                                                os.remove(pf)
-                                            except Exception as _rme:
-                                                logger.debug("[Voice] Inline prefetch cleanup skipped %s: %s", pf, _rme)
+                                        try:
+                                            os.remove(pf)
+                                        except Exception as _rme:
+                                            logger.debug("[Voice] Inline prefetch cleanup skipped %s: %s", pf, _rme)
                                 except Exception:
                                     with self._tts_prefetch_lock:
                                         self._tts_prefetch_cache.pop(key, None)
@@ -646,6 +727,7 @@ class Voice:
         _voice_rate = self._active_voice_rate
 
         def _do_prefetch(key=clean_text):
+            pf = None
             try:
                 import tempfile
                 with tempfile.NamedTemporaryFile(
@@ -663,9 +745,15 @@ class Voice:
                         os.remove(pf)
                     except Exception as _rme:
                         logger.debug("[Voice] Pre-prefetch cleanup skipped %s: %s", pf, _rme)
-            except Exception:
+            except Exception as _exc:
                 with self._tts_prefetch_lock:
                     self._tts_prefetch_cache.pop(key, None)
+                if pf is not None:
+                    try:
+                        os.remove(pf)
+                    except Exception as _rme:
+                        logger.debug("[Voice] Exception-path prefetch cleanup skipped %s: %s", pf, _rme)
+                logger.warning("[Voice] _do_prefetch failed for key=%r: %s", key, _exc)
 
         threading.Thread(target=_do_prefetch, daemon=True, name="tts-pre-prefetch").start()
 
@@ -738,7 +826,21 @@ class Voice:
                 logger.error(f"Speech worker failed: {e}")
                 self._trace_exception("speech_error", e, chars=len(text), text=text)
             finally:
-                self._set_speech_active(False)
+                # Only drop speech_active to False when there is no immediately
+                # following chunk that shares the same stop_event (i.e. same
+                # utterance batch).  Dropping between back-to-back chunks opens
+                # a ~50 ms window where the barge-in monitor sees silence and
+                # reopens the mic, which causes the voice to "break up".
+                _stay_active = False
+                try:
+                    with self._utterance_queue.mutex:
+                        _q = list(self._utterance_queue.queue)
+                    if _q and _q[0][1] is stop_event and not stop_event.is_set():
+                        _stay_active = True
+                except Exception:
+                    pass
+                if not _stay_active:
+                    self._set_speech_active(False)
                 self._debug_trace(
                     "speech_end",
                     chars=len(text),
@@ -920,6 +1022,23 @@ class Voice:
         cleaned = re.sub(r'(\d+)\s*°K', r'\1 Kelvin', cleaned)
         cleaned = re.sub(r'°', ' degrees', cleaned)
         # ── Stage 4: Strip markdown ──────────────────────────────────────────────
+        # 4a: Fenced code blocks (```lang\n...\n``` or ~~~\n...\n~~~).
+        # Replace the entire block with a brief spoken note so TTS doesn't
+        # read raw Python/JSON/etc. verbatim.  The re.DOTALL flag makes '.'
+        # match newlines so multi-line blocks are caught in one pass.
+        cleaned = re.sub(
+            r'```[\w]*\n.*?```|~~~[\w]*\n.*?~~~',
+            ' …code example… ',
+            cleaned,
+            flags=re.DOTALL,
+        )
+        # 4b: Dangling opening fence with no closing triple-backtick
+        # (model cut off mid-block or context ended early).
+        cleaned = re.sub(r'```[\w]*\n.*$', ' …code example… ', cleaned, flags=re.DOTALL)
+        # 4c: Inline code spans — strip backticks, keep the token text.
+        # e.g. `os.makedirs` → os.makedirs  (readable as a word)
+        cleaned = re.sub(r'`([^`\n]+)`', r'\1', cleaned)
+        # 4d: Remaining markdown syntax characters
         cleaned = re.sub(r'[*_`#>]+', '', cleaned)
         cleaned = re.sub(r'\[(.*?)\]\((.*?)\)', r'\1', cleaned)
         cleaned = re.sub(r'\s+', ' ', cleaned)
@@ -1066,6 +1185,12 @@ class Voice:
         with self._static_audio_cache_lock:
             self._static_audio_cache.clear()
         with self._tts_prefetch_lock:
+            for _cached_pf in self._tts_prefetch_cache.values():
+                if _cached_pf is not None:
+                    try:
+                        os.remove(_cached_pf)
+                    except Exception as _rme:
+                        logger.debug("[Voice] Voice-switch prefetch cleanup skipped %s: %s", _cached_pf, _rme)
             self._tts_prefetch_cache.clear()
         self._debug_trace("voice_switch", voice=voice_name, rate=voice_rate)
 
@@ -1248,6 +1373,8 @@ class Voice:
             )
             return text
         except Exception as e:
+            if "Stream closed" in str(e) or "-9988" in str(e):
+                self._mic_open = False  # Tells _get_mic_source to rebuild the hardware link
             self._trace_exception("listen_error", e, source="wake")
             return None
         finally:
@@ -1332,8 +1459,15 @@ class Voice:
                 ceiling_ratio=1.05,
             )
 
-    def listen_for_interrupt(self, timeout=None, phrase_time_limit=None):
-        """Listen briefly for a barge-in phrase while IRIS is speaking."""
+    def listen_for_interrupt(self, timeout=None, phrase_time_limit=None,
+                             on_phrase_captured=None):
+        """Listen briefly for a barge-in phrase while IRIS is speaking.
+
+        on_phrase_captured: optional zero-argument callable fired the instant
+        audio is captured (before Whisper round-trip).  Use this to cut TTS
+        playback immediately — speech stops at phrase-capture speed (~100-400 ms)
+        rather than after the Whisper transcription returns (~1-2 s).
+        """
         if not self.mic_ready:
             return None
         started_at = time.monotonic()
@@ -1384,8 +1518,66 @@ class Voice:
                 timeout=_eff_timeout,
                 phrase_time_limit=_eff_ptl,
             )
+            # ── Fast-cut: audio physically captured — stop TTS NOW, before
+            # waiting for the Whisper round-trip.  This brings interrupt
+            # latency from ~2 s (post-Whisper) down to ~100-400 ms
+            # (post-capture).  The echo check below may still discard the
+            # transcript as speaker bleed-through, but the audio cut is safe
+            # regardless — the user just spoke into the mic.
+            if on_phrase_captured is not None:
+                try:
+                    on_phrase_captured()
+                except Exception as _pc_err:
+                    logger.debug("[Voice] on_phrase_captured callback error: %s", _pc_err)
             # phrase_type="interrupt" triggers greedy, no-VAD transcription
             text = self._transcribe_audio(audio, phrase_type="interrupt", source="interrupt")
+            # Short-clip TTS-echo guard.  The generic should_ignore_transcript
+            # check requires ≥4 tokens at 0.75 overlap — calibrated for full
+            # command clips.  Interrupt clips are ≤1.5s (1–3 words).
+            #
+            # Two historical failure modes fixed:
+            #
+            # 1. Age window too short (was 8 s): Whisper latency (1-3 s) plus
+            #    multiple 0.3s timeout polls before any audio is captured means
+            #    the echo transcript can arrive 10-15 s after record_spoken.
+            #    Extended to 20 s to absorb the full pipeline delay.
+            #
+            # 2. Single-word false-positive risk: lowering the gate to len>=1
+            #    causes common words like "it", "ok", "yes" to be suppressed
+            #    after any IRIS response (they appear in almost all sentences).
+            #    Fix: single-word transcripts are only echo-checked when IRIS
+            #    is still actively speaking (is_speaking() = True — includes
+            #    queued chunks and the gap between chunks).  Multi-word clips
+            #    are checked regardless (Whisper latency means the audio may
+            #    have ended before the transcript arrives).
+            if text:
+                _norm = self._normalize_text(text)
+                _toks = _norm.split() if _norm else []
+                # Single-word: gate on is_speaking() to avoid false positives
+                # on common words.  Multi-word: always check (age window is
+                # the sole staleness gate for multi-word echo).
+                _do_echo_check = len(_toks) >= 2 or (len(_toks) == 1 and self.is_speaking())
+                if _do_echo_check:
+                    _now = time.monotonic()
+                    with self._recent_spoken_lock:
+                        _recent = list(self._recent_spoken)
+                    for _ts, _spoken in _recent:
+                        if _now - _ts > 20.0:
+                            continue
+                        _overlap = (
+                            sum(1 for t in _toks if t in set(_spoken.split()))
+                            / max(len(_toks), 1)
+                        )
+                        if _overlap >= 0.60:
+                            self._debug_trace(
+                                "transcript_ignored",
+                                reason="interrupt_echo",
+                                transcript=_norm,
+                                spoken=_spoken,
+                                overlap=round(_overlap, 2),
+                            )
+                            text = None
+                            break
             self._debug_trace(
                 "listen_end",
                 source="interrupt",
@@ -1777,6 +1969,8 @@ class Voice:
         sequentially now finish in ~3-5 s, so wake acks are ready before the user
         can even say the wake word the first time.
         """
+        if self._force_io_disabled:
+            return
         if getattr(Config, "TTS_ENGINE", "auto") != "edge":
             return
         try:
@@ -1906,7 +2100,7 @@ class Voice:
         Note: _speech_active is managed by _run_speech_worker, not here."""
         try:
             if not mixer.get_init():
-                mixer.init()
+                mixer.init(44100, -16, 2, 4096)
             mixer.music.load(temp_file)
             mixer.music.play()
             # Fire the text-sync callback the instant audio starts playing so
@@ -1924,7 +2118,7 @@ class Voice:
                 if trigger_prefetch and not _prefetch_triggered and stop_event is not None:
                     self._try_prefetch_next(stop_event)
                     _prefetch_triggered = True
-                time.sleep(0.05)
+                time.sleep(0.01)
         except Exception as e:
             logger.error(f"Playback failed: {e}")
 
@@ -1937,12 +2131,18 @@ class Voice:
                 self._edge_tts_loop = _EdgeTTSEventLoop()
         return self._edge_tts_loop
 
-    def _run_edge_tts_async(self, text: str, voice: str, rate: str, output_path: str, timeout: float = None) -> bool:
+    def _run_edge_tts_async(self, text: str, voice: str, rate: str, output_path: str,
+                            timeout: float = None, stop_event=None) -> bool:
         """Generate audio via the edge-tts Python library using a persistent event loop.
 
         `timeout` caps the maximum wait in seconds.  Defaults to
         TTS_NETWORK_TIMEOUT_SEC config (8 s).  A TimeoutError causes a warning
         and returns False so the caller can try a CLI fallback.
+
+        `stop_event` is checked on every streamed chunk so an interrupted call
+        aborts immediately rather than running to the full 8-second timeout.
+        Without this check, stopping IRIS mid-speech blocks the speech worker
+        for up to 8 s while the in-flight network stream drains.
         """
         import concurrent.futures
         try:
@@ -1956,21 +2156,47 @@ class Voice:
             communicate = _edge_tts_lib.Communicate(text, voice=voice, rate=rate)
             with open(output_path, "wb") as f:
                 async for chunk in communicate.stream():
+                    # Bail out immediately if the speech worker was stopped
+                    # (e.g. barge-in or explicit stop_speaking call) so we don't
+                    # drain an 8-second network stream after the user interrupted.
+                    if stop_event is not None and stop_event.is_set():
+                        return
                     if chunk["type"] == "audio":
                         f.write(chunk["data"])
 
-        try:
-            self._get_edge_tts_loop().run(_generate(), timeout=_timeout)
-            return True
-        except concurrent.futures.TimeoutError:
-            logger.warning(
-                f"[TTS] Edge-TTS timeout after {_timeout:.0f}s for {len(text)} chars "
-                f"— check internet connectivity"
-            )
-            return False
-        except Exception as exc:
-            logger.error(f"[TTS] edge-tts Python library failed: {exc}")
-            return False
+        _MAX_ATTEMPTS = 3
+        for _attempt in range(_MAX_ATTEMPTS):
+            try:
+                self._get_edge_tts_loop().run(_generate(), timeout=_timeout)
+                return True
+            except concurrent.futures.TimeoutError:
+                logger.warning(
+                    f"[TTS] Edge-TTS timeout after {_timeout:.0f}s for {len(text)} chars "
+                    f"— check internet connectivity"
+                )
+                return False
+            except Exception as exc:
+                # Two known transient Microsoft service errors — retry both:
+                #   NoAudioReceived: connection accepted but zero audio chunks returned.
+                #   503 WSServerHandshakeError: WebSocket handshake rejected (overload).
+                # Both resolve on retry with 1 s / 2 s backoff.
+                _exc_str = str(exc)
+                _is_transient = (
+                    type(exc).__name__ == "NoAudioReceived"
+                    or "503" in _exc_str
+                    or "Invalid response status" in _exc_str
+                )
+                if _is_transient and _attempt < _MAX_ATTEMPTS - 1:
+                    _wait = float(_attempt + 1)
+                    logger.warning(
+                        "[TTS] edge-tts transient error (attempt %d/%d, %s) — retrying in %.0fs",
+                        _attempt + 1, _MAX_ATTEMPTS, type(exc).__name__, _wait,
+                    )
+                    time.sleep(_wait)
+                    continue
+                logger.error(f"[TTS] edge-tts Python library failed: {exc}")
+                return False
+        return False
 
     def _speak_edge_tts(self, text, stop_event=None, on_play_start=None):
         temp_file = None
@@ -1984,7 +2210,8 @@ class Voice:
             rate = self._active_voice_rate
             voice_name = self._active_voice_name
             _tts_timeout = float(getattr(Config, "TTS_NETWORK_TIMEOUT_SEC", 8))
-            ok = self._run_edge_tts_async(text, voice_name, rate, temp_file, timeout=_tts_timeout)
+            ok = self._run_edge_tts_async(text, voice_name, rate, temp_file,
+                                          timeout=_tts_timeout, stop_event=stop_event)
             if not ok:
                 # Try CLI subprocess as secondary fallback.
                 result = subprocess.run(
@@ -1992,9 +2219,12 @@ class Voice:
                      "--text", text, "--write-media", temp_file],
                     check=False, capture_output=True,
                     encoding="utf-8", errors="replace",
+                    timeout=_tts_timeout,
                     # CREATE_NO_WINDOW: hides the CMD flash on Windows and
                     # reduces idle CPU cost from console-session overhead.
-                    creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+                    # getattr fallback: evaluates to 0 on Linux where the
+                    # constant does not exist, avoiding AttributeError.
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
                 if result.returncode != 0:
                     # encoding="utf-8" makes stderr a str already — no .decode() needed.
