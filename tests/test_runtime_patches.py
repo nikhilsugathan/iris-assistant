@@ -50,9 +50,22 @@ def test_startup_config_compatibility_defaults_exist():
     import core  # noqa: F401 - applies compatibility defaults
     from config import Config
 
-    assert getattr(Config, "PUBLIC_NAME", "")
-    assert getattr(Config, "SYSTEM_NAME", "")
-    assert getattr(Config, "SYSTEM_MOTTO", "")
+    required = [
+        "PROJECT_ROOT",
+        "PUBLIC_NAME",
+        "SYSTEM_NAME",
+        "INNER_CODENAME",
+        "COUNCIL_NAME",
+        "SYSTEM_MOTTO",
+        "VERSION",
+        "MEMORY_FILE",
+        "MAX_MEMORY_TURNS",
+        "RUNBOOK_MODE",
+        "ENABLE_AUTO_SYNC",
+        "validate",
+    ]
+    for name in required:
+        assert hasattr(Config, name), name
     assert callable(getattr(Config, "validate", None))
     assert Config.validate() is True
 
