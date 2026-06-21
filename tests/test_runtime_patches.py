@@ -27,6 +27,7 @@ def test_brain_runtime_patches_are_applied():
     assert getattr(Brain, "_iris_vision_fallback_patch_applied", False)
     assert getattr(Brain, "_iris_performance_patch_applied", False)
     assert getattr(Brain, "_iris_multilingual_patch_applied", False)
+    assert getattr(Brain, "_iris_language_voice_bridge_applied", False)
     assert hasattr(Brain, "_call_gemini_vision")
 
 
@@ -73,7 +74,7 @@ def test_multilingual_generation_settings_and_sticky_voice_default():
     followup_settings = brain._generation_settings("general", user_input="just broken spanish")
     ml_settings = brain._generation_settings("general", user_input="namaskaram ithu explain cheyyamo")
     assert "Spanish" in settings.get("extra_system", "")
-    assert "same language" in settings.get("extra_system", "")
+    assert "Spanish-English mixed style" in settings.get("extra_system", "")
     assert "Spanish" in broken_settings.get("extra_system", "")
     assert "broken Spanish" in broken_settings.get("extra_system", "")
     assert "Spanish" in followup_settings.get("extra_system", "")
@@ -87,6 +88,7 @@ def test_multilingual_generation_settings_and_sticky_voice_default():
     assert multilingual_tts_voice_switch_enabled() is True
     assert malayalam_native_tts_enabled() is False
     assert getattr(Voice, "_iris_multilingual_voice_patch_applied", False)
+    assert getattr(Voice, "_iris_language_voice_bridge_applied", False)
 
 
 def test_language_aware_fast_smalltalk():
@@ -111,8 +113,8 @@ def test_language_aware_fast_smalltalk():
     assert malayalam
     assert "That's" not in namaste + spanish + german + malayalam
     assert any(token in namaste.lower() for token in ["namaste", "namaskar", "pranam", "aaj", "batao", "bolo"])
-    assert any(token in spanish.lower() for token in ["hola", "amor", "dime", "qué", "mision", "misión"])
-    assert any(token in german.lower() for token in ["guten", "hallo", "was", "weiter", "aufgabe"])
+    assert any(token in spanish.lower() for token in ["hola", "amor", "dime", "qué", "mision", "misión", "aquí", "escucho", "objetivo"])
+    assert any(token in german.lower() for token in ["guten", "hallo", "was", "weiter", "aufgabe", "ich", "höre"])
 
 
 def test_voice_stability_patch_is_applied_in_text_mode():
@@ -125,6 +127,7 @@ def test_voice_stability_patch_is_applied_in_text_mode():
     assert getattr(Voice, "_iris_balanced_interrupt_default", False)
     assert getattr(Voice, "_iris_single_input_default", False)
     assert getattr(Voice, "_iris_tts_sanitizer_applied", False)
+    assert getattr(Voice, "_iris_language_voice_bridge_applied", False)
     voice = Voice(text_mode=True)
     assert voice.io_disabled
     assert Config.TTS_ENGINE in {"edge", "piper", "auto"}
