@@ -13,15 +13,19 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 
 def apply_config_hardening() -> None:
-    """Apply only lightweight compatibility defaults.
-
-    The full hardening pass is kept opt-in so normal startup follows the user's
-    .env values exactly and avoids surprising runtime changes during voice tests.
-    """
+    """Apply lightweight startup defaults and runtime observability."""
     from config import Config
 
     Config.VOICE_PLAYBACK_MODE = os.getenv("VOICE_PLAYBACK_MODE", "balanced").strip().lower() or "balanced"
     Config.TTS_FAST_CUT_ENABLED = _env_bool("TTS_FAST_CUT_ENABLED", False)
+
+    if _env_bool("IRIS_OBSERVABILITY_ENABLED", True):
+        try:
+            from core.observability import install_observability
+
+            install_observability()
+        except Exception:
+            pass
 
     if _env_bool("IRIS_APPLY_RUNTIME_HARDENING", False):
         Config.REQUIRE_ADMIN_APPROVAL = True
