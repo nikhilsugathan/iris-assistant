@@ -48,10 +48,10 @@ def test_short_prompt_fast_path_and_settings():
     assert settings["context_turns"] <= 2
 
 
-def test_multilingual_generation_settings_and_locked_voice_default():
+def test_multilingual_generation_settings_and_sticky_voice_default():
     import core  # noqa: F401
     from core.brain import Brain
-    from core.multilingual_patches import language_instruction_for, malayalam_native_tts_enabled, multilingual_tts_voice_switch_enabled, tts_voice_for
+    from core.multilingual_patches import language_instruction_for, malayalam_native_tts_enabled, multilingual_tts_voice_switch_enabled, sticky_language_tts_enabled, tts_voice_for
     from core.voice import Voice
 
     class DummyMemory:
@@ -67,13 +67,13 @@ def test_multilingual_generation_settings_and_locked_voice_default():
     assert "Spanish" in settings.get("extra_system", "")
     assert "same language" in settings.get("extra_system", "")
     assert "Malayalam" in ml_settings.get("extra_system", "")
-    assert "Malayalam script" in ml_settings.get("extra_system", "")
+    assert "mostly in English" in ml_settings.get("extra_system", "")
     assert language_instruction_for("guten morgen kannst du mir helfen")
     assert tts_voice_for("Hola, mi amor. Qué hacemos?") == "es-ES-ElviraNeural"
     assert tts_voice_for("Guten Morgen. Was steht an?") == "de-DE-KatjaNeural"
-    assert tts_voice_for("നമസ്കാരം. ഇന്ന് എന്താണ് പ്ലാൻ?") == "ml-IN-SobhanaNeural"
-    assert multilingual_tts_voice_switch_enabled() is False
-    assert malayalam_native_tts_enabled() is True
+    assert sticky_language_tts_enabled() is True
+    assert multilingual_tts_voice_switch_enabled() is True
+    assert malayalam_native_tts_enabled() is False
     assert getattr(Voice, "_iris_multilingual_voice_patch_applied", False)
 
 
@@ -101,7 +101,6 @@ def test_language_aware_fast_smalltalk():
     assert any(token in namaste.lower() for token in ["namaste", "namaskar", "pranam", "aaj", "batao", "bolo"])
     assert any(token in spanish.lower() for token in ["hola", "amor", "dime", "qué", "mision", "misión"])
     assert any(token in german.lower() for token in ["guten", "hallo", "was", "weiter", "aufgabe"])
-    assert any("\u0d00" <= char <= "\u0d7f" for char in malayalam)
 
 
 def test_voice_stability_patch_is_applied_in_text_mode():
@@ -118,7 +117,7 @@ def test_voice_stability_patch_is_applied_in_text_mode():
     assert voice.io_disabled
     assert Config.TTS_ENGINE in {"edge", "piper", "auto"}
     assert getattr(Config, "VOICE_PLAYBACK_MODE", "balanced") in {"balanced", "stable", "realtime"}
-    assert "Malayalam native exception" in voice.tts_status()
+    assert "sticky language voice" in voice.tts_status()
     sample = "Hey there! " + chr(0x1F44B) + " How can I help? :sparkles:"
     assert voice._clean_for_speech(sample) == "Hey there! How can I help?"
 
@@ -139,8 +138,11 @@ def test_config_hardening_is_lightweight_by_default():
     assert getattr(Config, "COMMAND_RMS_THRESHOLD", 0) >= 400
     assert getattr(Config, "VOICE_PLAYBACK_MODE", "balanced") in {"balanced", "stable", "realtime"}
     assert getattr(Config, "STT_LANGUAGE", "")
-    assert getattr(Config, "IRIS_LOCK_TTS_VOICE", True) is True
-    assert getattr(Config, "IRIS_MALAYALAM_NATIVE_TTS", True) is True
+    assert getattr(Config, "IRIS_STICKY_LANGUAGE_TTS", True) is True
+    assert getattr(Config, "IRIS_LOCK_TTS_VOICE", False) is False
+    assert getattr(Config, "IRIS_MULTILINGUAL_TTS", True) is True
+    assert getattr(Config, "IRIS_UNIQUE_SYSTEM_LINES", True) is True
+    assert getattr(Config, "IRIS_MALAYALAM_NATIVE_TTS", False) is False
 
 
 def test_startup_config_compatibility_defaults_exist():
@@ -160,7 +162,10 @@ def test_startup_config_compatibility_defaults_exist():
         "RUNBOOK_MODE",
         "ENABLE_AUTO_SYNC",
         "STT_LANGUAGE",
+        "IRIS_STICKY_LANGUAGE_TTS",
         "IRIS_LOCK_TTS_VOICE",
+        "IRIS_MULTILINGUAL_TTS",
+        "IRIS_UNIQUE_SYSTEM_LINES",
         "IRIS_MALAYALAM_NATIVE_TTS",
         "validate",
     ]
