@@ -37,7 +37,11 @@ def test_short_prompt_fast_path_and_settings():
     brain = Brain(DummyMemory())
     assert brain._rewrite_generic_response("hello")
     assert brain._rewrite_generic_response("thanks")
+    assert "That's Spanish for" not in brain._rewrite_generic_response("hello")
     assert "llama_cpp" not in brain._get_apis_for_query("general")
+    boot = brain._call_groq_simple("Give ONE unique, witty, in-character boot-up line.")
+    assert boot
+    assert "That's" not in boot
     settings = brain._generation_settings("general", user_input="how are you")
     assert settings["max_tokens"] <= 120
     assert settings["context_turns"] <= 2
