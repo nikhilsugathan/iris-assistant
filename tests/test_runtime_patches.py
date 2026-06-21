@@ -43,3 +43,16 @@ def test_memory_uses_lock_and_atomic_helper():
     assert callable(_atomic_json_write)
     memory = Memory("test_runtime_memory.json")
     assert hasattr(memory, "_lock")
+
+
+def test_logger_has_file_and_trace_handlers():
+    import logging
+    from core.logger import get_logger, get_trace_logger
+
+    logger = get_logger("TestRuntimeLogger")
+    trace_logger = get_trace_logger("TestRuntimeLogger")
+    trace_parent = logging.getLogger("iris.trace")
+
+    assert any(hasattr(handler, "baseFilename") and handler.baseFilename.endswith("iris.log") for handler in logger.handlers)
+    assert trace_logger.propagate is True
+    assert any(hasattr(handler, "baseFilename") and handler.baseFilename.endswith("iris_trace.log") for handler in trace_parent.handlers)
