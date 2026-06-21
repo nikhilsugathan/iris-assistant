@@ -1,6 +1,12 @@
 import os
 
-os.environ.setdefault("IRIS_DISABLE_VOICE_IO", "true")
+os.environ["IRIS_DISABLE_VOICE_IO"] = "true"
+os.environ["STT_LANGUAGE"] = "auto"
+os.environ["IRIS_STICKY_LANGUAGE_TTS"] = "true"
+os.environ["IRIS_MULTILINGUAL_TTS"] = "true"
+os.environ["IRIS_LOCK_TTS_VOICE"] = "false"
+os.environ["IRIS_UNIQUE_SYSTEM_LINES"] = "true"
+os.environ["IRIS_MALAYALAM_NATIVE_TTS"] = "false"
 
 
 def test_security_url_validation_uses_hostname_matching():
