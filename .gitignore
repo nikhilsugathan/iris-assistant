@@ -20,6 +20,7 @@ build/
 iris_memory.json
 iris_memory_sessions_archive.json
 *_sessions_archive.json
+knowledge_base.json
 iris_actions.log
 *.log
 
@@ -51,6 +52,7 @@ models/
 *.bin
 
 logs/
+history/session_*.md
 exports/
 
 iris_ltm.json
