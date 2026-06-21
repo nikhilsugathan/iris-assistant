@@ -8,6 +8,7 @@ the user explicitly enables it.
 from __future__ import annotations
 
 import os
+import re
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -24,6 +25,28 @@ class _LazyLocalLLMPlaceholder:
         return True
 
 
+_FAST_REPLIES = {
+    "hi": "Hey. What are we doing?",
+    "hello": "Hey. What are we doing?",
+    "hey": "Hey. What are we doing?",
+    "yo": "I'm here. What's the move?",
+    "good morning": "Morning. What's first?",
+    "good evening": "Evening. What's the plan?",
+    "good night": "Good night. I'll be here when you need me.",
+    "thanks": "Anytime.",
+    "thank you": "Anytime.",
+    "ok": "Good.",
+    "okay": "Good.",
+    "yes": "Go on.",
+    "no": "Alright. Correct me.",
+}
+
+
+def _normalized_short(text: str) -> str:
+    cleaned = re.sub(r"[^a-z0-9'\s]", " ", (text or "").lower())
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
 def apply_performance_patches(brain_module) -> None:
     brain_cls = getattr(brain_module, "Brain", None)
     if brain_cls is None or getattr(brain_cls, "_iris_performance_patch_applied", False):
@@ -33,6 +56,8 @@ def apply_performance_patches(brain_module) -> None:
     original_init = brain_cls.__init__
     original_call_ollama = brain_cls._call_ollama
     original_get_apis_for_query = brain_cls._get_apis_for_query
+    original_rewrite_generic_response = brain_cls._rewrite_generic_response
+    original_generation_settings = brain_cls._generation_settings
 
     def _local_enabled() -> bool:
         return _env_bool("IRIS_ENABLE_LOCAL_LLM", False) or _env_bool("IRIS_PRELOAD_LOCAL_LLM", False)
@@ -71,13 +96,43 @@ def apply_performance_patches(brain_module) -> None:
         order = list(original_get_apis_for_query(self, q_type))
         if not _local_enabled():
             order = [api for api in order if api != "llama_cpp"]
-        # Keep fast cloud providers before local/ollama routes.
         preferred = ["groq", "gemini", "claude", "perplexity", "llama_cpp", "ollama_smart", "ollama_fast"]
         ordered = [api for api in preferred if api in order]
         ordered.extend(api for api in order if api not in ordered)
         return ordered
 
+    def _rewrite_generic_response_fast(self, text: str) -> str:
+        normalized = _normalized_short(text)
+        if normalized in _FAST_REPLIES:
+            _log("[PERF] instant_reply text=%s", normalized)
+            return _FAST_REPLIES[normalized]
+        if normalized in {"are you there", "you there", "iris are you there"}:
+            return "I'm here."
+        return original_rewrite_generic_response(self, text)
+
+    def _generation_settings_fast(self, query_type: str, council_packet=None, voice_mode: bool = False, user_input: str = ""):
+        settings = original_generation_settings(
+            self,
+            query_type,
+            council_packet=council_packet,
+            voice_mode=voice_mode,
+            user_input=user_input,
+        )
+        normalized = _normalized_short(user_input)
+        short_general = query_type == "general" and len(normalized.split()) <= 10
+        if short_general and not re.search(r"\b(explain|detail|detailed|step by step|compare|analyze|write|draft|plan)\b", normalized):
+            settings["max_tokens"] = min(int(settings.get("max_tokens", 160)), 120)
+            settings["context_turns"] = min(int(settings.get("context_turns", 3)), 2)
+            settings["temperature"] = min(float(settings.get("temperature", 0.5)), 0.45)
+            _log("[PERF] short_general_settings max_tokens=%s context_turns=%s", settings["max_tokens"], settings["context_turns"])
+        if voice_mode:
+            settings["max_tokens"] = min(int(settings.get("max_tokens", 150)), int(os.getenv("IRIS_VOICE_MAX_TOKENS", "110")))
+            settings["context_turns"] = min(int(settings.get("context_turns", 3)), int(os.getenv("IRIS_VOICE_CONTEXT_TURNS", "2")))
+        return settings
+
     brain_cls.__init__ = _init_fast
     brain_cls._call_ollama = _call_ollama_fast
     brain_cls._get_apis_for_query = _get_apis_for_query_fast
+    brain_cls._rewrite_generic_response = _rewrite_generic_response_fast
+    brain_cls._generation_settings = _generation_settings_fast
     brain_cls._iris_performance_patch_applied = True
