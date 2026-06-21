@@ -11,6 +11,25 @@ import os
 from urllib.parse import urlparse
 
 
+def _env_true(name: str, default: str = "false") -> bool:
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _maybe_instrument(fullname: str, module) -> None:
+    if not _env_true("IRIS_TRACE_FUNCTIONS"):
+        return
+    try:
+        from core.observability import instrument_module
+
+        instrument_module(
+            module,
+            fullname,
+            include_private=_env_true("IRIS_TRACE_PRIVATE"),
+        )
+    except Exception:
+        pass
+
+
 def apply_patch(fullname: str, module) -> None:
     """Apply a targeted patch after a module has been imported."""
     if fullname == "core.brain":
@@ -19,6 +38,7 @@ def apply_patch(fullname: str, module) -> None:
         _patch_security(module)
     elif fullname == "core.voice":
         _patch_voice(module)
+    _maybe_instrument(fullname, module)
 
 
 def _patch_brain(module) -> None:
@@ -118,9 +138,6 @@ def _patch_voice(module) -> None:
     if voice_cls is None or getattr(voice_cls, "_iris_voice_stability_patch_applied", False):
         return
 
-    # Config says "auto", but when Piper is unavailable the runtime is effectively
-    # Edge-TTS. Normalize this early so main.py's Edge-specific streaming logic
-    # also activates instead of silently taking the non-Edge batching path.
     if str(getattr(module.Config, "TTS_ENGINE", "auto") or "auto").strip().lower() == "auto" and _edge_tts_effective(module):
         module.Config.TTS_ENGINE = "edge"
 
@@ -168,11 +185,7 @@ def _patch_voice(module) -> None:
                         try:
                             module.os.remove(pf)
                         except Exception as cleanup_err:
-                            module.logger.debug(
-                                "[Voice] Early prefetch cleanup skipped %s: %s",
-                                pf,
-                                cleanup_err,
-                            )
+                            module.logger.debug("[Voice] Early prefetch cleanup skipped %s: %s", pf, cleanup_err)
             except Exception as exc:
                 with self._tts_prefetch_lock:
                     self._tts_prefetch_cache.pop(key, None)
@@ -180,18 +193,10 @@ def _patch_voice(module) -> None:
                     try:
                         module.os.remove(pf)
                     except Exception as cleanup_err:
-                        module.logger.debug(
-                            "[Voice] Exception-path early prefetch cleanup skipped %s: %s",
-                            pf,
-                            cleanup_err,
-                        )
+                        module.logger.debug("[Voice] Exception-path early prefetch cleanup skipped %s: %s", pf, cleanup_err)
                 module.logger.debug("[Voice] Early prefetch failed for %r: %s", key, exc)
 
-        module.threading.Thread(
-            target=_early_prefetch,
-            daemon=True,
-            name="tts-early-prefetch-stable",
-        ).start()
+        module.threading.Thread(target=_early_prefetch, daemon=True, name="tts-early-prefetch-stable").start()
 
     def speak(self, text, interrupt=True, on_play_start=None):
         if not text:
@@ -209,12 +214,7 @@ def _patch_voice(module) -> None:
 
         with self._tts_lock:
             idle_now = not self.is_speaking()
-            needs_new_event = (
-                interrupt
-                or self._active_stop_event is None
-                or self._active_stop_event.is_set()
-                or idle_now
-            )
+            needs_new_event = interrupt or self._active_stop_event is None or self._active_stop_event.is_set() or idle_now
             if needs_new_event:
                 if interrupt:
                     self.stop_speaking()
@@ -224,25 +224,14 @@ def _patch_voice(module) -> None:
 
             stop_event = self._active_stop_event
             _start_edge_prefetch(self, clean_text, stop_event)
-            self._debug_trace(
-                "speech_enqueue",
-                interrupt=interrupt,
-                chars=len(text),
-                text=text,
-                queue_size=self._utterance_queue.qsize(),
-            )
+            self._debug_trace("speech_enqueue", interrupt=interrupt, chars=len(text), text=text, queue_size=self._utterance_queue.qsize())
             self._utterance_queue.put((text, stop_event, on_play_start))
 
     def _fast_tts_cut_monitor(self, stop_event, callback) -> None:
         rms_stream = getattr(self, "_rms_stream", None)
         if rms_stream is None or callback is None:
             return
-        threshold = float(
-            os.getenv(
-                "TTS_BARGE_IN_RMS_THRESHOLD",
-                str(max(1600.0, float(getattr(module.Config, "BARGE_IN_RMS_THRESHOLD", 750)) * 2.0)),
-            )
-        )
+        threshold = float(os.getenv("TTS_BARGE_IN_RMS_THRESHOLD", str(max(1600.0, float(getattr(module.Config, "BARGE_IN_RMS_THRESHOLD", 750)) * 2.0))))
         consecutive_required = int(os.getenv("TTS_BARGE_IN_CONSECUTIVE_FRAMES", "3"))
         warmup_sec = float(os.getenv("TTS_BARGE_IN_WARMUP_SEC", "0.18"))
         warmup_until = module.time.monotonic() + warmup_sec
@@ -263,12 +252,7 @@ def _patch_voice(module) -> None:
             if rms >= threshold:
                 consecutive += 1
                 if consecutive >= consecutive_required:
-                    self._debug_trace(
-                        "tts_fast_cut_rms_trigger",
-                        rms=round(rms, 1),
-                        gate=round(threshold, 1),
-                        consecutive=consecutive,
-                    )
+                    self._debug_trace("tts_fast_cut_rms_trigger", rms=round(rms, 1), gate=round(threshold, 1), consecutive=consecutive)
                     stop_event.set()
                     try:
                         callback()
@@ -279,9 +263,6 @@ def _patch_voice(module) -> None:
                 consecutive = 0
 
     def listen_for_interrupt(self, timeout=None, phrase_time_limit=None, on_phrase_captured=None):
-        # Run a high-threshold raw-RMS cut monitor in parallel with the existing
-        # SpeechRecognition interrupt listener. This gives immediate stop behaviour
-        # for real nearby speech while avoiding low-level TTS echo false positives.
         fast_stop = module.threading.Event()
         fast_callback = on_phrase_captured or self.stop_speaking
         monitor = module.threading.Thread(
@@ -302,15 +283,8 @@ def _patch_voice(module) -> None:
             fast_stop.set()
 
     def start_barge_in_monitor(self, on_barge_in: callable, warmup_sec: float = 0.45):
-        # main.py passes 1.5s to avoid thinking-cue echo, but that makes true
-        # interruption feel delayed. Cap it and rely on the stronger RMS threshold
-        # to avoid accidental self-cancellation.
         cap = float(os.getenv("BARGE_IN_WARMUP_CAP_SEC", "0.55"))
-        return original_start_barge_in_monitor(
-            self,
-            on_barge_in=on_barge_in,
-            warmup_sec=min(float(warmup_sec), cap),
-        )
+        return original_start_barge_in_monitor(self, on_barge_in=on_barge_in, warmup_sec=min(float(warmup_sec), cap))
 
     voice_cls.speak = speak
     voice_cls.listen_for_interrupt = listen_for_interrupt
