@@ -32,10 +32,21 @@ def test_voice_stability_patch_is_applied_in_text_mode():
     assert getattr(Voice, "_iris_conservative_voice_override", False)
     assert getattr(Voice, "_iris_balanced_interrupt_default", False)
     assert getattr(Voice, "_iris_single_input_default", False)
+    assert getattr(Voice, "_iris_tts_sanitizer_applied", False)
     voice = Voice(text_mode=True)
     assert voice.io_disabled
     assert Config.TTS_ENGINE in {"edge", "piper", "auto"}
     assert getattr(Config, "VOICE_PLAYBACK_MODE", "balanced") in {"balanced", "stable", "realtime"}
+    sample = "Hey there! " + chr(0x1F44B) + " How can I help? :sparkles:"
+    assert voice._clean_for_speech(sample) == "Hey there! How can I help?"
+
+
+def test_tts_sanitizer_removes_visual_symbols():
+    from core.tts_sanitizer import sanitize_for_tts
+
+    assert sanitize_for_tts("Hey there! " + chr(0x1F44B) + " How can I make your day brighter?") == "Hey there! How can I make your day brighter?"
+    assert sanitize_for_tts("Done " + chr(0x2705)) == "Done"
+    assert sanitize_for_tts("Great :smile: test") == "Great test"
 
 
 def test_config_hardening_is_lightweight_by_default():
