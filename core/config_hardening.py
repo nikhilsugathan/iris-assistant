@@ -38,6 +38,8 @@ def _apply_startup_defaults(Config) -> None:
     _ensure_attr(Config, "MAX_MEMORY_TURNS", 200)
     _ensure_attr(Config, "RUNBOOK_MODE", False)
     _ensure_attr(Config, "ENABLE_AUTO_SYNC", False)
+    _ensure_attr(Config, "STT_LANGUAGE", os.getenv("STT_LANGUAGE", "auto"))
+    _ensure_attr(Config, "IRIS_MULTILINGUAL_TTS", True)
     _ensure_attr(Config, "validate", _compat_validate)
 
 
@@ -47,6 +49,7 @@ def apply_config_hardening() -> None:
 
     _apply_startup_defaults(Config)
 
+    Config.STT_LANGUAGE = os.getenv("STT_LANGUAGE", getattr(Config, "STT_LANGUAGE", "auto") or "auto")
     Config.VOICE_PLAYBACK_MODE = os.getenv("VOICE_PLAYBACK_MODE", "balanced").strip().lower() or "balanced"
     Config.TTS_FAST_CUT_ENABLED = _env_bool("TTS_FAST_CUT_ENABLED", False)
 
