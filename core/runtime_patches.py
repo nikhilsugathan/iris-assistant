@@ -7,6 +7,7 @@ sensitive to import order, URL validation, and short Edge-TTS interactions.
 
 from __future__ import annotations
 
+import os
 from urllib.parse import urlparse
 
 
@@ -45,7 +46,6 @@ def _patch_security(module) -> None:
     def _check_url(self, url: str):
         parsed = urlparse(url or "")
         host = (parsed.hostname or "").strip(".").lower()
-        url_lower = (url or "").lower()
 
         if not host:
             return module.WARNING, (
@@ -92,23 +92,45 @@ def _patch_security(module) -> None:
     guard_cls._iris_url_patch_applied = True
 
 
-def _patch_voice(module) -> None:
-    """Stabilize short Edge-TTS turns by registering prefetch before queueing audio.
+def _has_local_piper_model(module) -> bool:
+    configured = str(getattr(module.Config, "PIPER_MODEL_PATH", "") or "").strip()
+    if configured and os.path.exists(configured):
+        return True
+    models_dir = os.path.join(str(getattr(module.Config, "PROJECT_ROOT", "") or ""), "models")
+    try:
+        return os.path.isdir(models_dir) and any(name.endswith(".onnx") for name in os.listdir(models_dir))
+    except Exception:
+        return False
 
-    The original order queued text first and only then registered the prefetch.
-    On short interactions, the speech worker could consume the queue before the
-    prefetch marker existed, causing duplicate TTS work or a stale stop-event
-    reuse. This patched speak() creates a fresh stop event after idle turns and
-    marks Edge-TTS prefetch as in-flight before the worker sees the utterance.
-    """
+
+def _edge_tts_effective(module) -> bool:
+    preferred = str(getattr(module.Config, "TTS_ENGINE", "auto") or "auto").strip().lower()
+    if preferred == "edge":
+        return True
+    if preferred != "auto":
+        return False
+    return not _has_local_piper_model(module)
+
+
+def _patch_voice(module) -> None:
+    """Stabilize Edge-TTS turns and make interruption less echo-prone."""
     voice_cls = getattr(module, "Voice", None)
     if voice_cls is None or getattr(voice_cls, "_iris_voice_stability_patch_applied", False):
         return
 
+    # Config says "auto", but when Piper is unavailable the runtime is effectively
+    # Edge-TTS. Normalize this early so main.py's Edge-specific streaming logic
+    # also activates instead of silently taking the non-Edge batching path.
+    if str(getattr(module.Config, "TTS_ENGINE", "auto") or "auto").strip().lower() == "auto" and _edge_tts_effective(module):
+        module.Config.TTS_ENGINE = "edge"
+
+    original_listen_for_interrupt = voice_cls.listen_for_interrupt
+    original_start_barge_in_monitor = voice_cls.start_barge_in_monitor
+
     def _start_edge_prefetch(self, clean_text: str, stop_event) -> None:
         if not clean_text:
             return
-        if getattr(module.Config, "TTS_ENGINE", "auto") != "edge":
+        if not _edge_tts_effective(module):
             return
         if self._force_io_disabled or getattr(self, "_muted", False):
             return
@@ -197,8 +219,6 @@ def _patch_voice(module) -> None:
                 if interrupt:
                     self.stop_speaking()
                 elif self._active_stop_event is not None and not self._active_stop_event.is_set():
-                    # Natural completion never set the old event. Mark it closed so
-                    # a new light interaction cannot inherit stale cancellation state.
                     self._active_stop_event.set()
                 self._active_stop_event = module.threading.Event()
 
@@ -213,5 +233,87 @@ def _patch_voice(module) -> None:
             )
             self._utterance_queue.put((text, stop_event, on_play_start))
 
+    def _fast_tts_cut_monitor(self, stop_event, callback) -> None:
+        rms_stream = getattr(self, "_rms_stream", None)
+        if rms_stream is None or callback is None:
+            return
+        threshold = float(
+            os.getenv(
+                "TTS_BARGE_IN_RMS_THRESHOLD",
+                str(max(1600.0, float(getattr(module.Config, "BARGE_IN_RMS_THRESHOLD", 750)) * 2.0)),
+            )
+        )
+        consecutive_required = int(os.getenv("TTS_BARGE_IN_CONSECUTIVE_FRAMES", "3"))
+        warmup_sec = float(os.getenv("TTS_BARGE_IN_WARMUP_SEC", "0.18"))
+        warmup_until = module.time.monotonic() + warmup_sec
+        consecutive = 0
+        while not stop_event.is_set() and self.is_speaking():
+            try:
+                data = rms_stream.read(512, exception_on_overflow=False)
+            except Exception:
+                return
+            if module.time.monotonic() < warmup_until:
+                consecutive = 0
+                continue
+            try:
+                arr = module.np.frombuffer(data, dtype=module.np.int16).astype(module.np.float32)
+                rms = float(module.np.sqrt(module.np.mean(arr ** 2))) if len(arr) else 0.0
+            except Exception:
+                rms = 0.0
+            if rms >= threshold:
+                consecutive += 1
+                if consecutive >= consecutive_required:
+                    self._debug_trace(
+                        "tts_fast_cut_rms_trigger",
+                        rms=round(rms, 1),
+                        gate=round(threshold, 1),
+                        consecutive=consecutive,
+                    )
+                    stop_event.set()
+                    try:
+                        callback()
+                    except Exception as cb_err:
+                        module.logger.debug("[Voice] fast cut callback failed: %s", cb_err)
+                    return
+            else:
+                consecutive = 0
+
+    def listen_for_interrupt(self, timeout=None, phrase_time_limit=None, on_phrase_captured=None):
+        # Run a high-threshold raw-RMS cut monitor in parallel with the existing
+        # SpeechRecognition interrupt listener. This gives immediate stop behaviour
+        # for real nearby speech while avoiding low-level TTS echo false positives.
+        fast_stop = module.threading.Event()
+        fast_callback = on_phrase_captured or self.stop_speaking
+        monitor = module.threading.Thread(
+            target=_fast_tts_cut_monitor,
+            args=(self, fast_stop, fast_callback),
+            daemon=True,
+            name="tts-fast-cut-monitor",
+        )
+        monitor.start()
+        try:
+            return original_listen_for_interrupt(
+                self,
+                timeout=0.2 if timeout is None else timeout,
+                phrase_time_limit=1.0 if phrase_time_limit is None else phrase_time_limit,
+                on_phrase_captured=None,
+            )
+        finally:
+            fast_stop.set()
+
+    def start_barge_in_monitor(self, on_barge_in: callable, warmup_sec: float = 0.45):
+        # main.py passes 1.5s to avoid thinking-cue echo, but that makes true
+        # interruption feel delayed. Cap it and rely on the stronger RMS threshold
+        # to avoid accidental self-cancellation.
+        cap = float(os.getenv("BARGE_IN_WARMUP_CAP_SEC", "0.55"))
+        return original_start_barge_in_monitor(
+            self,
+            on_barge_in=on_barge_in,
+            warmup_sec=min(float(warmup_sec), cap),
+        )
+
     voice_cls.speak = speak
+    voice_cls.listen_for_interrupt = listen_for_interrupt
+    voice_cls.start_barge_in_monitor = start_barge_in_monitor
     voice_cls._iris_voice_stability_patch_applied = True
+    voice_cls._iris_voice_interrupt_patch_applied = True
