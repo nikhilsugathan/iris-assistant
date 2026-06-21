@@ -13,6 +13,15 @@ def test_security_url_validation_uses_hostname_matching():
     assert guard._check_url("https://example.invalid/?next=github.com")[0] == WARNING
 
 
+def test_brain_runtime_patches_are_applied():
+    from core.brain import Brain
+
+    assert getattr(Brain, "_iris_brain_runtime_patch_applied", False)
+    assert getattr(Brain, "_iris_lazy_llm_patch_applied", False)
+    assert getattr(Brain, "_iris_vision_fallback_patch_applied", False)
+    assert hasattr(Brain, "_call_gemini_vision")
+
+
 def test_voice_stability_patch_is_applied_in_text_mode():
     from config import Config
     from core.voice import Voice
