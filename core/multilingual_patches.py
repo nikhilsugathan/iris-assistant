@@ -3,7 +3,7 @@
 Goals:
 - Stop forcing English STT when Groq Whisper can auto-detect language.
 - Add language instructions to the LLM for non-English input.
-- Route Edge-TTS to matching voices for multilingual responses.
+- Keep one consistent Iris TTS voice by default, with optional per-language voices.
 """
 
 from __future__ import annotations
@@ -86,6 +86,13 @@ def tts_voice_for(text: str) -> Optional[str]:
     return None
 
 
+def multilingual_tts_voice_switch_enabled() -> bool:
+    # Default is a single consistent Iris voice. Per-language voices are optional.
+    if _env_bool("IRIS_LOCK_TTS_VOICE", True):
+        return False
+    return _env_bool("IRIS_MULTILINGUAL_TTS", False)
+
+
 def apply_multilingual_patches(brain_module, voice_module) -> None:
     brain_cls = getattr(brain_module, "Brain", None)
     voice_cls = getattr(voice_module, "Voice", None)
@@ -119,10 +126,9 @@ def apply_multilingual_patches(brain_module, voice_module) -> None:
         original_transcribe_google = voice_cls._transcribe_google
         original_run_edge = voice_cls._run_edge_tts_async
         original_stt_status = voice_cls.stt_status
+        original_tts_status = voice_cls.tts_status
 
         def _transcribe_groq_multilingual(self, audio, phrase_type: str = "command"):
-            # Native implementation forces Config.STT_LANGUAGE into Groq. When set
-            # to auto/multilingual, omit the language parameter so Whisper detects it.
             lang_raw = str(getattr(voice_module.Config, "STT_LANGUAGE", "auto") or "auto").strip().lower()
             if lang_raw not in {"auto", "multilingual", "detect", ""}:
                 return original_transcribe_groq(self, audio, phrase_type=phrase_type)
@@ -146,9 +152,6 @@ def apply_multilingual_patches(brain_module, voice_module) -> None:
                 return original_transcribe_google(self, audio)
 
         def _transcribe_google_multilingual(self, audio):
-            # Google fallback is not our primary multilingual path. If STT_LANGUAGE
-            # is auto, try default recognition; if a specific locale is configured,
-            # honor it.
             try:
                 lang_raw = str(getattr(voice_module.Config, "STT_LANGUAGE", "auto") or "auto").strip()
                 if lang_raw.lower() in {"auto", "multilingual", "detect", ""}:
@@ -159,16 +162,20 @@ def apply_multilingual_patches(brain_module, voice_module) -> None:
                 return None
 
         def _run_edge_tts_multilingual(self, text, voice, rate, out_file):
-            if _env_bool("IRIS_MULTILINGUAL_TTS", True):
+            if multilingual_tts_voice_switch_enabled():
                 detected_voice = tts_voice_for(text)
                 if detected_voice:
                     voice = detected_voice
-                    # Keep native-language voices closer to natural speed.
                     rate = os.getenv("IRIS_MULTILINGUAL_TTS_RATE", "+0%")
                     try:
-                        self._debug_trace("tts_language_voice", voice=voice, text=text)
+                        self._debug_trace("tts_language_voice", mode="switched", voice=voice, text=text)
                     except Exception:
                         pass
+            else:
+                try:
+                    self._debug_trace("tts_language_voice", mode="locked", voice=voice, text=text)
+                except Exception:
+                    pass
             return original_run_edge(self, text, voice, rate, out_file)
 
         def _stt_status_multilingual(self) -> str:
@@ -176,8 +183,14 @@ def apply_multilingual_patches(brain_module, voice_module) -> None:
             lang_raw = str(getattr(voice_module.Config, "STT_LANGUAGE", "auto") or "auto").strip()
             return f"{base} / language={lang_raw}"
 
+        def _tts_status_multilingual(self) -> str:
+            base = original_tts_status(self)
+            mode = "locked voice" if not multilingual_tts_voice_switch_enabled() else "language voice switching"
+            return f"{base} / multilingual={mode}"
+
         voice_cls._transcribe_groq = _transcribe_groq_multilingual
         voice_cls._transcribe_google = _transcribe_google_multilingual
         voice_cls._run_edge_tts_async = _run_edge_tts_multilingual
         voice_cls.stt_status = _stt_status_multilingual
+        voice_cls.tts_status = _tts_status_multilingual
         voice_cls._iris_multilingual_voice_patch_applied = True
