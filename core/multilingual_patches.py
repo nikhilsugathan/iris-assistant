@@ -3,12 +3,14 @@
 Goals:
 - Stop forcing English STT when Groq Whisper can auto-detect language.
 - Add language instructions to the LLM for non-English input.
-- Keep one consistent Iris TTS voice by default, with a Malayalam-native exception.
+- Use one stable TTS voice per response/language style, not per sentence.
+- Vary system-level lines such as wake acknowledgements and goodbyes.
 """
 
 from __future__ import annotations
 
 import os
+import random
 import re
 from typing import Optional
 
@@ -53,6 +55,49 @@ _LANGUAGE_RULES = [
     ),
 ]
 
+_WAKE_OR_SYSTEM_LINES = {
+    "right here what's on your mind", "oh it's you lucky me", "you have my undivided slightly smug attention",
+    "listening make it interesting", "i'm all ears well technically all microphone but you get it", "talk to me",
+    "hit me with it", "i'm in what disaster are we solving today", "what are we getting into",
+    "already thinking ahead of you what is it", "present and mildly curious", "say the word",
+    "oh you called this better be good", "what have you got for me", "go ahead i'm listening", "you rang",
+    "until next time", "good session signing off", "later stay curious", "closing out take care",
+    "done for now you've got this", "standing down come back whenever", "session closed",
+    "aletheia standing down", "root session terminated", "all systems nominal",
+    "looking good from where i'm standing", "okay", "sure", "back", "i'm back what were you saying",
+}
+
+_STYLE_LINES = {
+    "english": {
+        "wake": ["I'm listening. Make it useful.", "Go on. I'm already suspiciously ready.", "Speak. Let's make this efficient."],
+        "farewell": ["Done for now. Try not to break reality without me.", "Standing down. Call me when the chaos gets interesting.", "Session closed. Nicely survived."],
+    },
+    "spanish": {
+        "wake": ["Dime, mi amor. ¿Qué hacemos?", "Te escucho. Dame la misión.", "Aquí estoy. Vamos con estilo."],
+        "farewell": ["Hasta luego, mi amor. No rompas nada sin mí.", "Cierro sesión. El drama queda pausado.", "Listo. Me llamas si el caos vuelve."],
+    },
+    "german": {
+        "wake": ["Ich höre. Was ist der Plan?", "Sag mir die Aufgabe. Wir machen das sauber.", "Bereit. Was lösen wir?"],
+        "farewell": ["Bis später. Bitte nichts anzünden.", "Sitzung beendet. Sehr ordentlich.", "Ich bin raus. Ruf mich, wenn es brennt."],
+    },
+    "french": {
+        "wake": ["Je t'écoute. Quelle est la mission?", "Dis-moi. On fait ça proprement.", "Je suis là. On commence?"],
+        "farewell": ["À plus tard. Garde un peu de chaos pour moi.", "Session terminée. Très élégant.", "Je disparais. Appelle-moi si besoin."],
+    },
+    "italian": {
+        "wake": ["Dimmi. Da dove cominciamo?", "Ti ascolto. Qual è la missione?", "Eccomi. Facciamolo bene."],
+        "farewell": ["A dopo. Non fare disastri senza di me.", "Sessione chiusa. Molto elegante.", "Mi ritiro. Chiamami se serve."],
+    },
+    "hindi": {
+        "wake": ["Bolo. Aaj kya solve karna hai?", "Haan, batao. Mission kya hai?", "Sun rahi hoon. Chalo smart kaam karte hain."],
+        "farewell": ["Theek hai. Baad mein milte hain.", "Session khatam. Drama pause pe hai.", "Main standby mein hoon. Zarurat ho toh bulao."],
+    },
+    "malayalam": {
+        "wake": ["പറയൂ. എന്താണ് ചെയ്യേണ്ടത്?", "ഞാൻ കേൾക്കുന്നു. പ്ലാൻ എന്താണ്?", "നമുക്ക് തുടങ്ങാം. എന്ത് സഹായം വേണം?"],
+        "farewell": ["ശരി. പിന്നെ കാണാം.", "സെഷൻ കഴിഞ്ഞു. ആവശ്യം വന്നാൽ വിളിക്കൂ.", "ഞാൻ ഇവിടെ തന്നെ ഉണ്ടാകും."],
+    },
+}
+
 
 def _env_bool(name: str, default: bool = True) -> bool:
     raw = os.getenv(name)
@@ -61,10 +106,17 @@ def _env_bool(name: str, default: bool = True) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _normalize_line(text: str) -> str:
+    cleaned = re.sub(r"[^a-z0-9'\s]", " ", (text or "").lower())
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
 def malayalam_native_tts_enabled() -> bool:
-    # Malayalam pronunciation is poor in the English Iris voice. Keep the global
-    # voice locked for other languages, but allow a Malayalam-only native voice.
     return _env_bool("IRIS_MALAYALAM_NATIVE_TTS", True)
+
+
+def sticky_language_tts_enabled() -> bool:
+    return _env_bool("IRIS_STICKY_LANGUAGE_TTS", True)
 
 
 def detect_language_style(text: str) -> Optional[tuple[str, str, str]]:
@@ -91,7 +143,7 @@ def language_instruction_for(text: str) -> str:
                 "If the user mixes English and Malayalam, mirror that style naturally. Do not explain which language it is."
             )
         return (
-            "The user is speaking Malayalam or Malayalam-English, but the active TTS voice is locked to the English Iris voice. "
+            "The user is speaking Malayalam or Malayalam-English, but Malayalam native TTS is disabled. "
             "For spoken clarity, reply mostly in English and use only very short Malayalam romanized phrases. "
             "Do not write long Malayalam sentences in romanized form. Do not explain which language it is."
         )
@@ -110,19 +162,32 @@ def tts_voice_for(text: str) -> Optional[str]:
 
 
 def multilingual_tts_voice_switch_enabled() -> bool:
+    if sticky_language_tts_enabled():
+        return True
     if _env_bool("IRIS_LOCK_TTS_VOICE", True):
         return False
     return _env_bool("IRIS_MULTILINGUAL_TTS", False)
 
 
-def _should_switch_tts_voice_for_text(text: str) -> bool:
-    detected = detect_language_style(text)
-    if not detected:
-        return False
-    key, _label, _voice = detected
-    if key == "malayalam" and malayalam_native_tts_enabled():
-        return True
-    return multilingual_tts_voice_switch_enabled()
+def _voice_for_style(key: str) -> Optional[str]:
+    for item_key, _pattern, _label, voice in _LANGUAGE_RULES:
+        if item_key == key:
+            return voice
+    return None
+
+
+def _detect_system_line_kind(text: str) -> Optional[str]:
+    normalized = _normalize_line(text)
+    if normalized not in _WAKE_OR_SYSTEM_LINES:
+        return None
+    if any(token in normalized for token in ["until", "later", "closing", "done for now", "standing down", "session closed", "terminated"]):
+        return "farewell"
+    return "wake"
+
+
+def _system_line_for(style: str, kind: str) -> str:
+    style_lines = _STYLE_LINES.get(style) or _STYLE_LINES["english"]
+    return random.choice(style_lines.get(kind) or _STYLE_LINES["english"][kind])
 
 
 def apply_multilingual_patches(brain_module, voice_module) -> None:
@@ -154,11 +219,50 @@ def apply_multilingual_patches(brain_module, voice_module) -> None:
         brain_cls._iris_multilingual_patch_applied = True
 
     if voice_cls is not None and not getattr(voice_cls, "_iris_multilingual_voice_patch_applied", False):
+        original_init = voice_cls.__init__
+        original_speak = voice_cls.speak
         original_transcribe_groq = voice_cls._transcribe_groq
         original_transcribe_google = voice_cls._transcribe_google
         original_run_edge = voice_cls._run_edge_tts_async
         original_stt_status = voice_cls.stt_status
         original_tts_status = voice_cls.tts_status
+
+        def _init_multilingual(self, *args, **kwargs):
+            original_init(self, *args, **kwargs)
+            self._iris_language_voice_key = None
+            self._iris_language_voice_name = None
+            self._iris_default_voice_name = getattr(self, "_active_voice_name", None)
+            self._iris_default_voice_rate = getattr(self, "_active_voice_rate", None)
+
+        def _select_utterance_voice(self, text: str, interrupt: bool = True) -> None:
+            detected = detect_language_style(text)
+            if detected:
+                key, _label, voice_name = detected
+                if key == "malayalam" and not malayalam_native_tts_enabled():
+                    return
+                self._iris_language_voice_key = key
+                self._iris_language_voice_name = voice_name
+                return
+            if interrupt:
+                # New English/default utterance resets back to Iris unless the text is
+                # a short system line, in which case we keep the current style.
+                if _detect_system_line_kind(text) is None:
+                    self._iris_language_voice_key = None
+                    self._iris_language_voice_name = None
+
+        def _stylize_system_line(self, text: str) -> str:
+            if not _env_bool("IRIS_UNIQUE_SYSTEM_LINES", True):
+                return text
+            kind = _detect_system_line_kind(text)
+            if not kind:
+                return text
+            style = getattr(self, "_iris_language_voice_key", None) or "english"
+            return _system_line_for(style, kind)
+
+        def _speak_multilingual(self, text, interrupt=True, on_play_start=None):
+            text = _stylize_system_line(self, text)
+            _select_utterance_voice(self, text, interrupt=interrupt)
+            return original_speak(self, text, interrupt=interrupt, on_play_start=on_play_start)
 
         def _transcribe_groq_multilingual(self, audio, phrase_type: str = "command"):
             lang_raw = str(getattr(voice_module.Config, "STT_LANGUAGE", "auto") or "auto").strip().lower()
@@ -194,20 +298,26 @@ def apply_multilingual_patches(brain_module, voice_module) -> None:
                 return None
 
         def _run_edge_tts_multilingual(self, text, voice, rate, out_file):
-            if _should_switch_tts_voice_for_text(text):
-                detected_voice = tts_voice_for(text)
-                if detected_voice:
-                    voice = detected_voice
+            detected = detect_language_style(text)
+            if detected:
+                key, _label, voice_name = detected
+                if key != "malayalam" or malayalam_native_tts_enabled():
+                    self._iris_language_voice_key = key
+                    self._iris_language_voice_name = voice_name
+            if multilingual_tts_voice_switch_enabled():
+                sticky_voice = getattr(self, "_iris_language_voice_name", None)
+                if sticky_voice:
+                    voice = sticky_voice
                     rate = os.getenv("IRIS_MULTILINGUAL_TTS_RATE", "+0%")
                     try:
-                        self._debug_trace("tts_language_voice", mode="switched", voice=voice, text=text)
+                        self._debug_trace("tts_language_voice", mode="sticky", voice=voice, text=text)
                     except Exception:
                         pass
-            else:
-                try:
-                    self._debug_trace("tts_language_voice", mode="locked", voice=voice, text=text)
-                except Exception:
-                    pass
+                else:
+                    try:
+                        self._debug_trace("tts_language_voice", mode="default", voice=voice, text=text)
+                    except Exception:
+                        pass
             return original_run_edge(self, text, voice, rate, out_file)
 
         def _stt_status_multilingual(self) -> str:
@@ -217,12 +327,16 @@ def apply_multilingual_patches(brain_module, voice_module) -> None:
 
         def _tts_status_multilingual(self) -> str:
             base = original_tts_status(self)
-            if malayalam_native_tts_enabled():
+            if sticky_language_tts_enabled():
+                mode = "sticky language voice"
+            elif malayalam_native_tts_enabled():
                 mode = "locked voice + Malayalam native exception"
             else:
                 mode = "locked voice" if not multilingual_tts_voice_switch_enabled() else "language voice switching"
             return f"{base} / multilingual={mode}"
 
+        voice_cls.__init__ = _init_multilingual
+        voice_cls.speak = _speak_multilingual
         voice_cls._transcribe_groq = _transcribe_groq_multilingual
         voice_cls._transcribe_google = _transcribe_google_multilingual
         voice_cls._run_edge_tts_async = _run_edge_tts_multilingual
