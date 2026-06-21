@@ -31,10 +31,7 @@ duckduckgo-search>=5.0.0    # Required for tools/researcher.py (The Eyes)
 psutil>=5.9.8               # Required for system/disk pre-flight checks
 playwright>=1.42.0          # Required for core/browser.py automation
 
-# Phase 1: C++ LLM Engine (replaces Ollama HTTP middleman)
-# Install with GPU support: pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121
-# Phase 1.5: C++ TTS Engine (replaces edge-tts + pygame disk I/O pipeline)
-llama-cpp-python>=0.2.0
+# ── Optional local/runtime helpers ──
 sounddevice>=0.4.6
 send2trash
 
@@ -43,3 +40,7 @@ send2trash
 # silently on "look at my screen" commands after a clean pip install.
 mss>=9.0.1
 Pillow>=10.0.0
+
+# Local C++ LLM support is optional because llama-cpp-python may require MSVC/NMake
+# when no compatible wheel is available. Install it separately with:
+#   python -m pip install -r requirements-local-llm.txt
