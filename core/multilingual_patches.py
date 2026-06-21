@@ -3,7 +3,7 @@
 Goals:
 - Stop forcing English STT when Groq Whisper can auto-detect language.
 - Add language instructions to the LLM for non-English input.
-- Keep one consistent Iris TTS voice by default, with optional per-language voices.
+- Keep one consistent Iris TTS voice by default, with a Malayalam-native exception.
 """
 
 from __future__ import annotations
@@ -11,6 +11,8 @@ from __future__ import annotations
 import os
 import re
 from typing import Optional
+
+_MALAYALAM_SCRIPT_RE = re.compile(r"[\u0D00-\u0D7F]")
 
 _LANGUAGE_RULES = [
     (
@@ -45,7 +47,7 @@ _LANGUAGE_RULES = [
     ),
     (
         "malayalam",
-        re.compile(r"\b(namaskaram|sukham|alle|parayu|nanni|entha|innu|cheyyanam|cheyyam|njan|ivide|undu|sheri)\b", re.IGNORECASE),
+        re.compile(r"\b(namaskaram|sukham|alle|parayu|nanni|entha|innu|cheyyanam|cheyyam|njan|ivide|undu|sheri|malayalam)\b", re.IGNORECASE),
         "Malayalam or Malayalam-English mixed speech",
         "ml-IN-SobhanaNeural",
     ),
@@ -59,8 +61,16 @@ def _env_bool(name: str, default: bool = True) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def malayalam_native_tts_enabled() -> bool:
+    # Malayalam pronunciation is poor in the English Iris voice. Keep the global
+    # voice locked for other languages, but allow a Malayalam-only native voice.
+    return _env_bool("IRIS_MALAYALAM_NATIVE_TTS", True)
+
+
 def detect_language_style(text: str) -> Optional[tuple[str, str, str]]:
     sample = text or ""
+    if _MALAYALAM_SCRIPT_RE.search(sample):
+        return "malayalam", "Malayalam", "ml-IN-SobhanaNeural"
     for key, pattern, label, voice in _LANGUAGE_RULES:
         if pattern.search(sample):
             return key, label, voice
@@ -71,7 +81,20 @@ def language_instruction_for(text: str) -> str:
     detected = detect_language_style(text)
     if not detected:
         return ""
-    _key, label, _voice = detected
+    key, label, _voice = detected
+    if key == "malayalam":
+        if malayalam_native_tts_enabled():
+            return (
+                "The user is speaking Malayalam or Malayalam-English. Reply naturally in fluent spoken Malayalam when possible. "
+                "Use Malayalam script for Malayalam words so TTS can pronounce it correctly. "
+                "Use short, simple sentences. Do not use awkward romanized Malayalam unless the user specifically asks for transliteration. "
+                "If the user mixes English and Malayalam, mirror that style naturally. Do not explain which language it is."
+            )
+        return (
+            "The user is speaking Malayalam or Malayalam-English, but the active TTS voice is locked to the English Iris voice. "
+            "For spoken clarity, reply mostly in English and use only very short Malayalam romanized phrases. "
+            "Do not write long Malayalam sentences in romanized form. Do not explain which language it is."
+        )
     return (
         f"The user is speaking in {label}. Reply naturally and fluently in that same language/style. "
         "Do not explain which language it is. Do not translate unless asked. "
@@ -87,10 +110,19 @@ def tts_voice_for(text: str) -> Optional[str]:
 
 
 def multilingual_tts_voice_switch_enabled() -> bool:
-    # Default is a single consistent Iris voice. Per-language voices are optional.
     if _env_bool("IRIS_LOCK_TTS_VOICE", True):
         return False
     return _env_bool("IRIS_MULTILINGUAL_TTS", False)
+
+
+def _should_switch_tts_voice_for_text(text: str) -> bool:
+    detected = detect_language_style(text)
+    if not detected:
+        return False
+    key, _label, _voice = detected
+    if key == "malayalam" and malayalam_native_tts_enabled():
+        return True
+    return multilingual_tts_voice_switch_enabled()
 
 
 def apply_multilingual_patches(brain_module, voice_module) -> None:
@@ -162,7 +194,7 @@ def apply_multilingual_patches(brain_module, voice_module) -> None:
                 return None
 
         def _run_edge_tts_multilingual(self, text, voice, rate, out_file):
-            if multilingual_tts_voice_switch_enabled():
+            if _should_switch_tts_voice_for_text(text):
                 detected_voice = tts_voice_for(text)
                 if detected_voice:
                     voice = detected_voice
@@ -185,7 +217,10 @@ def apply_multilingual_patches(brain_module, voice_module) -> None:
 
         def _tts_status_multilingual(self) -> str:
             base = original_tts_status(self)
-            mode = "locked voice" if not multilingual_tts_voice_switch_enabled() else "language voice switching"
+            if malayalam_native_tts_enabled():
+                mode = "locked voice + Malayalam native exception"
+            else:
+                mode = "locked voice" if not multilingual_tts_voice_switch_enabled() else "language voice switching"
             return f"{base} / multilingual={mode}"
 
         voice_cls._transcribe_groq = _transcribe_groq_multilingual
