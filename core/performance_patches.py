@@ -113,6 +113,21 @@ _BOOT_ACTIONS = {
     "malayalam": ["inn entha chaos set aakkam?", "mission parayu, njan nokkam.", "innu nammal smart aayi cheyyam."],
 }
 
+_MALAYALAM_NATIVE_OPENERS = ["നമസ്കാരം", "പറയൂ", "ഞാൻ ഇവിടെ ഉണ്ട്", "സുഖമാണോ"]
+_MALAYALAM_NATIVE_TASK_LINES = [
+    "ഇന്ന് എന്താണ് പ്ലാൻ?",
+    "ആദ്യം എന്ത് ചെയ്യണം?",
+    "എന്താണ് സഹായിക്കേണ്ടത്?",
+    "പറയൂ, നമുക്ക് ശരിയാക്കാം.",
+]
+_MALAYALAM_NATIVE_THANKS = ["സന്തോഷം", "എപ്പോഴും", "അതു പ്രശ്നമില്ല"]
+_MALAYALAM_NATIVE_ACKS = ["ശരി. തുടരൂ.", "മനസ്സിലായി. പറയൂ.", "ശരി. അടുത്തത്?"]
+_MALAYALAM_NATIVE_BOOT = ["ഇന്ന് എന്താണ് പ്ലാൻ?", "എന്ത് കാര്യമാണ് ശരിയാക്കേണ്ടത്?", "പറയൂ, നമുക്ക് തുടങ്ങാം."]
+
+
+def _malayalam_native_enabled() -> bool:
+    return _env_bool("IRIS_MALAYALAM_NATIVE_TTS", True)
+
 
 def _normalized_short(text: str) -> str:
     cleaned = re.sub(r"[^a-z0-9'\s]", " ", (text or "").lower())
@@ -147,6 +162,14 @@ def _intent_for(normalized: str) -> str:
 
 
 def _compose(style: str, intent: str) -> str:
+    if style == "malayalam" and _malayalam_native_enabled():
+        if intent == "thanks":
+            return _avoid_recent(random.choice(_MALAYALAM_NATIVE_THANKS))
+        if intent == "ack":
+            return _avoid_recent(random.choice(_MALAYALAM_NATIVE_ACKS))
+        opener = random.choice(_MALAYALAM_NATIVE_OPENERS)
+        line = random.choice(_MALAYALAM_NATIVE_TASK_LINES)
+        return _avoid_recent(f"{opener}. {line}")
     if intent == "thanks":
         return _avoid_recent(random.choice(_STYLE_THANKS.get(style, _STYLE_THANKS["english"])))
     if intent == "ack":
@@ -170,6 +193,10 @@ def _compose_boot(admin_unlocked: bool = False) -> str:
         ]
         return _avoid_recent(random.choice(options))
     style = random.choice(["english", "spanish", "german", "french", "indic", "malayalam"])
+    if style == "malayalam" and _malayalam_native_enabled():
+        opener = random.choice(_MALAYALAM_NATIVE_OPENERS)
+        action = random.choice(_MALAYALAM_NATIVE_BOOT)
+        return _avoid_recent(f"{opener}. {action}")
     opener = random.choice(_STYLE_OPENERS[style])
     action = random.choice(_BOOT_ACTIONS.get(style, _BOOT_ACTIONS["english"]))
     return _avoid_recent(f"{opener}. {action}")
@@ -180,7 +207,6 @@ def _avoid_recent(candidate: str) -> str:
         if candidate not in _RECENT_FAST_REPLIES:
             _RECENT_FAST_REPLIES.append(candidate)
             return candidate
-        # Add a light tail rather than repeating exact wording.
         candidate = candidate.rstrip(".!?") + random.choice([". Naturally.", ". Obviously.", ". Let's move."])
     _RECENT_FAST_REPLIES.append(candidate)
     return candidate
