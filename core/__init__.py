@@ -27,13 +27,19 @@ try:
     _runtime_patches.apply_patch("core.security", _security_module)
     _runtime_patches.apply_patch("core.voice", _voice_module)
 
+    from . import performance_patches as _performance_module
     from .performance_patches import apply_performance_patches
 
     apply_performance_patches(_brain_module)
 
+    from . import multilingual_patches as _multilingual_module
     from .multilingual_patches import apply_multilingual_patches
 
     apply_multilingual_patches(_brain_module, _voice_module)
+
+    from .language_priority_patches import apply_language_priority_patches as _apply_lp
+
+    _apply_lp(_multilingual_module, _performance_module)
 
     from .tts_sanitizer import apply_tts_sanitizer
 
