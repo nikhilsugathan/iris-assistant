@@ -1,13 +1,7 @@
-# Iris Core
-
 from __future__ import annotations
 
 import builtins
 
-# Compatibility fallback for older exception paths that reference a module-level
-# logger before the affected module defines one locally. This prevents recovery
-# handlers from raising NameError while the modules are migrated to explicit
-# local loggers.
 try:
     from .logger import get_logger
 
@@ -16,7 +10,6 @@ try:
 except Exception:
     pass
 
-# Apply safe runtime defaults before importing the heavier core modules.
 try:
     from .config_hardening import apply_config_hardening
 
@@ -24,8 +17,6 @@ try:
 except Exception:
     pass
 
-# Apply targeted runtime patches at package startup. The imports are module-only:
-# they do not instantiate the microphone, LLM, browser, or action executor.
 try:
     from . import runtime_patches as _runtime_patches
     from . import brain as _brain_module
@@ -39,6 +30,10 @@ try:
     from .performance_patches import apply_performance_patches
 
     apply_performance_patches(_brain_module)
+
+    from .tts_sanitizer import apply_tts_sanitizer
+
+    apply_tts_sanitizer(_voice_module)
 
     from .voice_stable_override import apply_voice_stable_override
 
