@@ -12,9 +12,20 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _ensure_attr(obj, name: str, value) -> None:
+    if not hasattr(obj, name):
+        setattr(obj, name, value)
+
+
 def apply_config_hardening() -> None:
     """Apply lightweight startup defaults and runtime observability."""
     from config import Config
+
+    # Compatibility defaults required by main.py and older modules. These keep
+    # startup alive if config.py is edited and a branding value is omitted.
+    _ensure_attr(Config, "PUBLIC_NAME", os.getenv("IRIS_PUBLIC_NAME", "Iris"))
+    _ensure_attr(Config, "SYSTEM_NAME", os.getenv("IRIS_SYSTEM_NAME", "IRIS"))
+    _ensure_attr(Config, "SYSTEM_MOTTO", "Intelligence. Redefined.")
 
     Config.VOICE_PLAYBACK_MODE = os.getenv("VOICE_PLAYBACK_MODE", "balanced").strip().lower() or "balanced"
     Config.TTS_FAST_CUT_ENABLED = _env_bool("TTS_FAST_CUT_ENABLED", False)
