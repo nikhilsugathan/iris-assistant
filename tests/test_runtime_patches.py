@@ -69,14 +69,20 @@ def test_multilingual_generation_settings_and_sticky_voice_default():
 
     brain = Brain(DummyMemory())
     settings = brain._generation_settings("general", user_input="puedes explicarme esto en detalle")
+    broken_settings = brain._generation_settings("general", user_input="el banko bebis")
+    followup_settings = brain._generation_settings("general", user_input="just broken spanish")
     ml_settings = brain._generation_settings("general", user_input="namaskaram ithu explain cheyyamo")
     assert "Spanish" in settings.get("extra_system", "")
     assert "same language" in settings.get("extra_system", "")
+    assert "Spanish" in broken_settings.get("extra_system", "")
+    assert "broken Spanish" in broken_settings.get("extra_system", "")
+    assert "Spanish" in followup_settings.get("extra_system", "")
     assert "Malayalam" in ml_settings.get("extra_system", "")
     assert "mostly in English" in ml_settings.get("extra_system", "")
     assert language_instruction_for("guten morgen kannst du mir helfen")
     assert tts_voice_for("Hola, mi amor. Qué hacemos?") == "es-ES-ElviraNeural"
     assert tts_voice_for("Guten Morgen. Was steht an?") == "de-DE-KatjaNeural"
+    assert tts_voice_for("el banko bebis") == "es-ES-ElviraNeural"
     assert sticky_language_tts_enabled() is True
     assert multilingual_tts_voice_switch_enabled() is True
     assert malayalam_native_tts_enabled() is False
