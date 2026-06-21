@@ -4,9 +4,9 @@ Run from project root:
     python tools\analyze_logs.py
 
 Optional:
-    python tools\analyze_logs.py --lines 1200 --write-report
+    python tools\analyze_logs.py --lines 1200 --since-hours 48 --write-report
 
-Scans logs/iris.log, logs/iris_trace.log, and logs/iris_faults.log for current
+Scans logs/iris.log, logs/iris_trace.log, and logs/iris_faults.log for recent
 runtime problems and prints a prioritized diagnosis without exposing API keys.
 """
 
@@ -15,8 +15,9 @@ from __future__ import annotations
 import argparse
 import re
 import sys
-from collections import Counter, defaultdict
+from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Iterable
 
@@ -27,6 +28,7 @@ EXPORTS_DIR = PROJECT_ROOT / "exports"
 _SECRET_RE = re.compile(
     r"(?i)(api[_-]?key|authorization|bearer|token|secret|password)(\s*[=:]\s*)[^\s,;]+"
 )
+_TIMESTAMP_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})")
 
 
 @dataclass
@@ -49,12 +51,41 @@ def _redact(text: str) -> str:
     return _SECRET_RE.sub(r"\1\2<redacted>", text)
 
 
-def _tail(path: Path, max_lines: int) -> list[str]:
+def _line_time(line: str):
+    match = _TIMESTAMP_RE.match(line)
+    if not match:
+        return None
+    try:
+        return datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+
+
+def _filter_recent(lines: list[str], since_hours: int | None) -> list[str]:
+    if not since_hours or since_hours <= 0:
+        return lines
+    cutoff = datetime.now() - timedelta(hours=since_hours)
+    filtered: list[str] = []
+    keep_continuation = False
+    for line in lines:
+        ts = _line_time(line)
+        if ts is not None:
+            keep_continuation = ts >= cutoff
+            if keep_continuation:
+                filtered.append(line)
+            continue
+        if keep_continuation:
+            filtered.append(line)
+    return filtered
+
+
+def _tail(path: Path, max_lines: int, since_hours: int | None) -> list[str]:
     if not path.exists():
         return []
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        return [_redact(line) for line in lines[-max_lines:]]
+        lines = [_redact(line) for line in lines[-max_lines:]]
+        return _filter_recent(lines, since_hours)
     except Exception as exc:
         return [f"<failed to read {path}: {exc}>"]
 
@@ -81,10 +112,10 @@ def _latest(lines: Iterable[str], count: int = 5) -> list[str]:
     return cleaned[-count:]
 
 
-def analyze(max_lines: int = 1000) -> tuple[list[Finding], dict[str, list[str]], Counter]:
-    iris_log = _tail(LOGS_DIR / "iris.log", max_lines)
-    trace_log = _tail(LOGS_DIR / "iris_trace.log", max_lines)
-    fault_log = _tail(LOGS_DIR / "iris_faults.log", max_lines)
+def analyze(max_lines: int = 1000, since_hours: int | None = 48) -> tuple[list[Finding], dict[str, list[str]], Counter]:
+    iris_log = _tail(LOGS_DIR / "iris.log", max_lines, since_hours)
+    trace_log = _tail(LOGS_DIR / "iris_trace.log", max_lines, since_hours)
+    fault_log = _tail(LOGS_DIR / "iris_faults.log", max_lines, since_hours)
     all_lines = iris_log + trace_log + fault_log
 
     findings: list[Finding] = []
@@ -97,23 +128,23 @@ def analyze(max_lines: int = 1000) -> tuple[list[Finding], dict[str, list[str]],
     if not iris_log and not trace_log:
         findings.append(Finding(
             "CRITICAL",
-            "No application logs found",
-            [str(LOGS_DIR)],
-            "Run python tools\\doctor_logs.py, then start IRIS again.",
+            "No recent application logs found",
+            [str(LOGS_DIR), f"since_hours={since_hours}"],
+            "Run python tools\\doctor_logs.py, then start IRIS again. Use --since-hours 0 to include all history.",
         ))
         return findings, evidence_buckets, Counter()
 
-    # Fatal / crash indicators
     fatal = _grep(all_lines, r"CRITICAL", r"Fatal Python error", r"Traceback \(most recent call last\)", r"Uncaught exception", r"thread_exception")
-    if fatal:
+    doctor_only = [line for line in fatal if "DoctorLogs" in line or "doctor-exception" in line]
+    real_fatal = [line for line in fatal if line not in doctor_only]
+    if real_fatal:
         findings.append(Finding(
             "CRITICAL",
             "Crash or uncaught exception evidence found",
-            _latest(fatal, 8),
-            "Open the surrounding lines in iris.log and iris_trace.log; fix the first exception, not later cascade errors.",
+            _latest(real_fatal, 8),
+            "Open surrounding lines in iris.log and iris_trace.log; fix the first exception, not later cascade errors.",
         ))
 
-    # Startup / loading latency
     llm_start = _grep(trace_log, r"local_llm_load_start", r"Spinning up C\+\+ LLM Engine")
     llm_end = _grep(trace_log + iris_log, r"local_llm_load_end", r"C\+\+ Engine Ready")
     preload_skipped = _grep(trace_log, r"local_llm_preload_skipped")
@@ -141,8 +172,7 @@ def analyze(max_lines: int = 1000) -> tuple[list[Finding], dict[str, list[str]],
             "Check whether slow calls are LLM, STT, TTS, vision, or microphone operations. Disable IRIS_TRACE_FUNCTIONS after diagnosis.",
         ))
 
-    # Voice / microphone indicators
-    mic_errors = _grep(all_lines, r"listen_error", r"mic", r"Microphone", r"Stream closed", r"-9988", r"input overflow", r"No Default Input Device")
+    mic_errors = _grep(all_lines, r"listen_error", r"mic_name='Microphone Array", r"Microphone init failed", r"Stream closed", r"-9988", r"input overflow", r"No Default Input Device")
     voice_rejections = _grep(trace_log, r"voice_poll_rejected", r"transcript_ignored", r"single_word_echo_risk", r"short_non_control_echo_risk")
     listen_start = _grep(trace_log, r"listen_start")
     listen_end = _grep(trace_log, r"listen_end")
@@ -151,7 +181,7 @@ def analyze(max_lines: int = 1000) -> tuple[list[Finding], dict[str, list[str]],
             "HIGH",
             "Microphone/listening errors or device mismatch evidence found",
             _latest(mic_errors, 8),
-            "Run python tools\\doctor_runtime.py and set PREFERRED_MIC_NAME/MIC_DEVICE_INDEX to an actually listed input device.",
+            "Set PREFERRED_MIC_NAME/MIC_DEVICE_INDEX to a listed headset input, e.g. Nadya or BT LE Microphone, then retest.",
         ))
     if listen_start and not listen_end[-3:]:
         findings.append(Finding(
@@ -165,31 +195,24 @@ def analyze(max_lines: int = 1000) -> tuple[list[Finding], dict[str, list[str]],
             "MEDIUM",
             "Voice transcripts are being rejected by filters",
             _latest(voice_rejections, 8),
-            "If real commands are rejected, lower strictness or use clearer wake/control phrases like 'Iris stop'.",
+            "If real commands are rejected, use clearer wake/control phrases first; then adjust filters only if needed.",
         ))
 
-    # STT / API failures
     stt_fail = _grep(all_lines, r"groq_stt_error", r"google_transcribe_error", r"transcribe.*engine=none", r"429", r"rate_limit")
     if stt_fail:
-        findings.append(Finding(
-            "HIGH",
-            "STT/API transcription failures detected",
-            _latest(stt_fail, 8),
-            "Check Groq quota/network and fallback language settings; confirm GROQ_STT_MODEL is valid.",
-        ))
+        recommendation = "Run python -m pip install --upgrade --force-reinstall -r requirements.txt to apply the httpx compatibility pin; then retest STT."
+        findings.append(Finding("HIGH", "STT/API transcription failures detected", _latest(stt_fail, 8), recommendation))
 
-    # TTS failures
-    tts_fail = _grep(all_lines, r"Edge-TTS", r"edge_tts", r"TTS.*failed", r"speech_enqueue", r"pygame", r"mixer", r"Prefetch.*failed")
+    tts_fail = _grep(all_lines, r"Edge-TTS", r"edge_tts", r"TTS.*failed", r"pygame", r"mixer", r"Prefetch.*failed")
     tts_errors = [line for line in tts_fail if re.search(r"failed|error|exception|timeout", line, re.IGNORECASE)]
     if tts_errors:
         findings.append(Finding(
             "HIGH",
             "TTS/playback failures detected",
             _latest(tts_errors, 8),
-            "Keep TTS_ENGINE=edge and Piper disabled while debugging; check network access for Edge-TTS.",
+            "Keep TTS_ENGINE=edge and Piper disabled while debugging; if only old history appears, rerun with default --since-hours 48.",
         ))
 
-    # Vision failures
     vision_fail = _grep(all_lines, r"vision_failed", r"vision_capture_failed", r"vision_provider_failed", r"Vision API", r"screen capture failed")
     vision_ok = _grep(all_lines, r"vision_capture_ok", r"vision_provider_ok", r"vision_response_ok")
     if vision_fail:
@@ -197,17 +220,11 @@ def analyze(max_lines: int = 1000) -> tuple[list[Finding], dict[str, list[str]],
             "HIGH",
             "Screen reading / vision failures detected",
             _latest(vision_fail, 8),
-            "Run python tools\\doctor_vision.py. Try VISION_PROVIDER=gemini and VISION_MONITOR=1 or 0.",
+            "Apply requirements update, then run python tools\\doctor_vision.py. Prefer VISION_PROVIDER=gemini.",
         ))
     elif vision_ok:
-        findings.append(Finding(
-            "INFO",
-            "Vision capture/provider success evidence found",
-            _latest(vision_ok, 5),
-            "Vision path appears available in recent logs.",
-        ))
+        findings.append(Finding("INFO", "Vision capture/provider success evidence found", _latest(vision_ok, 5), "Vision path appears available in recent logs."))
 
-    # Memory/file persistence
     memory_fail = _grep(all_lines, r"\[Memory\].*failed", r"corrupt", r"could not save", r"archive_session failed")
     if memory_fail:
         findings.append(Finding(
@@ -217,12 +234,12 @@ def analyze(max_lines: int = 1000) -> tuple[list[Finding], dict[str, list[str]],
             "Inspect any .corrupt-*.json files and verify write permissions under project/data directory.",
         ))
 
-    # Warnings / errors summary
     warnings = _grep(all_lines, r"\[WARNING\]", r" WARNING ")
     errors = _grep(all_lines, r"\[ERROR\]", r"\[CRITICAL\]", r" ERROR ", r" CRITICAL ")
+    errors = [line for line in errors if "DoctorLogs" not in line and "doctor-exception" not in line]
     if warnings:
         findings.append(Finding("INFO", f"Warnings present: {len(warnings)}", _latest(warnings, 5), "Review if repeated."))
-    if errors and not fatal:
+    if errors and not real_fatal:
         findings.append(Finding("MEDIUM", f"Errors present: {len(errors)}", _latest(errors, 8), "Review the first error chronologically."))
 
     tags = _count_tags(trace_log)
@@ -237,10 +254,11 @@ def analyze(max_lines: int = 1000) -> tuple[list[Finding], dict[str, list[str]],
     return findings, evidence_buckets, tags
 
 
-def render_report(findings: list[Finding], evidence_buckets: dict[str, list[str]], tags: Counter) -> str:
+def render_report(findings: list[Finding], evidence_buckets: dict[str, list[str]], tags: Counter, since_hours: int | None) -> str:
     lines = ["# IRIS Log Analysis Report", ""]
     lines.append(f"Project: `{PROJECT_ROOT}`")
     lines.append(f"Logs: `{LOGS_DIR}`")
+    lines.append(f"Window: last {since_hours} hours" if since_hours else "Window: all available tailed history")
     lines.append("")
     lines.append("## Findings")
     for finding in findings:
@@ -257,7 +275,7 @@ def render_report(findings: list[Finding], evidence_buckets: dict[str, list[str]
         lines.append("")
         lines.append(f"### {name}")
         if not bucket:
-            lines.append("No lines found.")
+            lines.append("No recent lines found.")
             continue
         lines.append("```text")
         lines.extend(bucket[-60:])
@@ -268,11 +286,13 @@ def render_report(findings: list[Finding], evidence_buckets: dict[str, list[str]
 def main() -> int:
     parser = argparse.ArgumentParser(description="Analyze IRIS logs for likely runtime issues.")
     parser.add_argument("--lines", type=int, default=1000, help="Tail this many lines from each log file.")
+    parser.add_argument("--since-hours", type=int, default=48, help="Only include timestamped log entries from the last N hours. Use 0 for all tailed history.")
     parser.add_argument("--write-report", action="store_true", help="Write exports/log_analysis_report.md")
     args = parser.parse_args()
 
-    findings, buckets, tags = analyze(max_lines=args.lines)
-    report = render_report(findings, buckets, tags)
+    since_hours = args.since_hours if args.since_hours > 0 else None
+    findings, buckets, tags = analyze(max_lines=args.lines, since_hours=since_hours)
+    report = render_report(findings, buckets, tags, since_hours)
     print(report)
 
     if args.write_report:
