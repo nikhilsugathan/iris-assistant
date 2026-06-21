@@ -23,6 +23,26 @@ def test_brain_runtime_patches_are_applied():
     assert hasattr(Brain, "_call_gemini_vision")
 
 
+def test_short_prompt_fast_path_and_settings():
+    import core  # noqa: F401
+    from core.brain import Brain
+
+    class DummyMemory:
+        def add(self, *args, **kwargs):
+            pass
+
+        def get_context(self, *args, **kwargs):
+            return []
+
+    brain = Brain(DummyMemory())
+    assert brain._rewrite_generic_response("hello")
+    assert brain._rewrite_generic_response("thanks")
+    assert "llama_cpp" not in brain._get_apis_for_query("general")
+    settings = brain._generation_settings("general", user_input="how are you")
+    assert settings["max_tokens"] <= 120
+    assert settings["context_turns"] <= 2
+
+
 def test_voice_stability_patch_is_applied_in_text_mode():
     from config import Config
     from core.voice import Voice
