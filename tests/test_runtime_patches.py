@@ -47,6 +47,32 @@ def test_short_prompt_fast_path_and_settings():
     assert settings["context_turns"] <= 2
 
 
+def test_language_aware_fast_smalltalk():
+    import core  # noqa: F401
+    from core.brain import Brain
+
+    class DummyMemory:
+        def add(self, *args, **kwargs):
+            pass
+
+        def get_context(self, *args, **kwargs):
+            return []
+
+    brain = Brain(DummyMemory())
+    namaste = brain._rewrite_generic_response("namaste")
+    spanish = brain._rewrite_generic_response("mi amor")
+    german = brain._rewrite_generic_response("guten morgen")
+    malayalam = brain._rewrite_generic_response("namaskaram")
+    assert namaste
+    assert spanish
+    assert german
+    assert malayalam
+    assert "That's" not in namaste + spanish + german + malayalam
+    assert any(token in namaste.lower() for token in ["namaste", "namaskar", "pranam", "aaj", "batao", "bolo"])
+    assert any(token in spanish.lower() for token in ["hola", "amor", "dime", "qué", "mision", "misión"])
+    assert any(token in german.lower() for token in ["guten", "hallo", "was", "weiter", "aufgabe"])
+
+
 def test_voice_stability_patch_is_applied_in_text_mode():
     from config import Config
     from core.voice import Voice
