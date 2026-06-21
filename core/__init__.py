@@ -27,5 +27,9 @@ try:
     _runtime_patches.apply_patch("core.brain", _brain_module)
     _runtime_patches.apply_patch("core.security", _security_module)
     _runtime_patches.apply_patch("core.voice", _voice_module)
+
+    from .voice_stable_override import apply_voice_stable_override
+
+    apply_voice_stable_override(_voice_module)
 except Exception:
     pass
