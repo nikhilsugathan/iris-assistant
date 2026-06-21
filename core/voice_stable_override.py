@@ -6,10 +6,6 @@ import os
 import threading
 
 
-def _enabled(name: str, default: str = "true") -> bool:
-    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
-
-
 def _mode() -> str:
     # balanced: allow filtered control-word interruption while blocking raw audio auto-cut.
     # stable: do not listen while speaking; most reliable playback, no barge-in.
@@ -75,12 +71,6 @@ def apply_voice_stable_override(voice_module) -> None:
 
     def listen_for_interrupt(self, timeout=None, phrase_time_limit=None, on_phrase_captured=None):
         playback_mode = _mode()
-        # Backward compatibility: the earlier VOICE_STABLE_PLAYBACK=true setting maps
-        # to stable mode only when VOICE_PLAYBACK_MODE is not set. Use
-        # VOICE_PLAYBACK_MODE=balanced to keep safe control-word interruption enabled.
-        if "VOICE_PLAYBACK_MODE" not in os.environ and _enabled("VOICE_STABLE_PLAYBACK", "false"):
-            playback_mode = "stable"
-
         if playback_mode == "stable":
             self._debug_trace("voice_poll_skipped", reason="stable_playback_mode")
             return None
@@ -95,8 +85,6 @@ def apply_voice_stable_override(voice_module) -> None:
 
     def start_barge_in_monitor(self, on_barge_in, warmup_sec=0.45):
         playback_mode = _mode()
-        if "VOICE_PLAYBACK_MODE" not in os.environ and _enabled("VOICE_STABLE_PLAYBACK", "false"):
-            playback_mode = "stable"
 
         # In balanced mode, do not use raw RMS auto-cut. Interruption is allowed only
         # after STT returns a filtered control phrase. Raw audio thresholds were the
