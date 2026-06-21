@@ -48,10 +48,10 @@ def test_short_prompt_fast_path_and_settings():
     assert settings["context_turns"] <= 2
 
 
-def test_multilingual_generation_settings_and_voice_routing():
+def test_multilingual_generation_settings_and_locked_voice_default():
     import core  # noqa: F401
     from core.brain import Brain
-    from core.multilingual_patches import language_instruction_for, tts_voice_for
+    from core.multilingual_patches import language_instruction_for, multilingual_tts_voice_switch_enabled, tts_voice_for
     from core.voice import Voice
 
     class DummyMemory:
@@ -66,8 +66,9 @@ def test_multilingual_generation_settings_and_voice_routing():
     assert "Spanish" in settings.get("extra_system", "")
     assert "same language" in settings.get("extra_system", "")
     assert language_instruction_for("guten morgen kannst du mir helfen")
-    assert tts_voice_for("Hola, mi amor. ¿Qué hacemos?") == "es-ES-ElviraNeural"
+    assert tts_voice_for("Hola, mi amor. Qué hacemos?") == "es-ES-ElviraNeural"
     assert tts_voice_for("Guten Morgen. Was steht an?") == "de-DE-KatjaNeural"
+    assert multilingual_tts_voice_switch_enabled() is False
     assert getattr(Voice, "_iris_multilingual_voice_patch_applied", False)
 
 
@@ -111,6 +112,7 @@ def test_voice_stability_patch_is_applied_in_text_mode():
     assert voice.io_disabled
     assert Config.TTS_ENGINE in {"edge", "piper", "auto"}
     assert getattr(Config, "VOICE_PLAYBACK_MODE", "balanced") in {"balanced", "stable", "realtime"}
+    assert "locked voice" in voice.tts_status()
     sample = "Hey there! " + chr(0x1F44B) + " How can I help? :sparkles:"
     assert voice._clean_for_speech(sample) == "Hey there! How can I help?"
 
@@ -131,6 +133,7 @@ def test_config_hardening_is_lightweight_by_default():
     assert getattr(Config, "COMMAND_RMS_THRESHOLD", 0) >= 400
     assert getattr(Config, "VOICE_PLAYBACK_MODE", "balanced") in {"balanced", "stable", "realtime"}
     assert getattr(Config, "STT_LANGUAGE", "")
+    assert getattr(Config, "IRIS_LOCK_TTS_VOICE", True) is True
 
 
 def test_startup_config_compatibility_defaults_exist():
@@ -150,6 +153,7 @@ def test_startup_config_compatibility_defaults_exist():
         "RUNBOOK_MODE",
         "ENABLE_AUTO_SYNC",
         "STT_LANGUAGE",
+        "IRIS_LOCK_TTS_VOICE",
         "validate",
     ]
     for name in required:
