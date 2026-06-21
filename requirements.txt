@@ -1,10 +1,10 @@
 # ── IRIS Core & Brain ──
 google-generativeai==0.8.3
-groq==0.12.0
-# Groq 0.12.0 still passes the legacy `proxies=` argument to httpx.Client.
-# httpx 0.28 removed that argument, causing STT and Groq Vision to fail with:
-# Client.__init__() got an unexpected keyword argument 'proxies'
-httpx>=0.27,<0.28
+# Use a modern Groq SDK so STT/Vision works with httpx 0.28+.
+# Older groq==0.12.0 could fail with: Client.__init__() got an unexpected keyword argument 'proxies'
+groq>=0.20.0
+# Keep httpx compatible with google-genai and newer SDKs.
+httpx>=0.28.1,<1.0.0
 anthropic==0.40.0
 python-dotenv==1.0.1
 requests==2.32.3
