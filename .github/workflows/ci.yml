@@ -68,6 +68,10 @@ jobs:
         shell: powershell
         run: python -m pytest tests/test_executor_hardening.py -q
 
+      - name: Action plan security regressions
+        shell: powershell
+        run: python -m pytest tests/test_action_plan_hardening.py -q
+
       - name: Command verification regressions
         shell: powershell
         run: python -m pytest tests/test_executor_verification.py -q
