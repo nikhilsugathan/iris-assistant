@@ -89,7 +89,7 @@ _STYLE_THANKS = {
     "spanish": ["De nada, mi amor", "Con gusto", "Para eso estoy", "Naturalmente"],
     "german": ["Bitte", "Gern geschehen", "Natürlich", "Dafür bin ich da"],
     "french": ["Avec plaisir", "De rien", "Naturellement", "Je t'en prie"],
-    "italian": ["Prego", "Con piacere", "Naturalmente", "Sono qui pour questo"],
+    "italian": ["Prego", "Con piacere", "Naturalmente", "Sono qui per questo"],
     "indic": ["Koi baat nahi", "Hamesha", "Bas, itna sa kaam", "Khushi se"],
     "malayalam": ["Parayanda", "Eppozhum", "Santhosham", "Ithokke simple alle"],
 }
