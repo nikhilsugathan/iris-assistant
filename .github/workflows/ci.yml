@@ -64,6 +64,10 @@ jobs:
         shell: powershell
         run: python -m pytest tests/test_executor_hardening.py -q
 
+      - name: Command verification regressions
+        shell: powershell
+        run: python -m pytest tests/test_executor_verification.py -q
+
       - name: Concurrency regressions
         shell: powershell
         run: python -m pytest tests/test_concurrency_smoke.py -q
