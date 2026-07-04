@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import re
 
+from . import security as _security_module
 from .security import BLOCKED, NEED_ADMIN, SAFE, WARNING
+from .security_path_hardening import apply_security_path_hardening
 from .tools_registry import ACTIVE_TOOL_NAMES, ADMIN_TOOL_NAMES, TOOLS
 
 
@@ -98,6 +100,8 @@ def validate_action_plan(plan, *, admin_unlocked: bool) -> tuple[bool, str]:
 
 
 def apply_action_plan_hardening(executor_module, improv_module) -> None:
+    apply_security_path_hardening(_security_module)
+
     executor_cls = getattr(executor_module, "ActionExecutor", None)
     improv_cls = getattr(improv_module, "ImprovEngine", None)
 
