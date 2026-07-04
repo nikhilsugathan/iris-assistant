@@ -52,6 +52,10 @@ jobs:
         shell: powershell
         run: python -m pytest tests/test_language_voice_state.py -q
 
+      - name: Language detection collision regressions
+        shell: powershell
+        run: python -m pytest tests/test_language_detection_collisions.py -q
+
       - name: Memory durability regressions
         shell: powershell
         run: python -m pytest tests/test_memory_hardening.py -q
