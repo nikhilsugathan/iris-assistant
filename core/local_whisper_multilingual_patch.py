@@ -1,6 +1,8 @@
-"""Multilingual defaults for the optional local Whisper fallback path."""
+"""Multilingual defaults for cloud and optional local STT fallback paths."""
 
 from __future__ import annotations
+
+from .stt_fallback_hardening import apply_stt_fallback_hardening
 
 
 _AUTO_VALUES = {"", "auto", "multilingual", "detect", "none"}
@@ -12,6 +14,10 @@ def _language_hint(config) -> str | None:
 
 
 def apply_local_whisper_multilingual_patch(voice_module) -> None:
+    # This stage is already loaded after multilingual STT patching, so it is also
+    # the safe final point to correct Groq-to-Google fallback dispatch.
+    apply_stt_fallback_hardening(voice_module)
+
     voice_cls = getattr(voice_module, "Voice", None)
     if voice_cls is None or getattr(voice_cls, "_iris_local_whisper_multilingual_patch_applied", False):
         return
@@ -21,8 +27,6 @@ def apply_local_whisper_multilingual_patch(voice_module) -> None:
     def _transcribe_local_multilingual(self, audio, phrase_type="command"):
         original_hint = getattr(voice_module.Config, "LOCAL_WHISPER_LANGUAGE_HINT", "auto")
         try:
-            # The existing local implementation reads Config at transcription time.
-            # Blank maps to None and lets multilingual Whisper detect the language.
             voice_module.Config.LOCAL_WHISPER_LANGUAGE_HINT = _language_hint(voice_module.Config)
             return original_transcribe_local(self, audio, phrase_type=phrase_type)
         finally:
