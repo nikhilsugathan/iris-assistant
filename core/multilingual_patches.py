@@ -1,10 +1,10 @@
 """Multilingual pipeline patches for IRIS.
 
 Goals:
-- Stop forcing English STT when Groq Whisper can auto-detect language.
-- Add language instructions to the LLM for non-English input.
-- Use one stable TTS voice per response/language style, not per sentence.
-- Vary system-level lines such as wake acknowledgements and goodbyes.
+- Let Groq Whisper auto-detect spoken language.
+- Add same-language/style instructions to the LLM.
+- Keep the same Iris TTS speaker across languages by default.
+- Retain optional per-language TTS voices behind explicit configuration.
 """
 
 from __future__ import annotations
@@ -126,7 +126,14 @@ def malayalam_native_tts_enabled() -> bool:
 
 
 def sticky_language_tts_enabled() -> bool:
-    return _env_bool("IRIS_STICKY_LANGUAGE_TTS", True)
+    return _env_bool("IRIS_STICKY_LANGUAGE_TTS", False)
+
+
+def multilingual_tts_voice_switch_enabled() -> bool:
+    # The lock is authoritative. Sticky state must never bypass it.
+    if _env_bool("IRIS_LOCK_TTS_VOICE", True):
+        return False
+    return _env_bool("IRIS_MULTILINGUAL_TTS", False)
 
 
 def detect_language_style(text: str) -> Optional[tuple[str, str, str]]:
@@ -188,14 +195,6 @@ def tts_voice_for(text: str) -> Optional[str]:
     if detected:
         return detected[2]
     return None
-
-
-def multilingual_tts_voice_switch_enabled() -> bool:
-    if sticky_language_tts_enabled():
-        return True
-    if _env_bool("IRIS_LOCK_TTS_VOICE", False):
-        return False
-    return _env_bool("IRIS_MULTILINGUAL_TTS", True)
 
 
 def _voice_for_style(key: str) -> Optional[str]:
@@ -271,15 +270,13 @@ def apply_multilingual_patches(brain_module, voice_module) -> None:
             detected = detect_language_style(text)
             if detected:
                 key, _label, voice_name = detected
-                if key == "malayalam" and not malayalam_native_tts_enabled():
-                    return
                 self._iris_language_voice_key = key
-                self._iris_language_voice_name = voice_name
+                if multilingual_tts_voice_switch_enabled() and (key != "malayalam" or malayalam_native_tts_enabled()):
+                    self._iris_language_voice_name = voice_name
+                else:
+                    self._iris_language_voice_name = None
                 return
-            # Do not reset active language just because a mixed-language response
-            # starts with English. Sticky mode intentionally keeps the conversation
-            # voice until a new language is detected or a clean English turn happens.
-            if interrupt and _detect_system_line_kind(text) is None and not getattr(self, "_iris_language_voice_name", None):
+            if interrupt and _detect_system_line_kind(text) is None and not sticky_language_tts_enabled():
                 self._iris_language_voice_key = None
                 self._iris_language_voice_name = None
 
@@ -332,25 +329,29 @@ def apply_multilingual_patches(brain_module, voice_module) -> None:
 
         def _run_edge_tts_multilingual(self, text, voice, rate, out_file):
             detected = detect_language_style(text)
+            switching = multilingual_tts_voice_switch_enabled()
             if detected:
                 key, _label, voice_name = detected
-                if key != "malayalam" or malayalam_native_tts_enabled():
-                    self._iris_language_voice_key = key
+                self._iris_language_voice_key = key
+                if switching and (key != "malayalam" or malayalam_native_tts_enabled()):
                     self._iris_language_voice_name = voice_name
-            if multilingual_tts_voice_switch_enabled():
-                sticky_voice = getattr(self, "_iris_language_voice_name", None)
-                if sticky_voice:
-                    voice = sticky_voice
+                elif not switching:
+                    self._iris_language_voice_name = None
+
+            if switching:
+                selected_voice = getattr(self, "_iris_language_voice_name", None)
+                if selected_voice:
+                    voice = selected_voice
                     rate = os.getenv("IRIS_MULTILINGUAL_TTS_RATE", "+0%")
                     try:
-                        self._debug_trace("tts_language_voice", mode="sticky", voice=voice, text=text)
+                        self._debug_trace("tts_language_voice", mode="language_switch", voice=voice, text=text)
                     except Exception:
                         pass
-                else:
-                    try:
-                        self._debug_trace("tts_language_voice", mode="default", voice=voice, text=text)
-                    except Exception:
-                        pass
+            else:
+                try:
+                    self._debug_trace("tts_language_voice", mode="locked_iris_voice", voice=voice, text=text)
+                except Exception:
+                    pass
             return original_run_edge(self, text, voice, rate, out_file)
 
         def _stt_status_multilingual(self) -> str:
@@ -360,12 +361,12 @@ def apply_multilingual_patches(brain_module, voice_module) -> None:
 
         def _tts_status_multilingual(self) -> str:
             base = original_tts_status(self)
-            if sticky_language_tts_enabled():
+            if not multilingual_tts_voice_switch_enabled():
+                mode = "locked Iris voice"
+            elif sticky_language_tts_enabled():
                 mode = "sticky language voice"
-            elif malayalam_native_tts_enabled():
-                mode = "locked voice + Malayalam native exception"
             else:
-                mode = "locked voice" if not multilingual_tts_voice_switch_enabled() else "language voice switching"
+                mode = "language voice switching"
             return f"{base} / multilingual={mode}"
 
         voice_cls.__init__ = _init_multilingual
