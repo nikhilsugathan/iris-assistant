@@ -6,9 +6,9 @@ from unittest.mock import patch
 
 os.environ["IRIS_DISABLE_VOICE_IO"] = "true"
 os.environ["STT_LANGUAGE"] = "auto"
-os.environ["IRIS_STICKY_LANGUAGE_TTS"] = "true"
-os.environ["IRIS_MULTILINGUAL_TTS"] = "true"
-os.environ["IRIS_LOCK_TTS_VOICE"] = "false"
+os.environ["IRIS_STICKY_LANGUAGE_TTS"] = "false"
+os.environ["IRIS_MULTILINGUAL_TTS"] = "false"
+os.environ["IRIS_LOCK_TTS_VOICE"] = "true"
 os.environ["IRIS_MALAYALAM_NATIVE_TTS"] = "false"
 
 
@@ -64,23 +64,7 @@ def test_first_language_cue_wins_for_mixed_input():
     assert detected[0] == "french"
 
 
-def test_user_input_language_is_authoritative_for_tts_response():
-    import core  # noqa: F401
-    from core.brain import Brain
-    from core.language_voice_bridge import reset_active_language
-    from core.voice import Voice
-
-    reset_active_language()
-    brain = Brain(DummyMemory())
-    voice = Voice(text_mode=True)
-
-    brain._generation_settings("general", user_input="bonjour mon ami")
-    _text, selected_voice, _rate = _synthesize(voice, "Hola amiga, todo bien.")
-
-    assert selected_voice == "fr-FR-DeniseNeural"
-
-
-def test_explicit_english_switch_restores_default_iris_voice():
+def test_default_iris_voice_is_preserved_across_languages():
     import core  # noqa: F401
     from config import Config
     from core.brain import Brain
@@ -91,11 +75,78 @@ def test_explicit_english_switch_restores_default_iris_voice():
     brain = Brain(DummyMemory())
     voice = Voice(text_mode=True)
 
-    brain._generation_settings("general", user_input="hola amiga")
-    assert _synthesize(voice, "Todo bien.")[1] == "es-ES-ElviraNeural"
+    brain._generation_settings("general", user_input="bonjour mon ami")
+    assert _synthesize(voice, "Bonjour. Comment ça va?")[1] == Config.IRIS_VOICE_NAME
 
-    brain._generation_settings("general", user_input="switch to English")
-    assert _synthesize(voice, "Back in English.")[1] == Config.IRIS_VOICE_NAME
+    brain._generation_settings("general", user_input="hola amiga")
+    assert _synthesize(voice, "Todo bien, mi amor.")[1] == Config.IRIS_VOICE_NAME
+
+    brain._generation_settings("general", user_input="guten morgen")
+    assert _synthesize(voice, "Guten Morgen. Was steht an?")[1] == Config.IRIS_VOICE_NAME
+
+
+def test_locked_language_mode_preserves_aletheia_persona_voice():
+    import core  # noqa: F401
+    from config import Config
+    from core.brain import Brain
+    from core.language_voice_bridge import reset_active_language
+    from core.voice import Voice
+
+    reset_active_language()
+    brain = Brain(DummyMemory())
+    voice = Voice(text_mode=True)
+    voice.set_active_voice(Config.ALETHEIA_VOICE_NAME, Config.ALETHEIA_VOICE_RATE)
+
+    brain._generation_settings("general", user_input="hola amiga")
+    assert _synthesize(voice, "Todo bien.")[1] == Config.ALETHEIA_VOICE_NAME
+
+
+def test_explicit_opt_in_enables_language_specific_voice():
+    import core  # noqa: F401
+    from core.brain import Brain
+    from core.language_voice_bridge import reset_active_language
+    from core.voice import Voice
+
+    with patch.dict(
+        os.environ,
+        {
+            "IRIS_LOCK_TTS_VOICE": "false",
+            "IRIS_MULTILINGUAL_TTS": "true",
+            "IRIS_STICKY_LANGUAGE_TTS": "true",
+        },
+    ):
+        reset_active_language()
+        brain = Brain(DummyMemory())
+        voice = Voice(text_mode=True)
+
+        brain._generation_settings("general", user_input="hola amiga")
+        assert _synthesize(voice, "Todo bien.")[1] == "es-ES-ElviraNeural"
+
+
+def test_explicit_english_switch_restores_default_voice_in_opt_in_mode():
+    import core  # noqa: F401
+    from config import Config
+    from core.brain import Brain
+    from core.language_voice_bridge import reset_active_language
+    from core.voice import Voice
+
+    with patch.dict(
+        os.environ,
+        {
+            "IRIS_LOCK_TTS_VOICE": "false",
+            "IRIS_MULTILINGUAL_TTS": "true",
+            "IRIS_STICKY_LANGUAGE_TTS": "true",
+        },
+    ):
+        reset_active_language()
+        brain = Brain(DummyMemory())
+        voice = Voice(text_mode=True)
+
+        brain._generation_settings("general", user_input="hola amiga")
+        assert _synthesize(voice, "Todo bien.")[1] == "es-ES-ElviraNeural"
+
+        brain._generation_settings("general", user_input="switch to English")
+        assert _synthesize(voice, "Back in English.")[1] == Config.IRIS_VOICE_NAME
 
 
 def test_language_voice_patches_are_loaded():
