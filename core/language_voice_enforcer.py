@@ -1,10 +1,4 @@
-"""Final TTS language-voice enforcement.
-
-Multilingual response-text detection is useful when a local fast reply bypasses the
-Brain language bridge. Once the user has selected a language, however, response
-text must not override that choice. This patch suppresses response re-detection
-only while a sticky user-input voice is being rendered.
-"""
+"""Final sticky-language TTS enforcement."""
 
 from __future__ import annotations
 
@@ -21,6 +15,14 @@ def _env_bool(name: str, default: bool = True) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _remove_output(path: str) -> None:
+    try:
+        if path and os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+
 def apply_language_voice_enforcer(voice_module, multilingual_module) -> None:
     voice_cls = getattr(voice_module, "Voice", None)
     if voice_cls is None or getattr(voice_cls, "_iris_language_voice_enforcer_applied", False):
@@ -35,7 +37,6 @@ def apply_language_voice_enforcer(voice_module, multilingual_module) -> None:
         return detector(text)
 
     multilingual_module.detect_language_style = _guarded_detector
-
     original_run_edge = voice_cls._run_edge_tts_async
 
     def _run_edge_tts_input_authoritative(self, text, voice, rate, out_file, *args, **kwargs):
@@ -51,7 +52,7 @@ def apply_language_voice_enforcer(voice_module, multilingual_module) -> None:
             self._iris_forced_input_voice_name = active_voice
             self._iris_language_voice_key = active_style
             self._iris_language_voice_name = active_voice
-            return original_run_edge(
+            result = original_run_edge(
                 self,
                 text,
                 active_voice,
@@ -60,6 +61,19 @@ def apply_language_voice_enforcer(voice_module, multilingual_module) -> None:
                 *args,
                 **kwargs,
             )
+            if get_active_language_voice() != active_voice:
+                _remove_output(out_file)
+                try:
+                    self._debug_trace(
+                        "tts_language_voice",
+                        mode="stale_audio_removed",
+                        voice=active_voice,
+                        text=text,
+                    )
+                except Exception:
+                    pass
+                return False
+            return result
         finally:
             detector_ctx.suppress_response_detection = previous
 
