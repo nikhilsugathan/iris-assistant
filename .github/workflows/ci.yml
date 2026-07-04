@@ -56,13 +56,29 @@ jobs:
         shell: powershell
         run: python -m pytest tests/test_memory_hardening.py -q
 
+      - name: Executor boundary regressions
+        shell: powershell
+        run: python -m pytest tests/test_executor_hardening.py -q
+
       - name: Concurrency regressions
         shell: powershell
         run: python -m pytest tests/test_concurrency_smoke.py -q
 
-      - name: Hyperscale architecture regressions
+      - name: Vision architecture regressions
         shell: powershell
-        run: python -m pytest tests/test_hyperscale_sweep.py -q
+        run: python -m pytest tests/test_hyperscale_sweep.py::TestVisionAntiHallucination -q
+
+      - name: STT architecture regressions
+        shell: powershell
+        run: python -m pytest tests/test_hyperscale_sweep.py::TestGroqSTTOffload -q
+
+      - name: Unicode and memory architecture regressions
+        shell: powershell
+        run: python -m pytest tests/test_hyperscale_sweep.py::TestUTF8Enforcement -q
+
+      - name: Runtime config architecture regressions
+        shell: powershell
+        run: python -m pytest tests/test_hyperscale_sweep.py::TestRuntimeConfig -q
 
       - name: Run lightweight smoke scripts
         shell: powershell
