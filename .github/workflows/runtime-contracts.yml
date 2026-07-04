@@ -1,0 +1,42 @@
+name: IRIS Runtime Contracts
+
+on:
+  pull_request:
+  push:
+    branches:
+      - "**"
+
+jobs:
+  contracts:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+      SDL_VIDEODRIVER: "dummy"
+      SDL_AUDIODRIVER: "dummy"
+      IRIS_DISABLE_VOICE_IO: "true"
+      STT_LANGUAGE: "auto"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: powershell
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Planner executor alignment
+        shell: powershell
+        run: python -m pytest tests/test_tool_registry_alignment.py -q
+
+      - name: Protected path normalization
+        shell: powershell
+        run: python -m pytest tests/test_security_path_hardening.py -q
