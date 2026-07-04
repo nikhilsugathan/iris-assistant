@@ -12,7 +12,7 @@ from __future__ import annotations
 import difflib
 import os
 import re
-from typing import Optional, Tuple, List
+from typing import List, Optional, Tuple
 
 
 WORD_CORRECTIONS = {
@@ -103,24 +103,24 @@ VALID_EXTENSIONS = {
 }
 
 TYPO_MAP = {
-    ".pf":     [".pdf", ".py"],
-    ".pd":     [".pdf"],
-    ".pfd":    [".pdf"],
-    ".tx":     [".txt"],
-    ".text":   [".txt"],
-    ".doc":    [".docx"],
-    ".xls":    [".xlsx"],
-    ".exel":   [".xlsx"],
-    ".xlxs":   [".xlsx"],
-    ".jason":  [".json"],
-    ".jsn":    [".json"],
+    ".pf": [".pdf", ".py"],
+    ".pd": [".pdf"],
+    ".pfd": [".pdf"],
+    ".tx": [".txt"],
+    ".text": [".txt"],
+    ".doc": [".docx"],
+    ".xls": [".xlsx"],
+    ".exel": [".xlsx"],
+    ".xlxs": [".xlsx"],
+    ".jason": [".json"],
+    ".jsn": [".json"],
     ".phyton": [".py"],
     ".python": [".py"],
-    ".pyt":    [".py"],
-    ".htm":    [".html"],
-    ".yam":    [".yaml"],
-    ".phyon":  [".py"],
-    ".jso":    [".json"],
+    ".pyt": [".py"],
+    ".htm": [".html"],
+    ".yam": [".yaml"],
+    ".phyon": [".py"],
+    ".jso": [".json"],
 }
 
 ALL_EXTENSIONS = list(VALID_EXTENSIONS.keys())
@@ -135,9 +135,37 @@ FAST_ACTION_PREFIXES = (
     "search ", "find ", "write ", "rename ", "move ", "copy ",
 )
 
+_EXTENSION_CONTEXT_RULES = (
+    (".js", {"javascript", "node", "nodejs"}),
+    (".ts", {"typescript"}),
+    (".py", {"python", "python script", "python code"}),
+    (".ps1", {"powershell", "powershell script"}),
+    (".sh", {"bash", "shell script"}),
+    (".bat", {"batch", "batch script"}),
+    (".html", {"html", "web page"}),
+    (".css", {"css", "stylesheet", "style sheet"}),
+    (".json", {"json"}),
+    (".yaml", {"yaml"}),
+    (".yml", {"yml"}),
+    (".md", {"markdown", "readme"}),
+    (".csv", {"csv"}),
+    (".xlsx", {"excel", "spreadsheet"}),
+    (".docx", {"word", "docx"}),
+    (".pdf", {"pdf", "pdf document"}),
+    (".txt", {"text", "plain text", "note", "notes"}),
+)
+
+
+def _normalize_context(text: str) -> str:
+    value = re.sub(r"[^a-z0-9+#.]+", " ", str(text or "").lower())
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _contains_context_phrase(context: str, phrase: str) -> bool:
+    return f" {phrase} " in f" {context} "
+
 
 class AutoCorrector:
-
     def __init__(self, brain=None):
         self.brain = brain
 
@@ -184,39 +212,36 @@ class AutoCorrector:
     def correct_extension(
         self, filename: str, context: str = ""
     ) -> Tuple[str, Optional[str], bool, List[str]]:
-        """
-        Cognitively correct file extensions.
-        Returns: (corrected_filename, note, needs_clarification, options)
-        """
         if not filename:
             return filename, None, False, []
 
-        context = (context or "").lower().strip()
+        context = _normalize_context(context)
         root, ext = os.path.splitext(filename)
         ext = ext.lower()
 
-        # No extension — infer from context
         if not ext:
             inferred = self._infer_extension(context)
             return f"{filename}{inferred}", f"No extension — using '{inferred}'.", False, []
 
-        # Already valid
         if ext in VALID_EXTENSIONS:
             return filename, None, False, []
 
-        # Known typo map
         if ext in TYPO_MAP:
             options = TYPO_MAP[ext]
             if len(options) == 1:
                 return f"{root}{options[0]}", f"'{ext}' → '{options[0]}'", False, []
-            # Resolve from context
-            if ".py" in options and any(w in context for w in ["python", "script", "code"]):
+            if ".py" in options and any(
+                _contains_context_phrase(context, phrase)
+                for phrase in {"python", "python script", "python code"}
+            ):
                 return f"{root}.py", f"'{ext}' → '.py'", False, []
-            if ".pdf" in options and any(w in context for w in ["pdf", "document"]):
+            if ".pdf" in options and any(
+                _contains_context_phrase(context, phrase)
+                for phrase in {"pdf", "pdf document"}
+            ):
                 return f"{root}.pdf", f"'{ext}' → '.pdf'", False, []
-            return filename, None, True, options  # ask user
+            return filename, None, True, options
 
-        # Fuzzy match
         matches = difflib.get_close_matches(ext, ALL_EXTENSIONS, n=1, cutoff=0.72)
         if matches:
             return f"{root}{matches[0]}", f"'{ext}' → '{matches[0]}'", False, []
@@ -224,20 +249,10 @@ class AutoCorrector:
         return filename, None, False, []
 
     def _infer_extension(self, context: str) -> str:
-        if any(w in context for w in ["pdf", "document pdf"]):
-            return ".pdf"
-        if any(w in context for w in ["word", "docx"]):
-            return ".docx"
-        if any(w in context for w in ["excel", "spreadsheet", "sheet"]):
-            return ".xlsx"
-        if any(w in context for w in ["python", "script", "code"]):
-            return ".py"
-        if any(w in context for w in ["json", "config"]):
-            return ".json"
-        if any(w in context for w in ["markdown", "readme"]):
-            return ".md"
-        if any(w in context for w in ["csv", "table", "data"]):
-            return ".csv"
+        normalized = _normalize_context(context)
+        for extension, phrases in _EXTENSION_CONTEXT_RULES:
+            if any(_contains_context_phrase(normalized, phrase) for phrase in phrases):
+                return extension
         return ".txt"
 
     def _correct_word(self, word: str) -> tuple:
@@ -277,8 +292,8 @@ class AutoCorrector:
             return None
         prompt = (
             f'The user typed this command but it may have typos: "{text}"\n'
-            f"Return the corrected version, or the original if it's fine. "
-            f"Return ONLY the text, nothing else."
+            "Return the corrected version, or the original if it's fine. "
+            "Return ONLY the text, nothing else."
         )
         try:
             response = self.brain._call_api("groq", prompt)

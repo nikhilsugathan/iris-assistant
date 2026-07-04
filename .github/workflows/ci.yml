@@ -9,8 +9,18 @@ on:
 jobs:
   smoke:
     runs-on: windows-latest
+    timeout-minutes: 20
     env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+      SDL_VIDEODRIVER: "dummy"
+      SDL_AUDIODRIVER: "dummy"
       IRIS_DISABLE_VOICE_IO: "true"
+      STT_LANGUAGE: "auto"
+      IRIS_STICKY_LANGUAGE_TTS: "false"
+      IRIS_MULTILINGUAL_TTS: "false"
+      IRIS_LOCK_TTS_VOICE: "true"
+      IRIS_MALAYALAM_NATIVE_TTS: "false"
 
     steps:
       - name: Check out repository
@@ -33,6 +43,86 @@ jobs:
           python -m compileall -q .
           python -c "import config; import core.brain; import core.executor; import main; print('IMPORTS_OK')"
           python -c "from core.voice import Voice; v=Voice(text_mode=True); assert v.io_disabled, 'Voice IO must be disabled in CI'; print('VOICE_IO_DISABLED_OK')"
+
+      - name: Runtime patch regressions
+        shell: powershell
+        run: python -m pytest tests/test_runtime_patches.py -q
+
+      - name: Persona voice multilingual regressions
+        shell: powershell
+        run: python -m pytest tests/test_language_voice_state.py -q
+
+      - name: Language ownership regressions
+        shell: powershell
+        run: python -m pytest tests/test_language_state_ownership.py -q
+
+      - name: Language detection collision regressions
+        shell: powershell
+        run: python -m pytest tests/test_language_detection_collisions.py -q
+
+      - name: Main voice cue regressions
+        shell: powershell
+        run: python -m pytest tests/test_main_voice_cues.py -q
+
+      - name: Stable voice race regressions
+        shell: powershell
+        run: python -m pytest tests/test_voice_stable_override.py -q
+
+      - name: Copilot state regressions
+        shell: powershell
+        run: python -m pytest tests/test_copilot_state.py -q
+
+      - name: External data grounding regressions
+        shell: powershell
+        run: python -m pytest tests/test_external_data_paths.py -q
+
+      - name: Memory durability regressions
+        shell: powershell
+        run: python -m pytest tests/test_memory_hardening.py -q
+
+      - name: Executor boundary regressions
+        shell: powershell
+        run: python -m pytest tests/test_executor_hardening.py -q
+
+      - name: Action plan security regressions
+        shell: powershell
+        run: python -m pytest tests/test_action_plan_hardening.py -q
+
+      - name: Planner executor contract regressions
+        shell: powershell
+        run: python -m pytest tests/test_tool_registry_alignment.py -q
+
+      - name: Protected path security regressions
+        shell: powershell
+        run: python -m pytest tests/test_security_path_hardening.py -q
+
+      - name: Command verification regressions
+        shell: powershell
+        run: python -m pytest tests/test_executor_verification.py -q
+
+      - name: Evolution capability honesty regressions
+        shell: powershell
+        run: python -m pytest tests/test_evolution_contract.py -q
+
+      - name: Concurrency regressions
+        shell: powershell
+        run: python -m pytest tests/test_concurrency_smoke.py -q
+
+      - name: Vision architecture regressions
+        shell: powershell
+        run: python -m pytest tests/test_hyperscale_sweep.py::TestVisionAntiHallucination -q
+
+      - name: STT architecture regressions
+        shell: powershell
+        run: python -m pytest tests/test_hyperscale_sweep.py::TestGroqSTTOffload -q
+
+      - name: Unicode and memory architecture regressions
+        shell: powershell
+        run: python -m pytest tests/test_hyperscale_sweep.py::TestUTF8Enforcement -q
+
+      - name: Runtime config architecture regressions
+        shell: powershell
+        run: python -m pytest tests/test_hyperscale_sweep.py::TestRuntimeConfig -q
 
       - name: Run lightweight smoke scripts
         shell: powershell

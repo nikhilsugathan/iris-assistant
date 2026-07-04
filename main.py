@@ -294,6 +294,14 @@ def _is_interrupt_phrase(text: str) -> bool:
     normalized = _normalize_command_text(text)
     return normalized in {"stop", "wait", "hold on", "hold", "quiet"}
 
+def _is_recognized_multilingual_cue(text: str) -> bool:
+    try:
+        from core.multilingual_patches import detect_language_style
+
+        return detect_language_style(text or "") is not None
+    except Exception:
+        return False
+
 # ── Long-term recall helpers ─────────────────────────────────────────────────
 _RECALL_KEYWORDS = (
     "remember", "last time", "last session", "previous session",
@@ -416,8 +424,11 @@ def _is_substantive_voice_input(text: str, self_model: SelfModel) -> bool:
         # Real single-word commands (exit, stop, terminate) are already matched
         # by _matches_program_exit / _is_interrupt_phrase BEFORE this function.
         # Wake-word matches are also pre-checked.  So if we reach here with one
-        # token, it's almost certainly noise — require at least 9 chars as a
-        # very conservative pass-through for unusual but genuine single-word inputs.
+        # Recognized multilingual cues are real conversational inputs even when
+        # they are short (for example: dime, hola, merci, danke, ciao, namaste).
+        # Unknown single words still use the conservative noise threshold.
+        if _is_recognized_multilingual_cue(candidate):
+            return True
         return len(token) >= 9
     if len(tokens) == 2:
         if candidate in _NON_SUBSTANTIVE_PHRASES:
@@ -980,7 +991,11 @@ def _run_voice_followup_window(
                 # Saying her name is a valid attention signal during TTS playback.
                 # All other single-word inputs remain gated (echo artifacts like
                 # "complete", "adult", "urns" are still blocked).
-                if len(_barge_words) < 2 and _barge_normalized not in {"iris", "aletheia"}:
+                if (
+                    len(_barge_words) < 2
+                    and _barge_normalized not in {"iris", "aletheia"}
+                    and not _is_recognized_multilingual_cue(_barge_normalized)
+                ):
                     _voice_debug(
                         "followup_barge_single_word_ignored",
                         heard_text=heard_text,

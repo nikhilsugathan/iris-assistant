@@ -1,10 +1,14 @@
 # ── IRIS Core & Brain ──
 google-generativeai==0.8.3
-groq==0.12.0
+# Use a modern Groq SDK so STT/Vision works with httpx 0.28+.
+# Older groq==0.12.0 could fail with: Client.__init__() got an unexpected keyword argument 'proxies'
+groq>=0.20.0
+# Keep httpx compatible with google-genai and newer SDKs.
+httpx>=0.28.1,<1.0.0
 anthropic==0.40.0
 python-dotenv==1.0.1
 requests==2.32.3
-pytest>=9.0.0
+pytest>=8.3,<10
 
 # ── IRIS Terminal UI ──
 rich==13.9.4
@@ -19,6 +23,7 @@ PyAudio==0.2.14; platform_system == "Windows"
 
 # ── IRIS Hardware & VRAM Monitor ──
 numpy==1.26.4
+scipy>=1.11.4,<1.14
 nvidia-ml-py==12.535.133
 
 # ── IRIS v5.0 Ironclad Additions ──
@@ -26,10 +31,7 @@ duckduckgo-search>=5.0.0    # Required for tools/researcher.py (The Eyes)
 psutil>=5.9.8               # Required for system/disk pre-flight checks
 playwright>=1.42.0          # Required for core/browser.py automation
 
-# Phase 1: C++ LLM Engine (replaces Ollama HTTP middleman)
-# Install with GPU support: pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121
-# Phase 1.5: C++ TTS Engine (replaces edge-tts + pygame disk I/O pipeline)
-llama-cpp-python>=0.2.0
+# ── Optional local/runtime helpers ──
 sounddevice>=0.4.6
 send2trash
 
@@ -38,3 +40,7 @@ send2trash
 # silently on "look at my screen" commands after a clean pip install.
 mss>=9.0.1
 Pillow>=10.0.0
+
+# Local C++ LLM support is optional because llama-cpp-python may require MSVC/NMake
+# when no compatible wheel is available. Install it separately with:
+#   python -m pip install -r requirements-local-llm.txt

@@ -1,47 +1,19 @@
 """
 IRIS Co-Pilot Mode
-=====================
-ONLY activates when you explicitly ask to be walked through something.
-
-Trigger phrases:
-  "walk me through..."
-  "guide me through..."
-  "step by step, how do I..."
-  "take me through..."
-
-What it does:
-  - Breaks the task into numbered steps
-  - Presents one step at a time
-  - Waits for "next", "done", or "ready" before moving on
-  - Helps if you're stuck on any step
-  - Wraps up when complete
-
-It does NOT activate on:
-  - General questions ("how do I install Python?") → just answers
-  - Action requests ("install Python") → goes to ActionExecutor
-  - Only triggers on explicit walk-through requests
+==================
+Activates only for explicit walk-through requests and keeps one walkthrough state
+until the user advances, goes back, skips, pauses, or completes it.
 """
+
+from __future__ import annotations
 
 import re
 from typing import List
+
 from config import Config
 
 
 class CoPilot:
-
-    def __init__(self, brain, voice, memory):
-        self.brain  = brain
-        self.voice  = voice
-        self.memory = memory
-        self.active       = False
-        self.steps: List[str] = []
-        self.current_step = 0
-        self.task_context = ""
-
-    # ─────────────────────────────────────────────────────────────
-    # DETECTION: Only explicit walk-through requests
-    # ─────────────────────────────────────────────────────────────
-
     TRIGGER_PHRASES = [
         "walk me through",
         "guide me through",
@@ -52,16 +24,73 @@ class CoPilot:
         "teach me how",
     ]
 
+    _NEXT_PHRASES = {
+        "next",
+        "done",
+        "ready",
+        "continue",
+        "got it",
+        "okay",
+        "ok",
+        "yep",
+        "yes",
+        "finished",
+        "move on",
+        "next step",
+        "continue please",
+    }
+    _STOP_PHRASES = {
+        "stop",
+        "cancel",
+        "quit",
+        "exit",
+        "pause",
+        "never mind",
+        "nevermind",
+        "forget it",
+        "stop the walkthrough",
+        "pause the walkthrough",
+        "not now",
+        "not ready",
+        "not done",
+        "do not continue",
+        "don't continue",
+        "dont continue",
+    }
+
+    def __init__(self, brain, voice, memory):
+        self.brain = brain
+        self.voice = voice
+        self.memory = memory
+        self.active = False
+        self.steps: List[str] = []
+        self.current_step = 0
+        self.task_context = ""
+
+    @staticmethod
+    def _normalize(text: str) -> str:
+        value = str(text or "").lower().replace("’", "'")
+        value = re.sub(r"[^a-z0-9']+", " ", value)
+        value = value.replace("'", " ")
+        return re.sub(r"\s+", " ", value).strip()
+
+    @staticmethod
+    def _contains_phrase(text: str, phrase: str) -> bool:
+        return f" {phrase} " in f" {text} "
+
     def should_activate(self, user_input: str) -> bool:
-        text = user_input.lower()
+        text = (user_input or "").lower()
         return any(phrase in text for phrase in self.TRIGGER_PHRASES)
 
-    # ─────────────────────────────────────────────────────────────
-    # START
-    # ─────────────────────────────────────────────────────────────
-
     def start(self, user_input: str) -> str:
-        self.active       = True
+        # DialogManager intentionally keeps routing an active Copilot session back
+        # to mode="copilot". Main calls start() for that mode, so start() must act
+        # as the stable integration entry point and delegate active turns instead
+        # of resetting the walkthrough on every "next"/question.
+        if self.active:
+            return self.handle_input(user_input)
+
+        self.active = True
         self.current_step = 0
         self.task_context = user_input
 
@@ -80,10 +109,7 @@ Example:
 2. Run: winget install Git.Git
 3. Close and reopen PowerShell so the PATH updates."""
 
-        response = self.brain._call_api(
-            Config.PRIMARY_BRAIN, plan_prompt
-        )
-
+        response = self.brain._call_api(Config.PRIMARY_BRAIN, plan_prompt)
         self.steps = self._parse_steps(response or "")
 
         if not self.steps:
@@ -92,37 +118,29 @@ Example:
 
         total = len(self.steps)
         step1 = self.steps[0]
-
         return (
             f"Alright, I've broken this into {total} steps.\n\n"
             f"Step 1 of {total}: {step1}\n\n"
-            f"Say 'next' or 'done' when you're ready to continue, "
-            f"or just ask me anything if you get stuck."
+            "Say 'next' or 'done' when you're ready to continue, "
+            "or just ask me anything if you get stuck."
         )
-
-    # ─────────────────────────────────────────────────────────────
-    # HANDLE INPUT during active session
-    # ─────────────────────────────────────────────────────────────
 
     def handle_input(self, user_input: str) -> str:
         if not self.active:
             return None
 
-        text = user_input.lower().strip()
+        text = self._normalize(user_input)
 
+        # Negative/stop intent wins over words such as "continue" or "done".
+        if self._is_stop(text):
+            return self._end(completed=False)
+        if self._contains_phrase(text, "go back") or self._contains_phrase(text, "previous step"):
+            return self._prev_step()
+        if self._contains_phrase(text, "skip"):
+            return self._next_step(skipped=True)
         if self._is_next(text):
             return self._next_step()
 
-        if "skip" in text:
-            return self._next_step(skipped=True)
-
-        if "go back" in text or "previous step" in text:
-            return self._prev_step()
-
-        if self._is_stop(text):
-            return self._end(completed=False)
-
-        # Any question or stuck signal → help with current step
         return self._help_on_step(user_input)
 
     def _next_step(self, skipped=False) -> str:
@@ -131,26 +149,25 @@ Example:
         if self.current_step >= len(self.steps):
             return self._end(completed=True)
 
-        num   = self.current_step + 1
+        num = self.current_step + 1
         total = len(self.steps)
-        text  = self.steps[self.current_step]
-
+        text = self.steps[self.current_step]
         prefix = "Skipping that." if skipped else "Good."
         return (
             f"{prefix}\n\n"
             f"Step {num} of {total}: {text}\n\n"
-            f"Say 'next' when ready, or ask me anything."
+            "Say 'next' when ready, or ask me anything."
         )
 
     def _prev_step(self) -> str:
         if self.current_step > 0:
             self.current_step -= 1
-        num   = self.current_step + 1
+        num = self.current_step + 1
         total = len(self.steps)
         return (
-            f"Going back.\n\n"
+            "Going back.\n\n"
             f"Step {num} of {total}: {self.steps[self.current_step]}\n\n"
-            f"Take your time."
+            "Take your time."
         )
 
     def _help_on_step(self, user_input: str) -> str:
@@ -159,54 +176,58 @@ Example:
             f"The user is working through this task: {self.task_context}\n"
             f"Current step: {step_text}\n"
             f"User said: {user_input}\n\n"
-            f"Help them with this specific step. Be practical and specific. "
-            f"If it's a tech task, give exact commands. Keep it concise. "
-            f"End by reminding them to say 'next' when ready."
+            "Help them with this specific step. Be practical and specific. "
+            "If it's a tech task, give exact commands. Keep it concise. "
+            "End by reminding them to say 'next' when ready."
         )
-        response = self.brain._call_api(
-            Config.PRIMARY_BRAIN, prompt
-        )
+        response = self.brain._call_api(Config.PRIMARY_BRAIN, prompt)
         return response or "Let me know what specifically is tripping you up."
 
     def _end(self, completed: bool) -> str:
+        completed_steps = len(self.steps)
+        completed_task = self.task_context
+        paused_step = self.current_step + 1
         self.active = False
+
         if completed:
             prompt = (
-                f"User just finished this task: {self.task_context} "
-                f"({len(self.steps)} steps). "
-                f"Give a short, warm, specific congratulation in 2 sentences max."
+                f"User just finished this task: {completed_task} "
+                f"({completed_steps} steps). "
+                "Give a short, warm, specific congratulation in 2 sentences max."
             )
-            response = self.brain._call_api(
-                Config.PRIMARY_BRAIN, prompt
-            )
-            return response or f"All done! You completed all {len(self.steps)} steps. Great work."
-        else:
-            return (
-                f"Paused at step {self.current_step + 1}. "
-                f"Say 'walk me through' again whenever you want to pick it back up."
-            )
+            response = self.brain._call_api(Config.PRIMARY_BRAIN, prompt)
+            return response or f"All done! You completed all {completed_steps} steps. Great work."
 
-    # ─────────────────────────────────────────────────────────────
-    # HELPERS
-    # ─────────────────────────────────────────────────────────────
+        return (
+            f"Paused at step {paused_step}. "
+            "Say 'walk me through' again whenever you want to pick it back up."
+        )
 
     def _parse_steps(self, text: str) -> List[str]:
         steps = []
         for line in text.strip().split("\n"):
             line = line.strip()
-            match = re.match(r"^\d+[\.\)]\s*(.+)", line)
+            match = re.match(r"^\d+[\.)]\s*(.+)", line)
             if match:
                 steps.append(match.group(1).strip())
         return steps
 
     def _is_next(self, text: str) -> bool:
-        return any(w in text for w in [
-            "next", "done", "ready", "continue", "got it",
-            "okay", "ok", "yep", "yes", "finished", "move on"
-        ])
+        normalized = self._normalize(text)
+        if not normalized:
+            return False
+        if self._is_stop(normalized):
+            return False
+        return normalized in self._NEXT_PHRASES or any(
+            self._contains_phrase(normalized, phrase)
+            for phrase in {"next step", "move on", "got it"}
+        )
 
     def _is_stop(self, text: str) -> bool:
-        return any(w in text for w in [
-            "stop", "cancel", "quit", "exit", "pause",
-            "never mind", "nevermind", "forget it"
-        ])
+        normalized = self._normalize(text)
+        if not normalized:
+            return False
+        return normalized in self._STOP_PHRASES or any(
+            self._contains_phrase(normalized, phrase)
+            for phrase in {"never mind", "forget it", "do not continue", "dont continue"}
+        )

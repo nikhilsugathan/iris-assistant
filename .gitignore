@@ -1,74 +1,61 @@
-# ═══════════════════════════════════════════════════════════
 # IRIS .gitignore
-# ═══════════════════════════════════════════════════════════
 
-# ── Secrets — NEVER commit these ─────────────────────────
 .env
 .env.*
-.env.local
-.env.production
-.env.staging
+!.env.example
 
-# ── Python cache ─────────────────────────────────────────
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 
-# ── Virtual environments ─────────────────────────────────
 venv/
 .venv/
 env/
 
-# ── Distribution / build ─────────────────────────────────
 dist/
 build/
 *.egg-info/
 
-# ── IRIS runtime data (personal) ─────────────────────────
 iris_memory.json
+iris_memory_sessions_archive.json
+*_sessions_archive.json
+knowledge_base.json
 iris_actions.log
 *.log
 
-# ── TTS temp artifacts ───────────────────────────────────
-# Edge TTS writes MP3s to temp; leaked files end up here
 tts_temp/
 *.tmp
 
-# ── IDEs ─────────────────────────────────────────────────
+.claude/settings.local.json
+
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# ── OS files ─────────────────────────────────────────────
 Thumbs.db
 desktop.ini
 .DS_Store
 
-# ── Playwright / browser state ───────────────────────────
 browser_data/
 
-# ── Gold Master v4.7 additions ────────────────────────────
 OLD_FILES/
 *.spec
 .pytest_cache/
 ai-collab/
 
-# ── Local LLMs & Weights (CRITICAL) ──────────────────────
 models/
 .cache/
 *.gguf
 *.bin
 
-# ── IRIS Auto-Generated Directories ──────────────────────
 logs/
+history/session_*.md
 exports/
 
-# ── Personal Databases & Memory
 iris_ltm.json
 iris_rag_db/
 iris_user_preferences.json
 iris_active_goals.json
-logs/

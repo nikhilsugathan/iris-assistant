@@ -1,0 +1,5 @@
+# Optional local C++ LLM support.
+# Install only if you want local llama-cpp inference and have a compatible wheel
+# or Microsoft C++ Build Tools available.
+
+llama-cpp-python>=0.2.0
