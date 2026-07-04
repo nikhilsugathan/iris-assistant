@@ -11,6 +11,7 @@ def _executor():
     executor.follow_up = None
     executor.pending_action = None
     executor.pending_verdict = None
+    executor._clarification_options = []
     executor._log = MagicMock()
     executor._execute_pending = MagicMock(return_value="executed")
     return executor
@@ -145,9 +146,61 @@ def test_ambiguous_followup_keeps_followup_pending():
     assert executor.follow_up == followup
 
 
+def test_extension_substring_does_not_select_python():
+    executor = _executor()
+    executor.pending_action = {"action_type": "create_file", "filename": "example.pf", "content": ""}
+    executor._clarification_options = [".pdf", ".py"]
+
+    result = executor.handle_clarification_response("copy that")
+
+    assert result == "Say .pdf or .py, or cancel."
+    executor._execute_pending.assert_not_called()
+    assert executor._clarification_options == [".pdf", ".py"]
+
+
+def test_python_alias_selects_py_only_when_offered():
+    executor = _executor()
+    executor.pending_action = {"action_type": "create_file", "filename": "example.pf", "content": ""}
+    executor._clarification_options = [".pdf", ".py"]
+
+    result = executor.handle_clarification_response("python")
+
+    assert result == "executed"
+    assert executor.pending_action["filename"].endswith(".py")
+    assert executor._clarification_options == []
+    executor._execute_pending.assert_called_once()
+
+
+def test_ambiguous_extension_choice_remains_pending():
+    executor = _executor()
+    executor.pending_action = {"action_type": "create_file", "filename": "example.pf", "content": ""}
+    executor._clarification_options = [".pdf", ".py"]
+
+    result = executor.handle_clarification_response("pdf or python")
+
+    assert result == "Say .pdf or .py, or cancel."
+    executor._execute_pending.assert_not_called()
+    assert executor._clarification_options == [".pdf", ".py"]
+
+
+def test_clarification_cancel_clears_pending_state():
+    executor = _executor()
+    executor.pending_action = {"action_type": "create_file", "filename": "example.pf", "content": ""}
+    executor.pending_verdict = "SAFE"
+    executor._clarification_options = [".pdf", ".py"]
+
+    result = executor.handle_clarification_response("no, cancel")
+
+    assert result == "Cancelled."
+    assert executor.pending_action is None
+    assert executor.pending_verdict is None
+    assert executor._clarification_options == []
+
+
 def test_executor_hardening_is_loaded():
     import core  # noqa: F401
     from core.executor import ActionExecutor
 
     assert getattr(ActionExecutor, "_iris_executor_open_app_hardening_applied", False)
     assert getattr(ActionExecutor, "_iris_executor_confirmation_hardening_applied", False)
+    assert getattr(ActionExecutor, "_iris_executor_clarification_hardening_applied", False)
