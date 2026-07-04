@@ -41,6 +41,7 @@ except Exception as exc:
 
 try:
     from . import brain as _brain_module
+    from . import memory as _memory_module
     from . import security as _security_module
     from . import voice as _voice_module
 except Exception as exc:
@@ -54,6 +55,13 @@ else:
         _run_stage("runtime_voice", lambda: _runtime_patches.apply_patch("core.voice", _voice_module))
     except Exception as exc:
         _bootstrap_failure("runtime_patches_import", exc)
+
+    try:
+        from .memory_hardening import apply_memory_hardening
+
+        _run_stage("memory_hardening", lambda: apply_memory_hardening(_memory_module))
+    except Exception as exc:
+        _bootstrap_failure("memory_hardening_import", exc)
 
     try:
         from . import performance_patches as _performance_module
@@ -106,6 +114,16 @@ else:
             )
         except Exception as exc:
             _bootstrap_failure("language_voice_enforcer_import", exc)
+
+    try:
+        from .local_whisper_multilingual_patch import apply_local_whisper_multilingual_patch
+
+        _run_stage(
+            "local_whisper_multilingual_patch",
+            lambda: apply_local_whisper_multilingual_patch(_voice_module),
+        )
+    except Exception as exc:
+        _bootstrap_failure("local_whisper_multilingual_patch_import", exc)
 
     try:
         from .tts_sanitizer import apply_tts_sanitizer
