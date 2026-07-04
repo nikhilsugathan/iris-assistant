@@ -1,6 +1,12 @@
 name: Patch Main Multilingual Voice Cues
 
 on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/patch-main-voice-cues.yml
+      - main.py
   push:
     branches:
       - fix/runtime-security-voice-stability
@@ -16,13 +22,13 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - name: Check out exact branch
+      - name: Check out exact head branch
         uses: actions/checkout@v4
         with:
           ref: fix/runtime-security-voice-stability
           fetch-depth: 0
 
-      - name: Apply exact two-hunk voice cue patch
+      - name: Apply exact voice cue patch when needed
         shell: bash
         run: |
           python - <<'PY'
@@ -30,6 +36,9 @@ jobs:
 
           path = Path("main.py")
           text = path.read_text(encoding="utf-8")
+          if "def _is_recognized_multilingual_cue" in text:
+              print("main.py already contains multilingual cue gate")
+              raise SystemExit(0)
 
           interrupt_anchor = '''def _is_interrupt_phrase(text: str) -> bool:\n    normalized = _normalize_command_text(text)\n    return normalized in {"stop", "wait", "hold on", "hold", "quiet"}\n'''
           interrupt_replacement = interrupt_anchor + '''\ndef _is_recognized_multilingual_cue(text: str) -> bool:\n    try:\n        from core.multilingual_patches import detect_language_style\n\n        return detect_language_style(text or "") is not None\n    except Exception:\n        return False\n'''
@@ -54,11 +63,15 @@ jobs:
           path.write_text(text, encoding="utf-8")
           PY
 
-      - name: Validate exact patch
+      - name: Validate patched main
         shell: bash
         run: |
           git diff --check
-          test "$(git diff --name-only)" = "main.py"
+          changed="$(git diff --name-only)"
+          if [ -n "$changed" ] && [ "$changed" != "main.py" ]; then
+            echo "Unexpected changed files: $changed"
+            exit 1
+          fi
           python -m compileall -q main.py
           python - <<'PY'
           import main
@@ -75,9 +88,13 @@ jobs:
           PY
           git diff -- main.py
 
-      - name: Commit surgical main patch
+      - name: Commit surgical main patch when changed
         shell: bash
         run: |
+          if git diff --quiet -- main.py; then
+            echo "main.py already patched; nothing to commit"
+            exit 0
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add main.py
