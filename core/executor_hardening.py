@@ -7,6 +7,7 @@ import platform
 import re
 import subprocess
 import webbrowser
+from urllib.parse import quote_plus
 
 
 _APP_PROTOCOLS = {
@@ -157,6 +158,37 @@ def apply_executor_hardening(executor_module) -> None:
         except Exception as exc:
             return f"Couldn't open {app or target}: {exc}"
 
+    def _play_music_hardened(self, plan: dict) -> str:
+        raw_query = str(plan.get("search_query") or plan.get("description") or "music").strip()
+        query = raw_query.removeprefix("play ").strip() or "popular songs"
+        music_platform = str(plan.get("platform") or "youtube").strip().lower()
+        encoded = quote_plus(query)
+
+        if music_platform == "spotify":
+            spotify_uri = f"spotify:search:{encoded}"
+            if platform.system() == "Windows":
+                try:
+                    os.startfile(spotify_uri)
+                    self._log(f"PLAY SPOTIFY (app): {query}")
+                    return "Done."
+                except OSError:
+                    pass
+            webbrowser.open(f"https://open.spotify.com/search/{encoded}")
+            self._log(f"PLAY SPOTIFY (web): {query}")
+            return "Done."
+
+        webbrowser.open(f"https://www.youtube.com/results?search_query={encoded}")
+        self._log(f"PLAY YOUTUBE: {query}")
+        return "Done."
+
+    def _search_web_hardened(self, plan: dict) -> str:
+        query = str(plan.get("search_query") or "").strip()
+        if not query:
+            return "No search query provided."
+        webbrowser.open(f"https://www.google.com/search?q={quote_plus(query)}")
+        self._log(f"SEARCHED: {query}")
+        return "Done."
+
     def _handle_permission_response_hardened(self, user_input: str) -> str:
         intent = _confirmation_intent(user_input)
 
@@ -219,7 +251,10 @@ def apply_executor_hardening(executor_module) -> None:
         return None
 
     executor_cls._open_app = _open_app_hardened
+    executor_cls._play_music = _play_music_hardened
+    executor_cls._search_web = _search_web_hardened
     executor_cls.handle_permission_response = _handle_permission_response_hardened
     executor_cls.handle_followup_response = _handle_followup_response_hardened
     executor_cls._iris_executor_open_app_hardening_applied = True
     executor_cls._iris_executor_confirmation_hardening_applied = True
+    executor_cls._iris_executor_shell_free_media_applied = True
