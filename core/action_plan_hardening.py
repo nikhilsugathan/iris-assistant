@@ -186,7 +186,9 @@ def apply_action_plan_hardening(executor_module, improv_module) -> None:
         if not valid:
             self._log(f"IMPROV PLAN REJECTED: {reason}")
             self.pending_plans = None
-            return "I rejected that recovery plan because it did not match the allowed action schema."
+            self.pending_action = None
+            self.pending_verdict = None
+            return "Security refusal. I rejected that recovery plan because it did not match the allowed action schema."
 
         verdict, security_msg = self.security.assess(
             selected,
