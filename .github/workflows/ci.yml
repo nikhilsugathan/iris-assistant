@@ -60,6 +60,10 @@ jobs:
         shell: powershell
         run: python -m pytest tests/test_language_detection_collisions.py -q
 
+      - name: Main voice cue regressions
+        shell: powershell
+        run: python -m pytest tests/test_main_voice_cues.py -q
+
       - name: Copilot state regressions
         shell: powershell
         run: python -m pytest tests/test_copilot_state.py -q
@@ -91,6 +95,10 @@ jobs:
       - name: Command verification regressions
         shell: powershell
         run: python -m pytest tests/test_executor_verification.py -q
+
+      - name: Evolution capability honesty regressions
+        shell: powershell
+        run: python -m pytest tests/test_evolution_contract.py -q
 
       - name: Concurrency regressions
         shell: powershell
