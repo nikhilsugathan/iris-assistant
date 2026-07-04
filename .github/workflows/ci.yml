@@ -64,6 +64,10 @@ jobs:
         shell: powershell
         run: python -m pytest tests/test_main_voice_cues.py -q
 
+      - name: Stable voice race regressions
+        shell: powershell
+        run: python -m pytest tests/test_voice_stable_override.py -q
+
       - name: Copilot state regressions
         shell: powershell
         run: python -m pytest tests/test_copilot_state.py -q
