@@ -9,7 +9,10 @@ def _executor():
 
     executor = ActionExecutor.__new__(ActionExecutor)
     executor.follow_up = None
+    executor.pending_action = None
+    executor.pending_verdict = None
     executor._log = MagicMock()
+    executor._execute_pending = MagicMock(return_value="executed")
     return executor
 
 
@@ -76,8 +79,75 @@ def test_open_app_followup_uses_hardened_launcher():
     assert kwargs.get("shell") is not True
 
 
+def test_negative_permission_response_wins_over_affirmative_word():
+    from core.security import WARNING
+
+    executor = _executor()
+    executor.pending_action = {"action_type": "run_command", "command": "example"}
+    executor.pending_verdict = WARNING
+
+    result = executor.handle_permission_response("no, that is not correct")
+
+    assert result == "Cancelled."
+    executor._execute_pending.assert_not_called()
+    assert executor.pending_action is None
+    assert executor.pending_verdict is None
+
+
+def test_substring_is_not_treated_as_confirmation():
+    from core.security import WARNING
+
+    executor = _executor()
+    executor.pending_action = {"action_type": "run_command", "command": "example"}
+    executor.pending_verdict = WARNING
+
+    result = executor.handle_permission_response("broken")
+
+    assert result == "Go ahead, or cancel?"
+    executor._execute_pending.assert_not_called()
+    assert executor.pending_action is not None
+
+
+def test_explicit_affirmative_confirmation_executes_pending_action():
+    from core.security import WARNING
+
+    executor = _executor()
+    executor.pending_action = {"action_type": "run_command", "command": "example"}
+    executor.pending_verdict = WARNING
+
+    result = executor.handle_permission_response("please go ahead")
+
+    assert result == "executed"
+    executor._execute_pending.assert_called_once()
+
+
+def test_negative_override_phrase_does_not_override():
+    from core.security import WARNING
+
+    executor = _executor()
+    executor.pending_action = {"action_type": "run_command", "command": "example"}
+    executor.pending_verdict = WARNING
+
+    result = executor.handle_permission_response("don't override")
+
+    assert result == "Cancelled."
+    executor._execute_pending.assert_not_called()
+
+
+def test_ambiguous_followup_keeps_followup_pending():
+    executor = _executor()
+    followup = {"action": "open_app", "app": "calculator"}
+    executor.follow_up = followup
+
+    result = executor.handle_followup_response("maybe later")
+
+    assert result == "Yes, or no?"
+    assert executor.follow_up == followup
+
+
 def test_executor_hardening_is_loaded():
     import core  # noqa: F401
     from core.executor import ActionExecutor
 
     assert getattr(ActionExecutor, "_iris_executor_open_app_hardening_applied", False)
+    assert getattr(ActionExecutor, "_iris_executor_confirmation_hardening_applied", False)
