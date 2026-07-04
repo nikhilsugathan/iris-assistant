@@ -60,6 +60,14 @@ jobs:
         shell: powershell
         run: python -m pytest tests/test_language_detection_collisions.py -q
 
+      - name: Copilot state regressions
+        shell: powershell
+        run: python -m pytest tests/test_copilot_state.py -q
+
+      - name: External data grounding regressions
+        shell: powershell
+        run: python -m pytest tests/test_external_data_paths.py -q
+
       - name: Memory durability regressions
         shell: powershell
         run: python -m pytest tests/test_memory_hardening.py -q
