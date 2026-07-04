@@ -1,9 +1,8 @@
 """First-cue language priority for mixed-language input.
 
-This keeps multilingual conversations predictable:
-- Pick the first language cue in the user's text, not the first language in our rule list.
-- Handle common typos such as "bonjor".
-- Let short mixed-language greetings use the local fast path instead of an LLM call.
+Distinctive language cues win by their position in the user's text. Ambiguous
+words that are also common English are treated as weak cues and cannot switch a
+conversation by themselves.
 """
 
 from __future__ import annotations
@@ -13,14 +12,14 @@ from typing import Optional
 
 _MALAYALAM_SCRIPT_RE = re.compile(r"[\u0D00-\u0D7F]")
 
-_PRIORITY_RULES = [
+_STRONG_RULES = [
     (
         "spanish",
         re.compile(
             r"\b("
             r"hola|amor|mi\s+amor|papi|gracias|buenos|buenas|dime|necesito|quiero|puedes|"
-            r"como|cómo|que|qué|por\s+favor|vale|sí|si|español|espanol|spanish|"
-            r"el|la|los|las|un|una|banco|banko|bebé|bebe|bebes|bebis|estas|estás"
+            r"como|cómo|que|qué|por\s+favor|vale|español|espanol|spanish|"
+            r"banco|banko|bebé|bebe|bebes|bebis|estas|estás"
             r")\b",
             re.IGNORECASE,
         ),
@@ -29,19 +28,28 @@ _PRIORITY_RULES = [
     ),
     (
         "german",
-        re.compile(r"\b(hallo|guten|morgen|abend|danke|bitte|kannst|können|was|wie|warum|ich|du|aufgabe|weiter|ja|nein|deutsch|german)\b", re.IGNORECASE),
+        re.compile(
+            r"\b(hallo|guten|morgen|abend|danke|bitte|kannst|können|wie|warum|ich|du|aufgabe|weiter|ja|nein|deutsch|german|was\s+ist)\b",
+            re.IGNORECASE,
+        ),
         "German",
         "de-DE-KatjaNeural",
     ),
     (
         "french",
-        re.compile(r"\b(bonjour|bonjor|salut|merci|s'il|sil|vous|plaît|plait|peux|pouvez|quoi|comment|pourquoi|oui|non|bonsoir|français|francais|french)\b", re.IGNORECASE),
+        re.compile(
+            r"\b(bonjour|bonjor|salut|merci|s'il|sil|vous|plaît|plait|peux|pouvez|quoi|pourquoi|oui|non|bonsoir|français|francais|french|comment\s+(?:ça|ca))\b",
+            re.IGNORECASE,
+        ),
         "French",
         "fr-FR-DeniseNeural",
     ),
     (
         "italian",
-        re.compile(r"\b(ciao|buongiorno|grazie|prego|puoi|cosa|come|perché|perche|sì|si|italiano|italian)\b", re.IGNORECASE),
+        re.compile(
+            r"\b(ciao|buongiorno|grazie|prego|puoi|cosa|perché|perche|italiano|italian|come\s+stai)\b",
+            re.IGNORECASE,
+        ),
         "Italian",
         "it-IT-ElsaNeural",
     ),
@@ -59,24 +67,79 @@ _PRIORITY_RULES = [
     ),
 ]
 
+_WEAK_RULES = [
+    (
+        "spanish",
+        re.compile(r"\b(el|la|los|las|un|una|sí|si)\b", re.IGNORECASE),
+        "Spanish",
+        "es-ES-ElviraNeural",
+    ),
+    (
+        "german",
+        re.compile(r"\b(was)\b", re.IGNORECASE),
+        "German",
+        "de-DE-KatjaNeural",
+    ),
+    (
+        "french",
+        re.compile(r"\b(comment)\b", re.IGNORECASE),
+        "French",
+        "fr-FR-DeniseNeural",
+    ),
+    (
+        "italian",
+        re.compile(r"\b(come|sì|si)\b", re.IGNORECASE),
+        "Italian",
+        "it-IT-ElsaNeural",
+    ),
+]
+
+_ENGLISH_COLLISION_CUES = {"was", "comment", "come", "si", "sí", "sì"}
+
+
+def _first_match(rules, sample: str):
+    best = None
+    for key, pattern, label, voice in rules:
+        match = pattern.search(sample)
+        if not match:
+            continue
+        candidate = (match.start(), -(match.end() - match.start()), key, label, voice, match.group(0))
+        if best is None or candidate < best:
+            best = candidate
+    return best
+
 
 def detect_first_language_style(text: str) -> Optional[tuple[str, str, str]]:
     sample = text or ""
     if _MALAYALAM_SCRIPT_RE.search(sample):
         return "malayalam", "Malayalam", "ml-IN-SobhanaNeural"
 
-    best = None
-    for key, pattern, label, voice in _PRIORITY_RULES:
-        match = pattern.search(sample)
-        if not match:
-            continue
-        candidate = (match.start(), -(match.end() - match.start()), key, label, voice)
-        if best is None or candidate < best:
-            best = candidate
-    if best is None:
+    strong = _first_match(_STRONG_RULES, sample)
+    if strong is not None:
+        _start, _neg_len, key, label, voice, _cue = strong
+        return key, label, voice
+
+    weak_matches = []
+    for key, pattern, label, voice in _WEAK_RULES:
+        matches = list(pattern.finditer(sample))
+        for match in matches:
+            weak_matches.append((match.start(), key, label, voice, match.group(0).lower()))
+
+    if not weak_matches:
         return None
-    _start, _neg_len, key, label, voice = best
-    return key, label, voice
+
+    languages = {item[1] for item in weak_matches}
+    if len(languages) != 1:
+        return None
+
+    weak_matches.sort(key=lambda item: item[0])
+    _start, key, label, voice, cue = weak_matches[0]
+    word_count = len(re.findall(r"\b\w+\b", sample, flags=re.UNICODE))
+    if len(weak_matches) >= 2:
+        return key, label, voice
+    if word_count <= 2 and cue not in _ENGLISH_COLLISION_CUES:
+        return key, label, voice
+    return None
 
 
 def _style_key_for_text(text: str) -> str:
