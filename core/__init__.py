@@ -41,6 +41,7 @@ except Exception as exc:
 
 try:
     from . import brain as _brain_module
+    from . import executor as _executor_module
     from . import memory as _memory_module
     from . import security as _security_module
     from . import voice as _voice_module
@@ -55,6 +56,13 @@ else:
         _run_stage("runtime_voice", lambda: _runtime_patches.apply_patch("core.voice", _voice_module))
     except Exception as exc:
         _bootstrap_failure("runtime_patches_import", exc)
+
+    try:
+        from .executor_hardening import apply_executor_hardening
+
+        _run_stage("executor_hardening", lambda: apply_executor_hardening(_executor_module))
+    except Exception as exc:
+        _bootstrap_failure("executor_hardening_import", exc)
 
     try:
         from .memory_hardening import apply_memory_hardening
