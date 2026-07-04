@@ -1,8 +1,8 @@
-"""Bridge detected user language into sticky TTS voice routing.
+"""Bridge detected user language into response-style and optional TTS routing.
 
-Only user input may establish persistent conversation language. Generated text may
-still be pronounced with a matching voice by the multilingual TTS layer, but it
-must never change the sticky conversation state.
+User input owns the persistent language style. By default this state changes how
+IRIS replies, not which persona voice speaks. Per-language TTS voices are an
+explicit opt-in and must never override the configured Iris/Aletheia voice lock.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ class _LanguageVoiceState:
             return False
         key, _label, voice_name = detected
         if key == "malayalam" and not _env_bool("IRIS_MALAYALAM_NATIVE_TTS", False):
-            return False
+            voice_name = None
         with self._lock:
             changed = key != self._style_key or voice_name != self._voice_name
             self._style_key = key
@@ -69,6 +69,14 @@ def _env_bool(name: str, default: bool = True) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _language_voice_switch_enabled() -> bool:
+    if _env_bool("IRIS_LOCK_TTS_VOICE", True):
+        return False
+    if not _env_bool("IRIS_MULTILINGUAL_TTS", False):
+        return False
+    return _env_bool("IRIS_STICKY_LANGUAGE_TTS", False)
+
+
 def _requests_english(text: str) -> bool:
     return bool(_ENGLISH_SWITCH_RE.search(text or ""))
 
@@ -85,35 +93,37 @@ def _delete_cached_files(cache: dict) -> None:
     cache.clear()
 
 
-def _prepare_voice_instance(self, active_key: Optional[str], active_voice: Optional[str], revision: int) -> None:
+def _prepare_voice_instance(
+    self,
+    active_key: Optional[str],
+    routed_voice: Optional[str],
+    revision: int,
+) -> None:
     previous_revision = getattr(self, "_iris_language_voice_revision", -1)
     self._iris_language_voice_revision = revision
+    self._iris_forced_input_language_key = active_key
+    self._iris_language_voice_key = active_key
 
-    if active_voice:
+    if routed_voice:
+        # Text-only caches cannot distinguish voices. Flush them only when a real
+        # persona-to-language voice route is active; locked persona mode can reuse
+        # all normal Iris/Aletheia cache entries safely.
         with self._static_audio_cache_lock:
             _delete_cached_files(self._static_audio_cache)
-
         if previous_revision != revision:
             with self._tts_prefetch_lock:
                 _delete_cached_files(self._tts_prefetch_cache)
 
-        self._iris_forced_input_language_key = active_key
-        self._iris_forced_input_voice_name = active_voice
-        self._iris_language_voice_key = active_key
-        self._iris_language_voice_name = active_voice
+        self._iris_forced_input_voice_name = routed_voice
+        self._iris_language_voice_name = routed_voice
         self._iris_disable_tts_prefetch = True
-    else:
-        if previous_revision != revision:
-            with self._tts_prefetch_lock:
-                _delete_cached_files(self._tts_prefetch_cache)
-            with self._static_audio_cache_lock:
-                _delete_cached_files(self._static_audio_cache)
+        return
 
-        self._iris_forced_input_language_key = None
-        self._iris_forced_input_voice_name = None
-        self._iris_language_voice_key = None
-        self._iris_language_voice_name = None
-        self._iris_disable_tts_prefetch = False
+    # Locked persona voice: preserve normal cache/prefetch behavior. A language
+    # revision is style metadata only and must not invalidate current-voice audio.
+    self._iris_forced_input_voice_name = None
+    self._iris_language_voice_name = None
+    self._iris_disable_tts_prefetch = False
 
 
 def get_active_language_voice() -> Optional[str]:
@@ -149,7 +159,13 @@ def apply_language_voice_bridge(brain_module, voice_module, multilingual_module)
             _capture_user_language(self, text, source="user_input_fast_path")
             return original_rewrite_generic_response(self, text)
 
-        def _generation_settings_language_bridge(self, query_type: str, council_packet=None, voice_mode: bool = False, user_input: str = ""):
+        def _generation_settings_language_bridge(
+            self,
+            query_type: str,
+            council_packet=None,
+            voice_mode: bool = False,
+            user_input: str = "",
+        ):
             _capture_user_language(self, user_input, source="user_input_generation")
             return original_generation_settings(
                 self,
@@ -180,8 +196,9 @@ def apply_language_voice_bridge(brain_module, voice_module, multilingual_module)
             self._iris_disable_tts_prefetch = False
 
         def _speak_language_bridge(self, text, interrupt=True, on_play_start=None):
-            active_key, active_voice, _source, revision = _STATE.snapshot()
-            _prepare_voice_instance(self, active_key, active_voice, revision)
+            active_key, candidate_voice, _source, revision = _STATE.snapshot()
+            routed_voice = candidate_voice if _language_voice_switch_enabled() else None
+            _prepare_voice_instance(self, active_key, routed_voice, revision)
             return original_speak(self, text, interrupt=interrupt, on_play_start=on_play_start)
 
         def _start_prefetch_language_bridge(self, text: str) -> None:
@@ -195,15 +212,27 @@ def apply_language_voice_bridge(brain_module, voice_module, multilingual_module)
             return original_try_prefetch_next(self, current_stop_event)
 
         def _run_edge_tts_language_bridge(self, text, voice, rate, out_file, *args, **kwargs):
-            active_key, active_voice, _source, revision = _STATE.snapshot()
-            _prepare_voice_instance(self, active_key, active_voice, revision)
-            if active_voice and _env_bool("IRIS_STICKY_LANGUAGE_TTS", True):
-                voice = active_voice
+            active_key, candidate_voice, _source, revision = _STATE.snapshot()
+            routed_voice = candidate_voice if _language_voice_switch_enabled() else None
+            _prepare_voice_instance(self, active_key, routed_voice, revision)
+            if routed_voice:
+                voice = routed_voice
                 rate = os.getenv("IRIS_MULTILINGUAL_TTS_RATE", "+0%")
                 try:
                     self._debug_trace(
                         "tts_language_voice",
-                        mode="input_authoritative",
+                        mode="input_authoritative_switch",
+                        language=active_key or "",
+                        voice=voice,
+                        text=text,
+                    )
+                except Exception:
+                    pass
+            else:
+                try:
+                    self._debug_trace(
+                        "tts_language_voice",
+                        mode="persona_voice_locked",
                         language=active_key or "",
                         voice=voice,
                         text=text,
@@ -214,10 +243,10 @@ def apply_language_voice_bridge(brain_module, voice_module, multilingual_module)
 
         def _tts_status_language_bridge(self) -> str:
             base = original_tts_status(self)
-            active_key, active_voice, source, _revision = _STATE.snapshot()
-            active = active_voice or "default"
+            active_key, candidate_voice, source, _revision = _STATE.snapshot()
             language = active_key or "english/default"
-            return f"{base} / active_language={language} / active_input_voice={active} / source={source}"
+            route = candidate_voice if _language_voice_switch_enabled() and candidate_voice else "current persona voice"
+            return f"{base} / active_language={language} / tts_route={route} / source={source}"
 
         voice_cls.__init__ = _init_language_bridge
         voice_cls.speak = _speak_language_bridge
