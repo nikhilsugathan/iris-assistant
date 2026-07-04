@@ -89,7 +89,7 @@ _STYLE_THANKS = {
     "spanish": ["De nada, mi amor", "Con gusto", "Para eso estoy", "Naturalmente"],
     "german": ["Bitte", "Gern geschehen", "Natürlich", "Dafür bin ich da"],
     "french": ["Avec plaisir", "De rien", "Naturellement", "Je t'en prie"],
-    "italian": ["Prego", "Con piacere", "Naturalmente", "Sono qui per questo"],
+    "italian": ["Prego", "Con piacere", "Naturalmente", "Sono qui pour questo"],
     "indic": ["Koi baat nahi", "Hamesha", "Bas, itna sa kaam", "Khushi se"],
     "malayalam": ["Parayanda", "Eppozhum", "Santhosham", "Ithokke simple alle"],
 }
@@ -126,7 +126,7 @@ _MALAYALAM_NATIVE_BOOT = ["ഇന്ന് എന്താണ് പ്ലാൻ
 
 
 def _malayalam_native_enabled() -> bool:
-    return _env_bool("IRIS_MALAYALAM_NATIVE_TTS", True)
+    return _env_bool("IRIS_MALAYALAM_NATIVE_TTS", False)
 
 
 def _normalized_short(text: str) -> str:
