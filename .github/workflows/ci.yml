@@ -9,8 +9,18 @@ on:
 jobs:
   smoke:
     runs-on: windows-latest
+    timeout-minutes: 20
     env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: "utf-8"
+      SDL_VIDEODRIVER: "dummy"
+      SDL_AUDIODRIVER: "dummy"
       IRIS_DISABLE_VOICE_IO: "true"
+      STT_LANGUAGE: "auto"
+      IRIS_STICKY_LANGUAGE_TTS: "true"
+      IRIS_MULTILINGUAL_TTS: "true"
+      IRIS_LOCK_TTS_VOICE: "false"
+      IRIS_MALAYALAM_NATIVE_TTS: "false"
 
     steps:
       - name: Check out repository
@@ -33,6 +43,26 @@ jobs:
           python -m compileall -q .
           python -c "import config; import core.brain; import core.executor; import main; print('IMPORTS_OK')"
           python -c "from core.voice import Voice; v=Voice(text_mode=True); assert v.io_disabled, 'Voice IO must be disabled in CI'; print('VOICE_IO_DISABLED_OK')"
+
+      - name: Runtime patch regressions
+        shell: powershell
+        run: python -m pytest tests/test_runtime_patches.py -q
+
+      - name: Sticky language voice regressions
+        shell: powershell
+        run: python -m pytest tests/test_language_voice_state.py -q
+
+      - name: Memory durability regressions
+        shell: powershell
+        run: python -m pytest tests/test_memory_hardening.py -q
+
+      - name: Concurrency regressions
+        shell: powershell
+        run: python -m pytest tests/test_concurrency_smoke.py -q
+
+      - name: Hyperscale architecture regressions
+        shell: powershell
+        run: python -m pytest tests/test_hyperscale_sweep.py -q
 
       - name: Run lightweight smoke scripts
         shell: powershell
