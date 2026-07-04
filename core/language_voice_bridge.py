@@ -1,9 +1,8 @@
-"""Bridge the user's detected input language into TTS voice routing.
+"""Bridge detected user language into sticky TTS voice routing.
 
-The user input is authoritative for the next spoken response. A generated reply
-must not switch voices merely because its first sentence contains a cue from a
-different language. The selected language remains sticky until the user clearly
-selects another supported language or explicitly switches back to English.
+Only user input may establish persistent conversation language. Generated text may
+still be pronounced with a matching voice by the multilingual TTS layer, but it
+must never change the sticky conversation state.
 """
 
 from __future__ import annotations
@@ -91,10 +90,6 @@ def _prepare_voice_instance(self, active_key: Optional[str], active_voice: Optio
     self._iris_language_voice_revision = revision
 
     if active_voice:
-        # Static cache entries are generated at boot with the default Iris voice
-        # and are keyed only by text. Never allow them to serve a foreign-language
-        # turn. Clear on every non-English utterance so an in-flight boot-prime task
-        # cannot repopulate an English file and reintroduce the wrong accent.
         with self._static_audio_cache_lock:
             _delete_cached_files(self._static_audio_cache)
 
@@ -139,16 +134,23 @@ def apply_language_voice_bridge(brain_module, voice_module, multilingual_module)
 
     if brain_cls is not None and not getattr(brain_cls, "_iris_language_voice_bridge_applied", False):
         original_generation_settings = brain_cls._generation_settings
+        original_rewrite_generic_response = brain_cls._rewrite_generic_response
 
-        def _generation_settings_language_bridge(self, query_type: str, council_packet=None, voice_mode: bool = False, user_input: str = ""):
+        def _capture_user_language(self, user_input: str, source: str) -> None:
             detected = multilingual_module.detect_language_style(user_input)
             if detected:
-                _STATE.set_detected(detected, source="user_input")
+                _STATE.set_detected(detected, source=source)
                 self._iris_active_language_key = detected[0]
             elif _requests_english(user_input):
                 _STATE.clear(source="explicit_english")
                 self._iris_active_language_key = None
 
+        def _rewrite_generic_response_language_bridge(self, text: str):
+            _capture_user_language(self, text, source="user_input_fast_path")
+            return original_rewrite_generic_response(self, text)
+
+        def _generation_settings_language_bridge(self, query_type: str, council_packet=None, voice_mode: bool = False, user_input: str = ""):
+            _capture_user_language(self, user_input, source="user_input_generation")
             return original_generation_settings(
                 self,
                 query_type,
@@ -157,6 +159,7 @@ def apply_language_voice_bridge(brain_module, voice_module, multilingual_module)
                 user_input=user_input,
             )
 
+        brain_cls._rewrite_generic_response = _rewrite_generic_response_language_bridge
         brain_cls._generation_settings = _generation_settings_language_bridge
         brain_cls._iris_language_voice_bridge_applied = True
 
@@ -193,15 +196,6 @@ def apply_language_voice_bridge(brain_module, voice_module, multilingual_module)
 
         def _run_edge_tts_language_bridge(self, text, voice, rate, out_file, *args, **kwargs):
             active_key, active_voice, _source, revision = _STATE.snapshot()
-
-            # Fast/local replies can bypass Brain._generation_settings. Only when
-            # there is no user-selected active language may the response text seed
-            # a language voice as a fallback.
-            if not active_voice:
-                detected = multilingual_module.detect_language_style(text)
-                if detected and _STATE.set_detected(detected, source="response_fallback"):
-                    active_key, active_voice, _source, revision = _STATE.snapshot()
-
             _prepare_voice_instance(self, active_key, active_voice, revision)
             if active_voice and _env_bool("IRIS_STICKY_LANGUAGE_TTS", True):
                 voice = active_voice
@@ -231,4 +225,5 @@ def apply_language_voice_bridge(brain_module, voice_module, multilingual_module)
         voice_cls._try_prefetch_next = _try_prefetch_next_language_bridge
         voice_cls._run_edge_tts_async = _run_edge_tts_language_bridge
         voice_cls.tts_status = _tts_status_language_bridge
+        voice_cls._iris_multilingual_input_owner_applied = True
         voice_cls._iris_language_voice_bridge_applied = True
