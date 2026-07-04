@@ -65,6 +65,16 @@ else:
         _bootstrap_failure("executor_hardening_import", exc)
 
     try:
+        from .executor_verification_patch import apply_executor_verification_patch
+
+        _run_stage(
+            "executor_verification_patch",
+            lambda: apply_executor_verification_patch(_executor_module),
+        )
+    except Exception as exc:
+        _bootstrap_failure("executor_verification_patch_import", exc)
+
+    try:
         from .memory_hardening import apply_memory_hardening
 
         _run_stage("memory_hardening", lambda: apply_memory_hardening(_memory_module))
