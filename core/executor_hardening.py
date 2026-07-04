@@ -1,9 +1,10 @@
-"""Executor hardening for normal-risk application launch actions."""
+"""Executor hardening for normal-risk launches and permission parsing."""
 
 from __future__ import annotations
 
 import os
 import platform
+import re
 import subprocess
 import webbrowser
 
@@ -34,6 +35,73 @@ _APP_MAP = {
     "paint": "mspaint",
     "task manager": "taskmgr",
 }
+
+_NEGATIVE_CONFIRMATIONS = {
+    "no",
+    "nope",
+    "cancel",
+    "stop",
+    "do not",
+    "don t",
+    "dont",
+    "abort",
+    "wait",
+    "hold on",
+    "negative",
+    "never mind",
+    "nevermind",
+    "skip",
+    "not yet",
+    "not correct",
+    "that s not correct",
+    "that is not correct",
+    "not sure",
+}
+
+_AFFIRMATIVE_CONFIRMATIONS = {
+    "yes",
+    "yeah",
+    "yep",
+    "yup",
+    "sure",
+    "go ahead",
+    "do it",
+    "proceed",
+    "confirm",
+    "ok",
+    "okay",
+    "affirmative",
+    "correct",
+    "go for it",
+    "run it",
+    "execute",
+    "do that",
+    "sounds good",
+}
+
+
+def _normalize_confirmation(text: str) -> str:
+    normalized = str(text or "").lower().replace("’", "'")
+    normalized = re.sub(r"[^a-z0-9']+", " ", normalized)
+    normalized = normalized.replace("'", " ")
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _contains_phrase(normalized: str, phrase: str) -> bool:
+    return f" {phrase} " in f" {normalized} "
+
+
+def _confirmation_intent(text: str) -> str | None:
+    normalized = _normalize_confirmation(text)
+    if not normalized:
+        return None
+    if any(_contains_phrase(normalized, phrase) for phrase in _NEGATIVE_CONFIRMATIONS):
+        return "no"
+    if _contains_phrase(normalized, "override"):
+        return "override"
+    if any(_contains_phrase(normalized, phrase) for phrase in _AFFIRMATIVE_CONFIRMATIONS):
+        return "yes"
+    return None
 
 
 def _launch_direct(target: str) -> None:
@@ -89,32 +157,69 @@ def apply_executor_hardening(executor_module) -> None:
         except Exception as exc:
             return f"Couldn't open {app or target}: {exc}"
 
+    def _handle_permission_response_hardened(self, user_input: str) -> str:
+        intent = _confirmation_intent(user_input)
+
+        if intent == "no":
+            self.pending_action = None
+            self.pending_verdict = None
+            return "Cancelled."
+
+        if intent == "override":
+            if self.pending_verdict == executor_module.BLOCKED:
+                pending = self.pending_action or {}
+                self._log(f"OVERRIDE DENIED (BLOCKED): {pending.get('command', '?')}")
+                self.pending_action = None
+                self.pending_verdict = None
+                return (
+                    "That action is hard-blocked for security reasons. "
+                    "Override is not available for blocked commands. Cancelled."
+                )
+            if self.pending_verdict not in {executor_module.WARNING, executor_module.NEED_ADMIN}:
+                return "There is no warning or admin gate to override. Say go ahead, or cancel."
+            pending = self.pending_action or {}
+            command = pending.get("command") or pending.get("description", "?")
+            self._log(f"ADMIN OVERRIDE [{self.pending_verdict}]: {command}")
+            return self._execute_pending()
+
+        if intent == "yes":
+            if self.pending_verdict == executor_module.BLOCKED:
+                return "That action is blocked. Say 'cancel' to dismiss."
+            return self._execute_pending()
+
+        return "Go ahead, or cancel?"
+
     def _handle_followup_response_hardened(self, user_input: str):
-        text = (user_input or "").lower().strip()
         followup = self.follow_up
-        self.follow_up = None
         if not followup:
             return None
 
-        if any(word in text for word in executor_module.YES_WORDS):
-            action = followup.get("action")
-            if action == "open_file":
-                path = followup.get("path", "")
-                try:
-                    if platform.system() == "Windows":
-                        os.startfile(path)
-                    else:
-                        subprocess.Popen(["xdg-open", path])
-                    return f"Opened '{os.path.basename(path)}'."
-                except Exception as exc:
-                    return f"Couldn't open it: {exc}"
-            if action == "open_app":
-                app = str(followup.get("app") or "").strip()
-                return _open_app_hardened(self, {"action_type": "open_app", "app_name": app})
-        elif any(word in text for word in executor_module.NO_WORDS):
+        intent = _confirmation_intent(user_input)
+        if intent == "no":
+            self.follow_up = None
             return "No problem."
+        if intent != "yes":
+            return "Yes, or no?"
+
+        self.follow_up = None
+        action = followup.get("action")
+        if action == "open_file":
+            path = followup.get("path", "")
+            try:
+                if platform.system() == "Windows":
+                    os.startfile(path)
+                else:
+                    subprocess.Popen(["xdg-open", path])
+                return f"Opened '{os.path.basename(path)}'."
+            except Exception as exc:
+                return f"Couldn't open it: {exc}"
+        if action == "open_app":
+            app = str(followup.get("app") or "").strip()
+            return _open_app_hardened(self, {"action_type": "open_app", "app_name": app})
         return None
 
     executor_cls._open_app = _open_app_hardened
+    executor_cls.handle_permission_response = _handle_permission_response_hardened
     executor_cls.handle_followup_response = _handle_followup_response_hardened
     executor_cls._iris_executor_open_app_hardening_applied = True
+    executor_cls._iris_executor_confirmation_hardening_applied = True
