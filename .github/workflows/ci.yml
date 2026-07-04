@@ -17,9 +17,9 @@ jobs:
       SDL_AUDIODRIVER: "dummy"
       IRIS_DISABLE_VOICE_IO: "true"
       STT_LANGUAGE: "auto"
-      IRIS_STICKY_LANGUAGE_TTS: "true"
-      IRIS_MULTILINGUAL_TTS: "true"
-      IRIS_LOCK_TTS_VOICE: "false"
+      IRIS_STICKY_LANGUAGE_TTS: "false"
+      IRIS_MULTILINGUAL_TTS: "false"
+      IRIS_LOCK_TTS_VOICE: "true"
       IRIS_MALAYALAM_NATIVE_TTS: "false"
 
     steps:
@@ -48,11 +48,11 @@ jobs:
         shell: powershell
         run: python -m pytest tests/test_runtime_patches.py -q
 
-      - name: Sticky language voice regressions
+      - name: Persona voice multilingual regressions
         shell: powershell
         run: python -m pytest tests/test_language_voice_state.py -q
 
-      - name: Sticky language ownership regressions
+      - name: Language ownership regressions
         shell: powershell
         run: python -m pytest tests/test_language_state_ownership.py -q
 
@@ -71,6 +71,14 @@ jobs:
       - name: Action plan security regressions
         shell: powershell
         run: python -m pytest tests/test_action_plan_hardening.py -q
+
+      - name: Planner executor contract regressions
+        shell: powershell
+        run: python -m pytest tests/test_tool_registry_alignment.py -q
+
+      - name: Protected path security regressions
+        shell: powershell
+        run: python -m pytest tests/test_security_path_hardening.py -q
 
       - name: Command verification regressions
         shell: powershell
