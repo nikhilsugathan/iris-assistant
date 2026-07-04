@@ -80,6 +80,26 @@ _AFFIRMATIVE_CONFIRMATIONS = {
     "sounds good",
 }
 
+_EXTENSION_ALIASES = {
+    ".txt": {"txt", "text", "plain text"},
+    ".md": {"md", "markdown"},
+    ".pdf": {"pdf"},
+    ".docx": {"docx", "word"},
+    ".xlsx": {"xlsx", "excel"},
+    ".csv": {"csv"},
+    ".json": {"json"},
+    ".xml": {"xml"},
+    ".yaml": {"yaml"},
+    ".yml": {"yml"},
+    ".py": {"py", "python"},
+    ".js": {"js", "javascript"},
+    ".ts": {"ts", "typescript"},
+    ".html": {"html"},
+    ".css": {"css"},
+    ".ps1": {"ps1", "powershell"},
+    ".sh": {"sh", "bash", "shell"},
+}
+
 
 def _normalize_confirmation(text: str) -> str:
     normalized = str(text or "").lower().replace("’", "'")
@@ -103,6 +123,24 @@ def _confirmation_intent(text: str) -> str | None:
     if any(_contains_phrase(normalized, phrase) for phrase in _AFFIRMATIVE_CONFIRMATIONS):
         return "yes"
     return None
+
+
+def _extension_choice(text: str, options) -> str | None:
+    normalized = _normalize_confirmation(text)
+    if not normalized:
+        return None
+
+    offered = {str(option).lower() for option in options}
+    matches = []
+    for option in offered:
+        canonical = option if option.startswith(".") else f".{option}"
+        aliases = set(_EXTENSION_ALIASES.get(canonical, set()))
+        aliases.add(canonical.lstrip("."))
+        if any(normalized == alias or _contains_phrase(normalized, alias) for alias in aliases):
+            matches.append(option)
+
+    unique = sorted(set(matches))
+    return unique[0] if len(unique) == 1 else None
 
 
 def _launch_direct(target: str) -> None:
@@ -250,11 +288,36 @@ def apply_executor_hardening(executor_module) -> None:
             return _open_app_hardened(self, {"action_type": "open_app", "app_name": app})
         return None
 
+    def _handle_clarification_response_hardened(self, user_input: str):
+        if not self.waiting_for_clarification():
+            return None
+
+        intent = _confirmation_intent(user_input)
+        if intent == "no":
+            self.pending_action = None
+            self.pending_verdict = None
+            self._clarification_options = []
+            return "Cancelled."
+
+        selected_ext = _extension_choice(user_input, self._clarification_options)
+        if not selected_ext:
+            options = " or ".join(self._clarification_options)
+            return f"Say {options}, or cancel."
+
+        plan = self.pending_action or {}
+        root, _ = os.path.splitext(str(plan.get("filename") or ""))
+        plan["filename"] = f"{root}{selected_ext}"
+        self.pending_action = plan
+        self._clarification_options = []
+        return self._execute_pending()
+
     executor_cls._open_app = _open_app_hardened
     executor_cls._play_music = _play_music_hardened
     executor_cls._search_web = _search_web_hardened
     executor_cls.handle_permission_response = _handle_permission_response_hardened
     executor_cls.handle_followup_response = _handle_followup_response_hardened
+    executor_cls.handle_clarification_response = _handle_clarification_response_hardened
     executor_cls._iris_executor_open_app_hardening_applied = True
     executor_cls._iris_executor_confirmation_hardening_applied = True
+    executor_cls._iris_executor_clarification_hardening_applied = True
     executor_cls._iris_executor_shell_free_media_applied = True
