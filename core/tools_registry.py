@@ -1,12 +1,11 @@
 """
 IRIS Tool Registry
 ==================
-Central definition of executable tools (actions) with schemas and descriptions.
+Central definition of executable and planned tools.
 
-This is the first step toward a real IRIS-like "skills" framework:
-- a discoverable list of tools
-- consistent schemas for planning + validation
-- a single place to add new capabilities safely
+Only tools in IMPLEMENTED_TOOL_NAMES are exposed to the action planner. Registry
+entries outside that set are capability definitions for future implementations and
+must not be advertised as executable until ActionExecutor has a dispatcher path.
 """
 
 from __future__ import annotations
@@ -26,9 +25,9 @@ class ToolSpec:
 TOOLS: dict[str, ToolSpec] = {
     "manage_package": ToolSpec(
         name="manage_package",
-        description="Install/uninstall/upgrade/list apps via winget.",
-        required_fields=("package_operation",),
-        optional_fields=("package_name", "command"),
+        description="Install, uninstall, or upgrade software with an exact package command.",
+        required_fields=("command",),
+        optional_fields=("package_operation", "package_name"),
         risk="admin",
     ),
     "run_command": ToolSpec(
@@ -61,14 +60,14 @@ TOOLS: dict[str, ToolSpec] = {
     ),
     "open_app": ToolSpec(
         name="open_app",
-        description="Open an app (optionally with a URL).",
+        description="Open an app, optionally with a web URL.",
         required_fields=("app_name",),
         optional_fields=("url",),
         risk="normal",
     ),
     "search_web": ToolSpec(
         name="search_web",
-        description="Search the web (opens browser).",
+        description="Search the web in the default browser.",
         required_fields=("search_query",),
         optional_fields=(),
         risk="normal",
@@ -89,28 +88,28 @@ TOOLS: dict[str, ToolSpec] = {
     ),
     "press_hotkey": ToolSpec(
         name="press_hotkey",
-        description="Send a hotkey/keystroke to the focused app.",
+        description="Send a hotkey or keystroke to the focused app.",
         required_fields=("keys",),
         optional_fields=(),
         risk="warning",
     ),
     "press_hotkey_in_window": ToolSpec(
         name="press_hotkey_in_window",
-        description="Focus a named window and send a hotkey/keystroke.",
+        description="Focus a named window and send a hotkey or keystroke.",
         required_fields=("window_title", "keys"),
         optional_fields=(),
         risk="warning",
     ),
     "click_at": ToolSpec(
         name="click_at",
-        description="Click at screen coordinates (x,y).",
+        description="Click at screen coordinates.",
         required_fields=("x", "y"),
         optional_fields=("button", "clicks"),
         risk="warning",
     ),
     "click_window": ToolSpec(
         name="click_window",
-        description="Click inside a named window (optionally at relative coordinates).",
+        description="Click inside a named window.",
         required_fields=("window_title",),
         optional_fields=("x", "y", "button", "clicks"),
         risk="warning",
@@ -124,7 +123,7 @@ TOOLS: dict[str, ToolSpec] = {
     ),
     "window_state": ToolSpec(
         name="window_state",
-        description="Minimize/maximize/restore/close a named window.",
+        description="Minimize, maximize, restore, or close a named window.",
         required_fields=("window_title", "window_state"),
         optional_fields=(),
         risk="warning",
@@ -180,41 +179,52 @@ TOOLS: dict[str, ToolSpec] = {
     ),
     "unsupported": ToolSpec(
         name="unsupported",
-        description="Use only if truly impossible to determine a safe plan.",
+        description="Use only if a safe supported action cannot be determined.",
         required_fields=(),
         optional_fields=(),
         risk="normal",
     ),
+    "delete_item": ToolSpec(
+        name="delete_item",
+        description="Move a file or folder to the Recycle Bin.",
+        required_fields=("filename",),
+        optional_fields=(),
+        risk="warning",
+    ),
+    "play_music": ToolSpec(
+        name="play_music",
+        description="Play music via YouTube or Spotify.",
+        required_fields=("search_query",),
+        optional_fields=("platform",),
+        risk="normal",
+    ),
 }
 
-# Executor-supported actions that were missing from the registry.
-TOOLS["delete_item"] = ToolSpec(
-    name="delete_item",
-    description="Move a file or folder to the Recycle Bin.",
-    required_fields=("filename",),
-    optional_fields=(),
-    risk="warning",
-)
-TOOLS["play_music"] = ToolSpec(
-    name="play_music",
-    description="Play music via browser (YouTube Music / Spotify).",
-    required_fields=("search_query",),
-    optional_fields=(),
-    risk="normal",
-)
 
-# Explicit tool allowlists - not risk-derived.
-ACTIVE_TOOL_NAMES: frozenset[str] = frozenset({
-    "open_app", "search_web", "play_music",
+# These are the only action types with a real ActionExecutor dispatch path today.
+# Future capability definitions remain in TOOLS but are not planner-visible.
+IMPLEMENTED_TOOL_NAMES: frozenset[str] = frozenset({
+    "manage_package",
+    "run_command",
+    "create_file",
+    "create_folder",
+    "write_to_file",
+    "open_app",
+    "search_web",
     "delete_item",
-    "active_window", "list_windows",
-    "focus_window", "window_state",
-    "focus_mode_start", "focus_mode_status", "focus_mode_stop",
-    "background_status",
+    "play_music",
     "unsupported",
 })
 
-ADMIN_TOOL_NAMES: frozenset[str] = frozenset(TOOLS.keys())
+ACTIVE_TOOL_NAMES: frozenset[str] = frozenset({
+    "open_app",
+    "search_web",
+    "play_music",
+    "delete_item",
+    "unsupported",
+})
+
+ADMIN_TOOL_NAMES: frozenset[str] = IMPLEMENTED_TOOL_NAMES
 
 
 def tool_names() -> list[str]:
@@ -236,17 +246,24 @@ def tool_schema_lines() -> str:
         spec = TOOLS[name]
         req = ", ".join(spec.required_fields) if spec.required_fields else "(none)"
         opt = ", ".join(spec.optional_fields) if spec.optional_fields else "(none)"
-        lines.append(f"- {name}: {spec.description} Required: {req}. Optional: {opt}. Risk: {spec.risk}.")
+        implementation = "implemented" if name in IMPLEMENTED_TOOL_NAMES else "planned"
+        lines.append(
+            f"- {name}: {spec.description} Required: {req}. Optional: {opt}. "
+            f"Risk: {spec.risk}. Status: {implementation}."
+        )
     return "\n".join(lines)
 
 
 def tool_schema_for(names: frozenset[str]) -> str:
-    """Schema lines restricted to a specific allowlist."""
+    """Schema lines restricted to an explicit executable allowlist."""
     lines: list[str] = []
     for name in sorted(names):
+        if name not in IMPLEMENTED_TOOL_NAMES:
+            continue
         spec = TOOLS[name]
         req = ", ".join(spec.required_fields) if spec.required_fields else "(none)"
         opt = ", ".join(spec.optional_fields) if spec.optional_fields else "(none)"
-        lines.append(f"- {name}: {spec.description} Required: {req}. Optional: {opt}. Risk: {spec.risk}.")
+        lines.append(
+            f"- {name}: {spec.description} Required: {req}. Optional: {opt}. Risk: {spec.risk}."
+        )
     return "\n".join(lines)
-
