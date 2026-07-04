@@ -1,4 +1,4 @@
-"""Final sticky-language TTS enforcement."""
+"""Final optional sticky-language TTS enforcement."""
 
 from __future__ import annotations
 
@@ -13,6 +13,14 @@ def _env_bool(name: str, default: bool = True) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _voice_switch_enabled() -> bool:
+    if _env_bool("IRIS_LOCK_TTS_VOICE", True):
+        return False
+    if not _env_bool("IRIS_MULTILINGUAL_TTS", False):
+        return False
+    return _env_bool("IRIS_STICKY_LANGUAGE_TTS", False)
 
 
 def _remove_output(path: str) -> None:
@@ -40,9 +48,12 @@ def apply_language_voice_enforcer(voice_module, multilingual_module) -> None:
     original_run_edge = voice_cls._run_edge_tts_async
 
     def _run_edge_tts_input_authoritative(self, text, voice, rate, out_file, *args, **kwargs):
+        if not _voice_switch_enabled():
+            return original_run_edge(self, text, voice, rate, out_file, *args, **kwargs)
+
         active_voice = get_active_language_voice()
         active_style = get_active_language_style()
-        if not active_voice or not _env_bool("IRIS_STICKY_LANGUAGE_TTS", True):
+        if not active_voice:
             return original_run_edge(self, text, voice, rate, out_file, *args, **kwargs)
 
         previous = getattr(detector_ctx, "suppress_response_detection", False)
@@ -66,7 +77,7 @@ def apply_language_voice_enforcer(voice_module, multilingual_module) -> None:
                 try:
                     self._debug_trace(
                         "tts_language_voice",
-                        mode="stale_audio_removed",
+                        mode="stale_language_audio_removed",
                         voice=active_voice,
                         text=text,
                     )
