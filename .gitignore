@@ -72,3 +72,11 @@ iris_rag_db/
 iris_user_preferences.json
 iris_active_goals.json
 logs/
+
+# ── Claude Code local settings ────────────────────────────
+.claude/
+
+# ── IRIS local data/cache (personal, not for external review) ──
+iris_environment_cache.json
+iris_memory_sessions_archive.json
+knowledge_base.json

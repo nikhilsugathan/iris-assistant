@@ -1,38 +1,39 @@
-# IRIS Ultra Low Latency
+# IRIS
 
-This build prioritizes faster voice turn-taking over long answers.
+A personal, multi-provider AI automation assistant built around a safety-first architecture. Every privileged action passes through explicit approval gates, gets written to a rotating audit log, and respects hard security boundaries that hold even in an elevated execution mode.
 
-## What changed
-- Faster default brain: `llama-3.1-8b-instant` on Groq
-- Shorter voice replies by default
-- Less memory context in live conversation
-- Faster mic end-of-speech settings
-- TTS caches generated audio files for repeated phrases
-- Text mode is silent by default to avoid fake voice latency during terminal testing
+## Architecture
+
+- **Approval gates** — sensitive actions require explicit confirmation before execution, not silent auto-run.
+- **Audit logging** — actions, blocked attempts, and confirmations are written to a rotating log so nothing executes without a trace.
+- **Scoped, time-bound permission elevation** — elevated access is granted per task and expires automatically rather than persisting indefinitely.
+- **Hard security blocks** — a defined set of blocked commands and sensitive paths cannot be executed regardless of elevation state. No override, no exception.
+- **Multi-provider routing** — local inference via llama-cpp-python, with routing to Google Gen AI, Groq, and Anthropic depending on the task.
+
+## Testing
+
+The `tests/` directory covers state machine behavior, executor hardening, and post-remediation audit checks, validating that the security boundaries above actually hold rather than just being described.
 
 ## Setup
+
 1. Copy `.env.example` to `.env`
 2. Add at least `GROQ_API_KEY`
-3. Install packages:
-
-```bash
-pip install -r requirements.txt
-```
+3. Install dependencies: `pip install -r requirements.txt`
 
 ## Run
-```bash
+```
 py main.py
 ```
 
-For silent keyboard testing:
-```bash
+Text-only mode for local testing:
+```
 py main.py --text
 ```
 
-To force speech even in `--text` mode, set:
-```bash
-set SPEAK_IN_TEXT_MODE=true
-```
+## Status
 
-## Honest note
-This is still not a true realtime voice agent. For genuinely human interruptible conversation, you need a streaming STT/TTS stack or a realtime voice API.
+Active personal project. Voice turn-taking is currently tuned for speed over full realtime interruption support, that's still on the roadmap rather than done.
+
+## Stack
+
+Python, Docker, llama-cpp-python, Groq, Google Gen AI, Anthropic
